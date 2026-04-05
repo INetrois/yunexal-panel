@@ -2,6 +2,7 @@
 // Compiled as a separate binary alongside the main yunexal-panel server.
 
 use std::io::{self, BufRead, Write};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use yunexal_panel::{db, password};
@@ -161,6 +162,10 @@ async fn main() -> Result<()> {
     // ── Step 6: systemd service ───────────────────────────────────────────────
     header!("Step 6: systemd service");
     step_systemd(&script_dir, &real_user)?;
+
+    // ── Step 7: nginx reverse proxy ───────────────────────────────────────────
+    header!("Step 7: nginx reverse proxy");
+    step_nginx(&script_dir)?;
 
     // ── Summary ───────────────────────────────────────────────────────────────
     let panel_port = read_env_port(&script_dir).unwrap_or_else(|| "3000".to_string());
@@ -552,6 +557,107 @@ fn step_systemd(dir: &Path, real_user: &str) -> Result<()> {
         }
     } else {
         info!("Service not started. Run: systemctl start yunexal-panel");
+    }
+
+    Ok(())
+}
+
+// ── nginx WebSocket proxy ─────────────────────────────────────────────────────
+
+/// Builds an nginx virtual-host config with WebSocket proxy headers.
+fn build_nginx_config(domain: &str, port: &str, ssl: Option<(&str, &str)>) -> String {
+    // The location block — identical for HTTP and HTTPS servers.
+    // proxy_http_version 1.1 + Upgrade/Connection headers are required for
+    // wss:// (WebSocket over TLS) to work through nginx.
+    let location = format!(
+        "    server_tokens off;\n    proxy_hide_header X-Powered-By;\n\n    # WebSocket + HTTP reverse proxy (required for console)\n    location / {{\n        proxy_pass http://127.0.0.1:{port};\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection \"upgrade\";\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_read_timeout 3600s;\n        proxy_send_timeout 3600s;\n    }}\n",
+        port = port,
+    );
+
+    if let Some((cert, key)) = ssl {
+        format!(
+            "server {{\n    listen 80;\n    server_name {d};\n    return 301 https://$host$request_uri;\n}}\n\nserver {{\n    listen 443 ssl;\n    server_name {d};\n\n    ssl_certificate {cert};\n    ssl_certificate_key {key};\n\n{location}}}\n",
+            d = domain, cert = cert, key = key, location = location,
+        )
+    } else {
+        format!(
+            "server {{\n    listen 80;\n    server_name {d};\n\n{location}}}\n",
+            d = domain, location = location,
+        )
+    }
+}
+
+fn step_nginx(dir: &Path) -> Result<()> {
+    let nginx_installed = std::process::Command::new("which")
+        .arg("nginx")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !nginx_installed {
+        info!("nginx not found — skipping nginx configuration.");
+        warn!("If you use a reverse proxy, add these headers or WebSocket consoles will NOT work:");
+        warn!("  proxy_http_version 1.1;");
+        warn!("  proxy_set_header Upgrade $http_upgrade;");
+        warn!("  proxy_set_header Connection \"upgrade\";");
+        return Ok(());
+    }
+
+    if !prompt_yn("Configure nginx reverse proxy? (required for wss:// console WebSocket)", true)? {
+        info!("Skipping nginx configuration.");
+        warn!("WebSocket consoles will NOT work if nginx is not configured with WebSocket headers.");
+        return Ok(());
+    }
+
+    let panel_port = read_env_port(dir).unwrap_or_else(|| "3000".to_string());
+
+    let domain = prompt("Domain name (e.g. panel.example.com)", None)?;
+    if domain.is_empty() {
+        warn!("No domain entered — skipping nginx configuration.");
+        return Ok(());
+    }
+
+    let cert_path = format!("/etc/letsencrypt/live/{}/fullchain.pem", domain);
+    let key_path  = format!("/etc/letsencrypt/live/{}/privkey.pem",   domain);
+    let has_ssl   = Path::new(&cert_path).exists();
+
+    let config = build_nginx_config(
+        &domain,
+        &panel_port,
+        if has_ssl { Some((cert_path.as_str(), key_path.as_str())) } else { None },
+    );
+
+    let config_path  = PathBuf::from("/etc/nginx/sites-available/yunexal-panel");
+    let enabled_path = PathBuf::from("/etc/nginx/sites-enabled/yunexal-panel");
+
+    std::fs::write(&config_path, &config).context("Failed to write nginx configuration")?;
+
+    // Recreate symlink in sites-enabled
+    if enabled_path.exists() || enabled_path.is_symlink() {
+        let _ = std::fs::remove_file(&enabled_path);
+    }
+    symlink(&config_path, &enabled_path).context("Failed to create nginx symlink in sites-enabled")?;
+
+    // Test and reload
+    let test = std::process::Command::new("nginx").arg("-t").output();
+    match test {
+        Ok(o) if o.status.success() => {
+            let _ = std::process::Command::new("systemctl").args(["reload", "nginx"]).status();
+            ok!("nginx configured and reloaded: {}", config_path.display());
+            if !has_ssl {
+                info!("To enable HTTPS with Let's Encrypt:");
+                info!("  sudo apt install certbot python3-certbot-nginx -y");
+                info!("  sudo certbot --nginx -d {}", domain);
+            }
+        }
+        Ok(o) => {
+            warn!("nginx config test failed — please fix {}:", config_path.display());
+            warn!("{}", String::from_utf8_lossy(&o.stderr).trim());
+        }
+        Err(e) => {
+            warn!("Could not verify nginx config: {}", e);
+            ok!("Config written to {} — reload nginx manually.", config_path.display());
+        }
     }
 
     Ok(())

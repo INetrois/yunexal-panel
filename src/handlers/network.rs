@@ -2,7 +2,7 @@ use axum::{
     extract::{ConnectInfo, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use axum_extra::extract::cookie::PrivateCookieJar;
 use serde::Deserialize;
@@ -10,12 +10,14 @@ use crate::{auth, db, docker};
 use crate::state::AppState;
 use std::net::SocketAddr;
 use tracing::error;
+use super::CspNonce;
 use super::templates::{render, NetworkingTemplate, PortRow};
 
 pub async fn networking_page(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
     Path(db_id): Path<i64>,
+    Extension(CspNonce(nonce)): Extension<CspNonce>,
 ) -> impl IntoResponse {
     if !auth::can_access_server(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
@@ -54,7 +56,7 @@ pub async fn networking_page(
                 .into_iter()
                 .map(|((hp, cp), (tag, enabled, ufw_blocked))| PortRow { host_port: hp, container_port: cp, tag, enabled, ufw_blocked })
                 .collect();
-            render(NetworkingTemplate { id: db_id, container, bandwidth_mbit, is_admin, ports, active_tab: "networking", cf_token: state.cf_analytics_token.clone(), ufw_enabled, bandwidth_enabled }).into_response()
+            render(NetworkingTemplate { id: db_id, container, bandwidth_mbit, is_admin, ports, active_tab: "networking", cf_token: state.cf_analytics_token.clone(), nonce, ufw_enabled, bandwidth_enabled }).into_response()
         }
         Err(e) => format!("Error: {}", e).into_response(),
     }

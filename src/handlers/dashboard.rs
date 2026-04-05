@@ -1,13 +1,14 @@
 use axum::{
     extract::State,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use axum_extra::extract::cookie::PrivateCookieJar;
 use serde_json::json;
 use crate::{auth, db, docker};
 use crate::state::AppState;
 use tracing::error;
+use super::CspNonce;
 use super::templates::{render, IndexTemplate, NewServerTemplate, ServerListTemplate};
 
 async fn user_is_admin(state: &AppState, jar: &PrivateCookieJar) -> bool {
@@ -17,6 +18,7 @@ async fn user_is_admin(state: &AppState, jar: &PrivateCookieJar) -> bool {
 pub async fn dashboard(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
+    Extension(CspNonce(nonce)): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let is_admin = user_is_admin(&state, &jar).await;
     let mut containers = match docker::list_containers(&state.docker).await {
@@ -44,7 +46,7 @@ pub async fn dashboard(
         }
     }
     let auth_username = auth::session_username(&jar).unwrap_or_default();
-    render(IndexTemplate { containers, is_admin, auth_username, cf_token: state.cf_analytics_token.clone() })
+    render(IndexTemplate { containers, is_admin, auth_username, cf_token: state.cf_analytics_token.clone(), nonce })
 }
 
 pub async fn server_list_fragment(
@@ -117,6 +119,7 @@ pub async fn api_dashboard_json(
 
 pub async fn new_server_page(
     State(state): State<AppState>,
+    Extension(CspNonce(nonce)): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let users = db::list_users(&state.db).await.unwrap_or_default()
         .into_iter()
@@ -127,5 +130,5 @@ pub async fn new_server_page(
             created_at: u.created_at,
         })
         .collect();
-    render(NewServerTemplate { error: None, users, cf_token: state.cf_analytics_token.clone() })
+    render(NewServerTemplate { error: None, users, cf_token: state.cf_analytics_token.clone(), nonce })
 }

@@ -156,50 +156,64 @@ function loadServers() {
         .catch(() => {});
 }
 
-// ── Stats polling (1s, only running cards) ────────────────────────────────
-function pollStats() {
-    document.querySelectorAll('[data-dash-id][data-state="running"]').forEach(card => {
-        const id = card.dataset.dashId;
-        fetch(`/api/servers/${id}/stats`)
-            .then(r => r.json())
-            .then(s => {
-                const cpu = document.getElementById('dash-cpu-' + id);
-                const ram = document.getElementById('dash-ram-' + id);
-                if (cpu) cpu.textContent = s.cpu !== undefined ? s.cpu.toFixed(2) + '%' : '—';
-                if (ram) ram.textContent = s.ram !== undefined
-                    ? `${(s.ram / 1048576).toFixed(0)}MB / ${(s.ram_limit / 1048576).toFixed(0)}MB`
-                    : '—';
-            })
-            .catch(() => {});
+// ── Stats via WebSocket ───────────────────────────────────────────────────────────────
+let _statsWs             = null;
+let _statsReconnectTimer = null;
+
+function _applyStats(data) {
+    if (!data.ok || !Array.isArray(data.stats)) return;
+    data.stats.forEach(s => {
+        const cpu = document.getElementById('dash-cpu-' + s.db_id);
+        const ram = document.getElementById('dash-ram-' + s.db_id);
+        if (cpu) cpu.textContent = s.cpu !== undefined ? s.cpu.toFixed(2) + '%' : '—';
+        if (ram) ram.textContent = s.ram !== undefined
+            ? `${(s.ram / 1048576).toFixed(0)}MB / ${(s.ram_limit / 1048576).toFixed(0)}MB`
+            : '—';
     });
 }
 
+function _openStatsWs() {
+    if (_statsWs && (_statsWs.readyState === WebSocket.OPEN || _statsWs.readyState === WebSocket.CONNECTING)) return;
+    clearTimeout(_statsReconnectTimer);
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    _statsWs = new WebSocket(`${protocol}://${window.location.host}/ws/stats`);
+    _statsWs.onmessage = e => { try { _applyStats(JSON.parse(e.data)); } catch (_) {} };
+    _statsWs.onclose = () => {
+        _statsWs = null;
+        if (document.visibilityState === 'visible') {
+            _statsReconnectTimer = setTimeout(_openStatsWs, 2000);
+        }
+    };
+    _statsWs.onerror = () => { if (_statsWs) _statsWs.close(); };
+}
+
+function _closeStatsWs() {
+    clearTimeout(_statsReconnectTimer);
+    if (_statsWs) { _statsWs.onclose = null; _statsWs.close(); _statsWs = null; }
+}
+
 // ── Visibility-aware polling (mobile: timers freeze when tab is background) ──
-let _listTimer  = null;
-let _statsTimer = null;
+let _listTimer = null;
 
 function _startTimers() {
-    if (_listTimer)  clearInterval(_listTimer);
-    if (_statsTimer) clearInterval(_statsTimer);
-    _listTimer  = setInterval(loadServers, 5000);
-    _statsTimer = setInterval(pollStats,   1000);
+    if (_listTimer) clearInterval(_listTimer);
+    _listTimer = setInterval(loadServers, 5000);
+    _openStatsWs();
 }
 
 // On mobile, when the user returns to the tab — refresh immediately then restart timers
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
         loadServers();
-        pollStats();
+        _openStatsWs();
         _startTimers();
     } else {
         clearInterval(_listTimer);
-        clearInterval(_statsTimer);
+        _closeStatsWs();
     }
 });
 
 _startTimers();
-// Run stats immediately on page load (intervals fire only after delay)
-pollStats();
 
 // ── Actions ───────────────────────────────────────────────────────────────
 function dashAction(id, action) {

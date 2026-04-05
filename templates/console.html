@@ -3,10 +3,10 @@
 <head>
     {% include "_head_common.html" %}
     <title>{{ container.name }} - Console</title>
-    <link href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" rel="stylesheet" integrity="sha384-9ftsg11+LSxVUaknegCfeKvlkO9EdIPI2op725RqY87IvhyGjElmpjZlP3LhTQjn" crossorigin="anonymous">
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js" integrity="sha384-xjfWUeCWdMtvpAb/SmM6lMzS6pQGcQa0loOl1d97j6Odw0vjK9nW3+dTb/bn/mwH" crossorigin="anonymous" nonce="{{nonce}}"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js" integrity="sha384-dpjGwSSISUTz2taP54Bor7qkyMR20sSO9oe11UVYnGs2/YdUBf7HW30XKQx9PCzn" crossorigin="anonymous" nonce="{{nonce}}"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous" nonce="{{nonce}}"></script>
     <link href="/static/css/base.css?v=2" rel="stylesheet">
     <link href="/static/css/console.css?v=4" rel="stylesheet">
 </head>
@@ -98,8 +98,8 @@
     </div>
 
     {% include "_scripts_server.html" %}
-    <script>window.YU_SERVER_ID = '{{id}}';</script>
-    <script src="/static/js/console.js"></script>
+    <script nonce="{{nonce}}">window.YU_SERVER_ID = '{{id}}';</script>
+    <script src="/static/js/console.js" nonce="{{nonce}}"></script>
     {% include "_script_footer.html" %}
 </body>
 </html>

@@ -2,7 +2,7 @@ use axum::{
     extract::{ConnectInfo, Form, Path, State},
     http::HeaderMap,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use crate::docker::{self, ContainerInfo};
 use crate::{auth, db};
@@ -12,6 +12,7 @@ use axum_extra::extract::cookie::PrivateCookieJar;
 use crate::state::AppState;
 use std::net::SocketAddr;
 use tracing::error;
+use super::CspNonce;
 use super::templates::{
     render, ConsoleTemplate, FilesTemplate, RenameServerForm, ServerCardTemplate, SettingsTemplate,
 };
@@ -45,6 +46,7 @@ pub async fn console_page(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
     Path(db_id): Path<i64>,
+    Extension(CspNonce(nonce)): Extension<CspNonce>,
 ) -> impl IntoResponse {
     if !auth::can_access_server(&state, &jar, db_id).await {
         return (axum::http::StatusCode::FORBIDDEN, "Access denied").into_response();
@@ -53,7 +55,7 @@ pub async fn console_page(
         Ok(v) => v, Err(e) => return e.into_response(),
     };
     match docker::get_container(&state.docker, &docker_id).await {
-        Ok(mut c) => { c.db_id = db_id; c.name = db_name; render(ConsoleTemplate { id: db_id, container: c, active_tab: "console", cf_token: state.cf_analytics_token.clone() }).into_response() }
+        Ok(mut c) => { c.db_id = db_id; c.name = db_name; render(ConsoleTemplate { id: db_id, container: c, active_tab: "console", cf_token: state.cf_analytics_token.clone(), nonce }).into_response() }
         Err(e) => format!("Error: {}", e).into_response(),
     }
 }
@@ -62,6 +64,7 @@ pub async fn files_page(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
     Path(db_id): Path<i64>,
+    Extension(CspNonce(nonce)): Extension<CspNonce>,
 ) -> impl IntoResponse {
     if !auth::can_access_server(&state, &jar, db_id).await {
         return (axum::http::StatusCode::FORBIDDEN, "Access denied").into_response();
@@ -70,7 +73,7 @@ pub async fn files_page(
         Ok(v) => v, Err(e) => return e.into_response(),
     };
     match docker::get_container(&state.docker, &docker_id).await {
-        Ok(mut c) => { c.db_id = db_id; c.name = db_name; render(FilesTemplate { id: db_id, container: c, active_tab: "files", cf_token: state.cf_analytics_token.clone() }).into_response() }
+        Ok(mut c) => { c.db_id = db_id; c.name = db_name; render(FilesTemplate { id: db_id, container: c, active_tab: "files", cf_token: state.cf_analytics_token.clone(), nonce }).into_response() }
         Err(e) => format!("Error: {}", e).into_response(),
     }
 }
@@ -79,6 +82,7 @@ pub async fn settings_page(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
     Path(db_id): Path<i64>,
+    Extension(CspNonce(nonce)): Extension<CspNonce>,
 ) -> impl IntoResponse {
     if !auth::can_access_server(&state, &jar, db_id).await {
         return (axum::http::StatusCode::FORBIDDEN, "Access denied").into_response();
@@ -91,7 +95,7 @@ pub async fn settings_page(
         .map(|c| c.env)
         .unwrap_or_default();
     match docker::get_container(&state.docker, &docker_id).await {
-        Ok(mut c) => { c.db_id = db_id; c.name = db_name; render(SettingsTemplate { id: db_id, container: c, is_admin, active_tab: "settings", cf_token: state.cf_analytics_token.clone(), env }).into_response() }
+        Ok(mut c) => { c.db_id = db_id; c.name = db_name; render(SettingsTemplate { id: db_id, container: c, is_admin, active_tab: "settings", cf_token: state.cf_analytics_token.clone(), nonce, env }).into_response() }
         Err(e) => format!("Error: {}", e).into_response(),
     }
 }

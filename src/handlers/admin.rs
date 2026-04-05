@@ -3,13 +3,14 @@ use axum::{
     http::StatusCode,
     http::HeaderMap,
     response::{IntoResponse, Redirect},
-    Json,
+    Extension, Json,
 };
 use axum_extra::extract::cookie::PrivateCookieJar;
 use std::net::SocketAddr;
 use crate::{auth, db, docker, password};
 use crate::state::AppState;
 use tracing::error;
+use super::CspNonce;
 use super::templates::{
     render, AdminEditTemplate, AdminSetPasswordForm, AdminTemplate,
     ChangePwForm, ContainerEditInfo, CreateUserForm, EditContainerForm, UserInfo,
@@ -20,13 +21,11 @@ use super::templates::{
 const VALID_TABS: &[&str] = &[
     "overview", "containers", "users", "images",
     "agents", "dns", "firewall", "backups",
-    "insights", "audit", "settings",
-    "workspaces", "tickets",
-    "billing", "plans", "coupons",
+    "insights", "audit", "settings", "tickets",
     "notifications", "themes", "apikeys", "nodes",
 ];
 
-async fn build_admin_template(state: &AppState, tab: String, username: String) -> AdminTemplate {
+async fn build_admin_template(state: &AppState, tab: String, username: String, nonce: String) -> AdminTemplate {
     let containers = match docker::list_containers(&state.docker).await {
         Ok(c) => c,
         Err(e) => {
@@ -152,6 +151,7 @@ async fn build_admin_template(state: &AppState, tab: String, username: String) -
         zram_ratio,
         zram_algorithm,
         cf_token: state.cf_analytics_token.clone(),
+        nonce,
         settings_ufw_enabled: db::get_panel_setting_bool(&state.db, "ufw_enabled").await,
         settings_bandwidth_enabled: db::get_panel_setting_bool(&state.db, "bandwidth_enabled").await,
         settings_cf_uam_enabled: db::get_panel_setting_bool(&state.db, "cf_uam_enabled").await,
@@ -319,6 +319,7 @@ pub async fn admin_tab_page(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
     Path(tab): Path<String>,
+    Extension(CspNonce(nonce)): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let tab = if VALID_TABS.contains(&tab.as_str()) {
         tab
@@ -326,7 +327,7 @@ pub async fn admin_tab_page(
         "overview".to_string()
     };
     let username = auth::session_username(&jar).unwrap_or_default();
-    render(build_admin_template(&state, tab, username).await)
+    render(build_admin_template(&state, tab, username, nonce).await)
 }
 
 // ── Docker helpers ───────────────────────────────────────────────────────────
@@ -562,6 +563,7 @@ pub async fn api_set_user_password(
 pub async fn admin_edit_page(
     State(state): State<AppState>,
     Path(db_id): Path<i64>,
+    Extension(CspNonce(nonce)): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let (docker_id, db_name) = match db::get_server_info_by_db_id(&state.db, db_id).await {
         Ok(Some(row)) => row,
@@ -612,6 +614,7 @@ pub async fn admin_edit_page(
         users,
         error: None,
         cf_token: state.cf_analytics_token.clone(),
+        nonce,
     }).into_response()
 }
 

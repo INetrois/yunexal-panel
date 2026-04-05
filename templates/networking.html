@@ -174,11 +174,11 @@
     </div>
 
     {% include "_scripts_server.html" %}
-    <script>
+    <script nonce="{{nonce}}">
         window.YU_SERVER_ID = '{{id}}';
         window.YU_INITIAL_MBIT = {% if let Some(m) = bandwidth_mbit %}{{ m }}{% else if is_admin %}1000{% else %}null{% endif %};
     </script>
-    <script src="/static/js/networking.js"></script>
+    <script src="/static/js/networking.js" nonce="{{nonce}}"></script>
     {% include "_script_footer.html" %}
 </body>
 </html>

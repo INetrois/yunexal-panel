@@ -23,6 +23,11 @@ use crate::state::AppState;
 use std::net::SocketAddr;
 use axum::extract::ConnectInfo;
 
+/// Per-request CSP nonce (128-bit, base64-encoded).
+#[derive(Clone)]
+pub struct CspNonce(pub String);
+
+
 #[derive(Embed, Clone)]
 #[folder = "static/"]
 struct StaticAssets;
@@ -68,37 +73,67 @@ async fn track_requests(
 // ── Security headers middleware ───────────────────────────────────────────────
 
 async fn security_headers(
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> impl IntoResponse {
+    // Generate a per-request 128-bit nonce for CSP.
+    use rand::RngExt;
+    use base64::Engine;
+    let buf: [u8; 16] = rand::rng().random();
+    let nonce = base64::engine::general_purpose::STANDARD.encode(buf);
+    req.extensions_mut().insert(CspNonce(nonce.clone()));
+
     let mut resp = next.run(req).await;
     let h = resp.headers_mut();
 
     h.insert("X-Content-Type-Options",         HeaderValue::from_static("nosniff"));
     h.insert("X-Frame-Options",                HeaderValue::from_static("DENY"));
+
+    let csp = format!(
+        "default-src 'self'; \
+         script-src 'nonce-{nonce}' https://unpkg.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://static.cloudflareinsights.com; \
+         script-src-attr 'unsafe-inline'; \
+         style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; \
+         font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; \
+         img-src 'self' data:; \
+         connect-src 'self' wss: https://cdn.jsdelivr.net; \
+         frame-ancestors 'none'; \
+         base-uri 'self'; \
+         form-action 'self'; \
+         worker-src 'self' blob:"
+    );
     h.insert(
         "Content-Security-Policy",
-        HeaderValue::from_static(
-            "default-src 'self'; \
-             script-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; \
-             style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; \
-             font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; \
-             img-src 'self' data:; \
-             connect-src 'self' ws: wss:; \
-             frame-ancestors 'none'; \
-             base-uri 'self'; \
-             form-action 'self'"
-        ),
+        HeaderValue::from_str(&csp).unwrap_or_else(|_| HeaderValue::from_static("default-src 'self'")),
     );
+    h.insert("Strict-Transport-Security",     HeaderValue::from_static("max-age=63072000; includeSubDomains; preload"));
     h.insert("Referrer-Policy",                HeaderValue::from_static("strict-origin-when-cross-origin"));
     h.insert("Permissions-Policy",             HeaderValue::from_static("camera=(), microphone=(), geolocation=()"));
     h.insert("X-XSS-Protection",              HeaderValue::from_static("0"));
     h.insert("Cross-Origin-Opener-Policy",    HeaderValue::from_static("same-origin"));
+    h.insert("Cross-Origin-Embedder-Policy",   HeaderValue::from_static("credentialless"));
+    h.insert("Cross-Origin-Resource-Policy",  HeaderValue::from_static("same-origin"));
+    h.insert("X-Permitted-Cross-Domain-Policies", HeaderValue::from_static("none"));
     h.insert(
         "Cache-Control",
         HeaderValue::from_static("no-store, no-cache, must-revalidate"),
     );
 
+    resp
+}
+
+// ── Sanitise Axum default rejection bodies (415 / 422) ───────────────────────
+
+async fn sanitize_errors(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let resp = next.run(req).await;
+    if resp.status() == StatusCode::UNPROCESSABLE_ENTITY
+        || resp.status() == StatusCode::UNSUPPORTED_MEDIA_TYPE
+    {
+        return (resp.status(), "Bad request").into_response();
+    }
     resp
 }
 
@@ -137,7 +172,7 @@ use servers::{
     console_page, delete_server, files_page, get_server_stats, kill_server, rename_server,
     restart_server, settings_page, start_server, stop_server, api_update_env, api_factory_reset,
 };
-use ws::console_ws;
+use ws::{console_ws, stats_ws};
 
 pub fn create_router(state: AppState) -> Router {
     let public = Router::new()
@@ -187,8 +222,11 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/servers/{id}/files/archive", post(create_archive))
         .route("/api/servers/{id}/files/bulk-delete", post(bulk_delete))
         .route("/api/servers/{id}/files/move", post(move_file))
-        // WebSocket console
+        // WebSocket console + stats
         .route("/api/servers/{id}/ws", get(console_ws))
+        .route("/ws/stats", get(stats_ws))
+        // PWA manifest (behind auth)
+        .route("/manifest.json", get(serve_manifest))
         // Server DNS records (owner-accessible)
         .route("/api/servers/{id}/dns", get(api_server_dns_list))
         .route("/api/servers/{id}/dns/add", post(api_server_dns_add))
@@ -260,10 +298,10 @@ pub fn create_router(state: AppState) -> Router {
         .merge(public)
         .merge(protected)
         .merge(admin_only)
-        .route("/manifest.json", get(serve_manifest))
         .route("/sw.js", get(serve_sw))
         .nest_service("/static", ServeEmbed::<StaticAssets>::new())
         .fallback(fallback)
+        .layer(middleware::from_fn(sanitize_errors))
         .layer(middleware::from_fn_with_state(state.clone(), track_requests))
         .layer(middleware::from_fn(security_headers))
         .with_state(state)

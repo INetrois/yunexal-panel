@@ -3,7 +3,7 @@
 <head>
     {% include "_head_common.html" %}
     <title>{{ filename }} — {{ container.name }}</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.7/ace.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.7/ace.js" integrity="sha384-HpuSf1l68sP65oEoE2LrneOuroVCyzyyYNUCpDl0fhq67AVhrqeiPXpowlsJQ+ao" crossorigin="anonymous" nonce="{{nonce}}"></script>
     <link href="/static/css/base.css?v=2" rel="stylesheet">
     <style>
         .yu-edit-layout {
@@ -80,7 +80,7 @@
 
     {% include "_scripts_server.html" %}
     {% include "_script_footer.html" %}
-    <script>
+    <script nonce="{{nonce}}">
         var YU_SID  = '{{ id }}';
         var YU_PATH = '{{ path }}';
 

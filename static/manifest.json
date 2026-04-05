@@ -1,7 +1,6 @@
 {
-  "name": "Yunexal Panel",
-  "short_name": "Yunexal",
-  "description": "Server management panel",
+  "name": "Panel",
+  "short_name": "Panel",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0b0b12",

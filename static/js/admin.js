@@ -1589,24 +1589,40 @@ function loadContainers() {
 }
 
 // ── Containers stats polling (1s, in-place) ───────────────────────────────────
-function pollContainerStats() {
-    const tbody = document.getElementById('containers-tbody');
-    if (!tbody) return;
-    tbody.querySelectorAll('tr[data-state="running"]').forEach(row => {
-        const id = row.dataset.dbId;
-        if (!id) return;
-        fetch(`/api/servers/${id}/stats`, { credentials: 'same-origin' })
-            .then(r => r.json())
-            .then(s => {
-                const cpu = document.getElementById('ac-cpu-' + id);
-                const ram = document.getElementById('ac-ram-' + id);
-                if (cpu) cpu.textContent = s.cpu !== undefined ? s.cpu.toFixed(2) + '%' : '—';
-                if (ram) ram.textContent = s.ram !== undefined
-                    ? `${(s.ram / 1048576).toFixed(0)}MB / ${(s.ram_limit / 1048576).toFixed(0)}MB`
-                    : '—';
-            })
-            .catch(() => {});
+// ── Containers stats via WebSocket ─────────────────────────────────────────────
+let _statsWsAdmin             = null;
+let _statsReconnectTimerAdmin  = null;
+
+function _applyContainerStats(data) {
+    if (!data.ok || !Array.isArray(data.stats)) return;
+    data.stats.forEach(s => {
+        const cpu = document.getElementById('ac-cpu-' + s.db_id);
+        const ram = document.getElementById('ac-ram-' + s.db_id);
+        if (cpu) cpu.textContent = s.cpu !== undefined ? s.cpu.toFixed(2) + '%' : '—';
+        if (ram) ram.textContent = s.ram !== undefined
+            ? `${(s.ram / 1048576).toFixed(0)}MB / ${(s.ram_limit / 1048576).toFixed(0)}MB`
+            : '—';
     });
+}
+
+function _openStatsWsAdmin() {
+    if (_statsWsAdmin && (_statsWsAdmin.readyState === WebSocket.OPEN || _statsWsAdmin.readyState === WebSocket.CONNECTING)) return;
+    clearTimeout(_statsReconnectTimerAdmin);
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    _statsWsAdmin = new WebSocket(`${protocol}://${window.location.host}/ws/stats`);
+    _statsWsAdmin.onmessage = e => { try { _applyContainerStats(JSON.parse(e.data)); } catch (_) {} };
+    _statsWsAdmin.onclose = () => {
+        _statsWsAdmin = null;
+        if (document.visibilityState === 'visible') {
+            _statsReconnectTimerAdmin = setTimeout(_openStatsWsAdmin, 2000);
+        }
+    };
+    _statsWsAdmin.onerror = () => { if (_statsWsAdmin) _statsWsAdmin.close(); };
+}
+
+function _closeStatsWsAdmin() {
+    clearTimeout(_statsReconnectTimerAdmin);
+    if (_statsWsAdmin) { _statsWsAdmin.onclose = null; _statsWsAdmin.close(); _statsWsAdmin = null; }
 }
 
 // ── Audit Log ─────────────────────────────────────────────────────────────────
@@ -1789,8 +1805,7 @@ function loadOverview() {
 // ── Polling loop ──────────────────────────────────────────────────────────────
 
 // ── Visibility-aware polling (mobile: timers freeze when tab is background) ──
-let _pollTimer        = null;
-let _statsTimerAdmin  = null;
+let _pollTimer = null;
 
 function _isModalOpen() {
     return !!document.querySelector('.yu-modal[style*="flex"], .yu-modal[style*="block"]');
@@ -1808,19 +1823,18 @@ function _pollTick() {
 
 function _startAdminTimers() {
     clearInterval(_pollTimer);
-    clearInterval(_statsTimerAdmin);
-    _pollTimer       = setInterval(_pollTick,          5000);
-    _statsTimerAdmin = setInterval(pollContainerStats, 1000);
+    _pollTimer = setInterval(_pollTick, 5000);
+    _openStatsWsAdmin();
 }
 
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
         _pollTick();
-        pollContainerStats();
+        _openStatsWsAdmin();
         _startAdminTimers();
     } else {
         clearInterval(_pollTimer);
-        clearInterval(_statsTimerAdmin);
+        _closeStatsWsAdmin();
     }
 });
 

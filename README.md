@@ -1,6 +1,6 @@
 # Yunexal Panel
 
-> **v0.4.0** — Self-hosted server management platform built on Docker.
+> **v0.4.1** — Self-hosted server management platform built on Docker.
 
 Built with **Rust + Axum**, **SQLite**, and **Bollard** (Docker SDK).  
 Templates and static assets are compiled into a single binary — no external runtime files needed.
@@ -12,6 +12,7 @@ Templates and static assets are compiled into a single binary — no external ru
 - [Roadmap](#roadmap)
 - [Features](#features)
 - [Installation](#installation)
+- [Reverse Proxy (nginx)](#reverse-proxy-nginx)
 - [Requirements](#requirements)
 - [Configuration](#configuration)
 - [Building from Source](#building-from-source)
@@ -73,6 +74,7 @@ Templates and static assets are compiled into a single binary — no external ru
 And much more! The roadmap is flexible and will evolve based on user feedback and new ideas.
 You can make a pull request to add your own features or upvote existing ones in the [Issues](https://github.com/nestorchurin/yunexal-panel/issues)
 Or help to implement features by joining the development on the [Discussions](https://github.com/nestorchurin/yunexal-panel/discussions) page.
+
 ---
 
 ## Features
@@ -210,14 +212,81 @@ The SQLite database (`panel.db`) and `volumes/` directory are created automatica
 
 ---
 
+## Reverse Proxy (nginx)
+
+The panel itself speaks plain HTTP. For production use with a domain and HTTPS (e.g. `https://panel.yunexal.com`), you need a reverse proxy in front of it.
+
+> **Important:** The WebSocket console (`wss://`) will **not work** unless the reverse proxy is configured to forward WebSocket upgrade headers. Without this, Firefox shows *"can't establish a connection to the server at wss://…"*.
+
+The setup wizard (`yunexal-setup`) detects nginx and can generate this config automatically (Step 7). If you prefer to configure it manually:
+
+**`/etc/nginx/sites-available/yunexal-panel`**
+
+```nginx
+# HTTP → HTTPS redirect
+server {
+    listen 80;
+    server_name panel.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name panel.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/panel.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/panel.example.com/privkey.pem;
+
+    # WebSocket + HTTP reverse proxy (required for console)
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+
+        # These three lines are mandatory for WebSocket (wss://) to work:
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+Enable the site and reload nginx:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/yunexal-panel /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+To add SSL via Let's Encrypt:
+
+```bash
+sudo apt install certbot python3-certbot-nginx -y
+sudo certbot --nginx -d panel.example.com
+```
+
+---
+
 ## Requirements
 
-| Requirement | Notes |
-|---|---|
-| **OS** | Linux x86_64 |
-| **Docker Engine** 24.0+ | Must be running; socket at `/var/run/docker.sock` |
-| **Docker image `alpine`** | Pulled automatically by `yunexal-setup` |
-| **RAM** | ~256 MB for the panel process |
+| Requirement | Notes | Minimum | Recommended |
+|---|---|---|---|
+| **OS** | Distribution for the panel | Ubuntu 20.04+ | Ubuntu 24.04+ LTS |
+| **Docker Engine** | Must be running; socket at `/var/run/docker.sock` | 24.0 | 29.0 + |
+| **Docker image `alpine`** | Pulled automatically by `yunexal-setup` | latest | latest |
+| **RAM** | For the panel process | 64 MB if using minimal features with containers | 2 GB if using full features with containers |
+| **CPU** | For the panel process | 1 vCPU | 2 vCPU |
+| **GPU** | For hardware acceleration (optional) | None | Recommended if using GPU-intensive features |
+| **Disk space** | For the panel binary, database, and volumes | 100 MB | 500 MB |
+| **Ports** | Panel port (default: 3000) + container ports | 1 free port for the panel + container ports | Multiple free ports for the panel and containers |
+| **Reverse proxy** | For production use with a domain and HTTPS | Optional (HTTP-only access) | Recommended (HTTPS + SSL with WebSocket support) |
+| **Ethernet** | For network connectivity | 100 Mbps | 1 Gbps or higher |
+
 
 > **Docker socket access** — add your user to the `docker` group:
 > ```bash

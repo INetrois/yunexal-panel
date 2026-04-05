@@ -3,12 +3,13 @@ use axum::{
     http::StatusCode,
     http::HeaderMap,
     response::{Html, IntoResponse, Redirect},
-    Json,
+    Extension, Json,
 };
 use axum_extra::extract::cookie::PrivateCookieJar;
 use std::net::SocketAddr;
 use crate::{auth, db, docker};
 use crate::state::AppState;
+use super::CspNonce;
 use super::templates::{ArchiveForm, CopyFileForm, CreateFileForm, DeleteFileQuery, ExtractForm, FileContentQuery, FileEditTemplate, FileListQuery, FileUploadQuery, RenameFileForm, SaveFileForm};
 
 fn escape_html(s: &str) -> String {
@@ -302,6 +303,7 @@ pub async fn edit_file_page(
     jar: PrivateCookieJar,
     Path(db_id): Path<i64>,
     Query(query): Query<FileContentQuery>,
+    Extension(CspNonce(nonce)): Extension<CspNonce>,
 ) -> impl IntoResponse {
     if !auth::can_access_server(&state, &jar, db_id).await {
         return Redirect::to("/").into_response();
@@ -359,6 +361,7 @@ pub async fn edit_file_page(
         ace_mode,
         active_tab: "files",
         cf_token: state.cf_analytics_token.clone(),
+        nonce,
     })
     .into_response()
 }

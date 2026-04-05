@@ -90,6 +90,7 @@ function connectConsole() {
 
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${protocol}://${window.location.host}/api/servers/${YU_SERVER_ID}/ws`);
+    ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
         _wsRetryCount = 0;
@@ -99,7 +100,13 @@ function connectConsole() {
         if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
     };
 
-    ws.onmessage = (ev) => { if (ev.data && !document.hidden) term.write(htmlToAnsi(ev.data)); };
+    ws.onmessage = (ev) => {
+        if (ev.data instanceof ArrayBuffer) {
+            try { handleStats(JSON.parse(new TextDecoder().decode(ev.data))); } catch (_) {}
+        } else if (ev.data && !document.hidden) {
+            term.write(htmlToAnsi(ev.data));
+        }
+    };
 
     ws.onclose = () => {
         if (!reconnectTimer) {
@@ -132,10 +139,12 @@ fetch(`/api/servers/${YU_SERVER_ID}/disk`)
     .then(r => r.ok ? r.json() : null)
     .then(d => {
         if (!d) return;
-        const volMB  = (d.volume_used / 1048576).toFixed(0);
-        document.getElementById('disk-space-val').textContent = `Volume: ${volMB} MB`;
+        const volMB   = (d.volume_used / 1048576).toFixed(0);
+        const totalGB = d.disk_total > 0 ? (d.disk_total / 1073741824).toFixed(1) : null;
+        document.getElementById('disk-space-val').textContent =
+            totalGB ? `${volMB} MB / ${totalGB} GB` : `${volMB} MB`;
         const fsEl = document.getElementById('disk-space-fs');
-        if (fsEl) fsEl.textContent = '';
+        if (fsEl) fsEl.textContent = totalGB ? 'volume used / disk total' : '';
     }).catch(() => {});
 
 const _cmdInput = document.getElementById('cmd-input');
@@ -227,63 +236,51 @@ function updateChart(chart, value) {
     chart.update();
 }
 
-// ── Polling (with network delta tracking) ─────────────────────────────────────
+// ── Metrics via WebSocket (Binary frames pushed every 1 s from server) ─────────
 let _prevRx = null;
 let _prevTx = null;
 let _prevBlkRead  = null;
 let _prevBlkWrite = null;
 
-const _statsTimer = setInterval(() => {
-    fetch(`/api/servers/${YU_SERVER_ID}/stats`)
-        .then(r => r.json())
-        .then(stats => {
-            updateControls(stats.state);
+function handleStats(stats) {
+    updateControls(stats.state);
 
-            // CPU (already a percentage from backend)
-            updateChart(cpuChart, stats.cpu);
-            document.getElementById('cpu-val').innerText = `${stats.cpu.toFixed(1)}%`;
+    // CPU
+    updateChart(cpuChart, stats.cpu);
+    document.getElementById('cpu-val').innerText = `${stats.cpu.toFixed(1)}%`;
 
-            // RAM: show as percentage + absolute values
-            const ramMB   = (stats.ram / 1024 / 1024).toFixed(0);
-            const limitMB = (stats.ram_limit / 1024 / 1024).toFixed(0);
-            const ramPct  = stats.ram_limit > 0 ? ((stats.ram / stats.ram_limit) * 100) : 0;
-            updateChart(ramChart, ramPct);
-            document.getElementById('ram-val').innerText =
-                stats.ram_limit > 0
-                    ? `${ramPct.toFixed(1)}% (${ramMB} / ${limitMB} MB)`
-                    : `${ramMB} MB`;
+    // RAM: percentage + absolute
+    const ramMB   = (stats.ram / 1024 / 1024).toFixed(0);
+    const limitMB = (stats.ram_limit / 1024 / 1024).toFixed(0);
+    const ramPct  = stats.ram_limit > 0 ? ((stats.ram / stats.ram_limit) * 100) : 0;
+    updateChart(ramChart, ramPct);
+    document.getElementById('ram-val').innerText =
+        stats.ram_limit > 0
+            ? `${ramPct.toFixed(1)}% (${ramMB} / ${limitMB} MB)`
+            : `${ramMB} MB`;
 
-            // Network I/O: compute per-second delta from cumulative values
-            let rxRate = 0, txRate = 0;
-            if (_prevRx !== null && stats.rx >= _prevRx) {
-                rxRate = (stats.rx - _prevRx) / 1024;  // KB/s (polled every 1s)
-            }
-            if (_prevTx !== null && stats.tx >= _prevTx) {
-                txRate = (stats.tx - _prevTx) / 1024;
-            }
-            _prevRx = stats.rx;
-            _prevTx = stats.tx;
+    // Network I/O delta (KB/s)
+    let rxRate = 0, txRate = 0;
+    if (_prevRx !== null && stats.rx >= _prevRx) rxRate = (stats.rx - _prevRx) / 1024;
+    if (_prevTx !== null && stats.tx >= _prevTx) txRate = (stats.tx - _prevTx) / 1024;
+    _prevRx = stats.rx;
+    _prevTx = stats.tx;
+    updateChart(netChart, rxRate + txRate);
+    document.getElementById('net-val').innerText =
+        `\u2193 ${rxRate.toFixed(1)}  \u2191 ${txRate.toFixed(1)} KB/s`;
 
-            updateChart(netChart, rxRate + txRate);
-            document.getElementById('net-val').innerText =
-                `\u2193 ${rxRate.toFixed(1)}  \u2191 ${txRate.toFixed(1)} KB/s`;
-
-            // Disk I/O delta (KB/s)
-            let diskRd = 0, diskWr = 0;
-            if (_prevBlkRead  !== null && stats.blk_read  >= _prevBlkRead)  diskRd = (stats.blk_read  - _prevBlkRead)  / 1024;
-            if (_prevBlkWrite !== null && stats.blk_write >= _prevBlkWrite) diskWr = (stats.blk_write - _prevBlkWrite) / 1024;
-            _prevBlkRead  = stats.blk_read;
-            _prevBlkWrite = stats.blk_write;
-
-            updateChart(diskChart, diskRd + diskWr);
-            document.getElementById('disk-val').innerText = `\u2193 ${diskRd.toFixed(1)}  \u2191 ${diskWr.toFixed(1)} KB/s`;
-        })
-        .catch(() => {});
-}, 1000);
+    // Disk I/O delta (KB/s)
+    let diskRd = 0, diskWr = 0;
+    if (_prevBlkRead  !== null && stats.blk_read  >= _prevBlkRead)  diskRd = (stats.blk_read  - _prevBlkRead)  / 1024;
+    if (_prevBlkWrite !== null && stats.blk_write >= _prevBlkWrite) diskWr = (stats.blk_write - _prevBlkWrite) / 1024;
+    _prevBlkRead  = stats.blk_read;
+    _prevBlkWrite = stats.blk_write;
+    updateChart(diskChart, diskRd + diskWr);
+    document.getElementById('disk-val').innerText = `\u2193 ${diskRd.toFixed(1)}  \u2191 ${diskWr.toFixed(1)} KB/s`;
+}
 
 // ── Cleanup (called by SPA navigation before leaving this page) ───────────────
 window._yuPageCleanup = function () {
-    clearInterval(_statsTimer);
     if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
     ws?.close(); ws = null;
     try { cpuChart.destroy(); ramChart.destroy(); netChart.destroy(); diskChart.destroy(); } catch (_) {}

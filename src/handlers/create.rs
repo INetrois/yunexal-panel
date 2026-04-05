@@ -2,7 +2,7 @@ use axum::{
     extract::{ConnectInfo, Form, Query, State},
     http::HeaderMap,
     response::{IntoResponse, Redirect},
-    Json,
+    Extension, Json,
 };
 use axum_extra::extract::cookie::PrivateCookieJar;
 use bollard::models::{RestartPolicy, RestartPolicyNameEnum};
@@ -13,6 +13,7 @@ use crate::{auth, db, docker};
 use crate::dns as dns_lib;
 use crate::state::AppState;
 use std::net::SocketAddr;
+use super::CspNonce;
 use super::templates::{render, CreateServerForm, NewServerTemplate, UserInfo};
 use tracing::warn;
 
@@ -21,6 +22,7 @@ pub async fn create_server(
     jar: PrivateCookieJar,
     addr: ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Extension(CspNonce(nonce)): Extension<CspNonce>,
     Form(form): Form<CreateServerForm>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
@@ -34,7 +36,7 @@ pub async fn create_server(
 
     macro_rules! err {
         ($msg:expr) => {{
-            return render(NewServerTemplate { users: users.clone(), error: Some($msg), cf_token: state.cf_analytics_token.clone() })
+            return render(NewServerTemplate { users: users.clone(), error: Some($msg), cf_token: state.cf_analytics_token.clone(), nonce: nonce.clone() })
                 .into_response();
         }};
     }
@@ -155,6 +157,7 @@ pub async fn create_server(
             users: users.clone(),
             error: Some(format!("A server named '{}' already exists. Choose a different name.", raw_name)),
             cf_token: state.cf_analytics_token.clone(),
+            nonce: nonce.clone(),
         }).into_response(),
         Err(e) => warn!("server_name_exists check failed: {}", e),
         Ok(false) => {}

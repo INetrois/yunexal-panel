@@ -1,6 +1,6 @@
 use axum::{
     extract::{ConnectInfo, Form, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect},
 };
 use axum_extra::extract::cookie::{Cookie, PrivateCookieJar, SameSite};
@@ -29,9 +29,9 @@ pub async fn login_submit(
     if state.is_login_locked(&ip) {
         warn!("Login rate-limited for IP {}", ip);
         let _ = db::audit_log(&state.db, &form.username, "auth.login_locked", "", "", &ip, &auth::user_agent(&headers)).await;
-        return render(LoginTemplate {
+        return (StatusCode::TOO_MANY_REQUESTS, render(LoginTemplate {
             error: Some("Too many login attempts. Please try again later.".to_string()),
-        })
+        }))
         .into_response();
     }
 
@@ -47,6 +47,7 @@ pub async fn login_submit(
         let mut cookie = Cookie::new(auth::SESSION_COOKIE, form.username.clone());
         cookie.set_http_only(true);
         cookie.set_same_site(SameSite::Strict);
+        cookie.set_secure(true);
         cookie.set_path("/");
         cookie.set_max_age(TimeDuration::days(7));
         let updated_jar = jar.add(cookie);
