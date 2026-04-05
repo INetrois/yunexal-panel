@@ -451,8 +451,7 @@ pub async fn api_server_disk(
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id)
         .await
         .unwrap_or_else(|_| docker_id.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let path_str = volume_path.to_string_lossy().to_string();
 
@@ -484,10 +483,21 @@ pub async fn api_server_disk(
         })
         .unwrap_or((0, 0));
 
+    // Read disk_limit label from the container so the client can show used-vs-quota.
+    let disk_quota_bytes: u64 = state.docker
+        .inspect_container(&docker_id, None).await
+        .ok()
+        .and_then(|c| c.config)
+        .and_then(|cfg| cfg.labels)
+        .and_then(|labels| labels.get("yunexal.disk_limit").cloned())
+        .and_then(|s| docker::parse_disk_limit(&s))
+        .unwrap_or(0);
+
     Json(serde_json::json!({
         "volume_used": volume_used,
         "disk_total": disk_total,
         "disk_used": disk_used,
+        "disk_quota_bytes": disk_quota_bytes,
     })).into_response()
 }
 

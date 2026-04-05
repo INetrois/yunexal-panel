@@ -7,8 +7,7 @@ use anyhow::{Result, Context};
 pub type FileEntry = (String, Option<u64>);
 
 pub async fn list_files(_docker: &Docker, id: &str, path: &str) -> Result<Vec<FileEntry>> {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(id);
+    let volume_path = volume_dir_to_path(id);
 
     let rel_path = path.trim_start_matches('/');
     let target_joined = volume_path.join(rel_path);
@@ -81,13 +80,27 @@ pub async fn copy_image_files_to_volume(container_id: &str, src_path: &str, dest
     Ok(())
 }
 
+// ── Volume path helper ─────────────────────────────────────────────────────
+
+/// Converts a `volume_dir` (as returned by `get_volume_dir`) to an absolute
+/// `PathBuf`. If `volume_dir` is already absolute, returns it as-is.
+/// Otherwise, resolves relative to `<cwd>/volumes/`.
+pub fn volume_dir_to_path(volume_dir: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(volume_dir);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        cwd.join("volumes").join(volume_dir)
+    }
+}
+
 // ── Volume directory resolution ──────────────────────────────────────────────
 
-/// Returns the volume directory key for this container.
-/// Resolution order:
-///   1. Label `yunexal.volume_dir` — if the directory actually exists on disk.
-///   2. Full 64-char container ID — if `./volumes/<full_id>` exists on disk.
-///   3. Label value or container name as a last-resort string (directory may be missing).
+/// Returns the volume path for this container as a String.
+/// - If the bind mount source exists on disk, returns the full absolute path.
+/// - If the `yunexal.volume_dir` label key exists under `cwd/volumes/`, returns the key.
+/// - Falls back to label / container name.
 pub async fn get_volume_dir(docker: &Docker, id: &str) -> Result<String> {
     let c = docker.inspect_container(id, None).await
         .context("Container not found")?;
@@ -99,36 +112,46 @@ pub async fn get_volume_dir(docker: &Docker, id: &str) -> Result<String> {
         .and_then(|cfg| cfg.labels.as_ref())
         .and_then(|labels| labels.get("yunexal.volume_dir").cloned());
 
-    // Extract volume dir from the actual bind mount source path
-    let bind_dir = c.host_config.as_ref()
+    // Full bind-mount source path (e.g. "/var/lib/docker/yunexal-volumes/abc123")
+    let bind_source = c.host_config.as_ref()
         .and_then(|hc| hc.binds.as_ref())
         .and_then(|binds| binds.first())
         .and_then(|b| b.split(':').next())
-        .and_then(|path| std::path::Path::new(path).file_name())
-        .and_then(|f| f.to_str())
         .map(|s| s.to_string());
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    // 1. Label path exists on disk
+    // 1. Bind mount source is absolute and exists — return the full path directly.
+    if let Some(ref src) = bind_source {
+        let src_path = std::path::Path::new(src);
+        if src_path.is_absolute() && src_path.exists() {
+            return Ok(src.clone());
+        }
+    }
+
+    // 2. Label key exists under cwd/volumes
     if let Some(ref key) = label_key {
         if cwd.join("volumes").join(key).exists() {
             return Ok(key.clone());
         }
     }
 
-    // 2. Bind mount source directory exists on disk
-    if let Some(ref dir) = bind_dir {
-        if cwd.join("volumes").join(dir).exists() {
-            return Ok(dir.clone());
+    // 3. Bind source filename exists under cwd/volumes (legacy containers)
+    if let Some(ref src) = bind_source {
+        let dir_name = std::path::Path::new(src)
+            .file_name().and_then(|f| f.to_str()).map(|s| s.to_string());
+        if let Some(ref dir) = dir_name {
+            if cwd.join("volumes").join(dir).exists() {
+                return Ok(dir.clone());
+            }
         }
     }
 
-    // 3. Full container ID directory exists on disk
+    // 4. Full container ID under cwd/volumes
     if !full_id.is_empty() && cwd.join("volumes").join(&full_id).exists() {
         return Ok(full_id);
     }
 
-    // 4. Fallback — return bind dir, label, or name even if missing
-    Ok(bind_dir.or(label_key).unwrap_or(name))
+    // 5. Fallback — return full bind source (possibly non-existent) or label or name
+    Ok(bind_source.or(label_key).unwrap_or(name))
 }

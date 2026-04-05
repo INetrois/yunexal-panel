@@ -140,11 +140,74 @@
 
         <!-- ─── PANEL: Themes ─── -->
         <div id="tab-themes" class="yu-tab-panel{% if tab == "themes" %} active{% endif %}">
-            <div class="yu-page-hd"><div style="font-size:1.2rem;font-weight:700;letter-spacing:-.03em;margin-bottom:.2rem;">Themes</div><p style="font-size:.825rem;color:var(--muted);margin:0;">Panel colour scheme &amp; branding customisation</p></div>
-            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:340px;gap:1.25rem;">
-                <div style="width:68px;height:68px;border-radius:50%;background:rgba(124,58,237,.12);border:1px solid rgba(124,58,237,.25);display:flex;align-items:center;justify-content:center;"><i class="bi bi-palette" style="font-size:1.8rem;color:#a78bfa;"></i></div>
-                <div style="text-align:center;"><div style="font-size:1rem;font-weight:700;letter-spacing:-.02em;margin-bottom:.4rem;">In Development</div><p style="font-size:.845rem;color:var(--muted);max-width:360px;margin:0;">Themes are coming soon. You will be able to switch between dark/light mode, pick a custom accent colour, and upload your own logo for the client portal.</p></div>
-                <span style="font-size:.72rem;font-weight:600;letter-spacing:.06em;background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:6px;padding:.3rem .75rem;">COMING SOON</span>
+            <div class="yu-page-hd">
+                <div style="font-size:1.2rem;font-weight:700;letter-spacing:-.03em;margin-bottom:.2rem;">Themes</div>
+                <p style="font-size:.825rem;color:var(--muted);margin:0;">Panel colour scheme &amp; branding customisation. <span style="color:#f87171;">Root only.</span></p>
+            </div>
+
+            <!-- Favicon -->
+            <div class="yu-panel" style="margin-top:1.5rem;">
+                <div class="yu-panel-hd"><i class="bi bi-image text-muted"></i> Favicon</div>
+                <div class="yu-panel-bd">
+                    <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Panel favicon</p>
+                    <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Shown in browser tabs and bookmarks. JPEG, PNG, GIF, WebP or ICO. Max 5 MB.</p>
+                    <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+                        <img id="favicon-preview" src="/favicon.ico" alt="favicon" style="width:48px;height:48px;object-fit:contain;border-radius:8px;border:1px solid var(--bdr);background:var(--card);">
+                        <div>
+                            <input type="file" id="favicon-file-input" accept="image/*" style="display:none;" onchange="uploadFavicon()">
+                            <button class="btn-yu btn-yu-primary" style="font-size:.8rem;padding:.4rem .9rem;" onclick="document.getElementById('favicon-file-input').click()">
+                                <i class="bi bi-upload"></i> Upload new favicon
+                            </button>
+                            <div id="favicon-result" style="margin-top:.5rem;font-size:.82rem;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Accent colour -->
+            <div class="yu-panel" style="margin-top:1rem;">
+                <div class="yu-panel-hd"><i class="bi bi-palette text-muted"></i> Accent Colour</div>
+                <div class="yu-panel-bd">
+                    <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Primary accent</p>
+                    <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Sets the <code style="font-size:.78rem;">--accent</code> CSS variable used for buttons, highlights and badges across all pages.</p>
+                    <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;">
+                        <input type="color" id="accent-color-input" value="{{ panel_accent }}" style="width:48px;height:36px;padding:2px;border:1px solid var(--bdr);border-radius:8px;background:var(--card);cursor:pointer;" oninput="previewAccent(this.value)">
+                        <span id="accent-hex-label" style="font-family:monospace;font-size:.85rem;color:var(--muted);">{{ panel_accent }}</span>
+                        <button class="btn-yu btn-yu-primary" style="font-size:.8rem;padding:.4rem .9rem;" onclick="saveAccent()">
+                            <i class="bi bi-floppy"></i> Save
+                        </button>
+                        <button class="btn-yu" style="font-size:.8rem;padding:.4rem .9rem;" onclick="resetAccent()">
+                            Reset default
+                        </button>
+                    </div>
+                    <div id="accent-result" style="margin-top:.5rem;font-size:.82rem;"></div>
+                    <div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap;" id="accent-swatches">
+                        <span class="accent-swatch" style="background:#7c3aed;" title="#7c3aed" onclick="pickSwatch('#7c3aed')"></span>
+                        <span class="accent-swatch" style="background:#2563eb;" title="#2563eb" onclick="pickSwatch('#2563eb')"></span>
+                        <span class="accent-swatch" style="background:#059669;" title="#059669" onclick="pickSwatch('#059669')"></span>
+                        <span class="accent-swatch" style="background:#dc2626;" title="#dc2626" onclick="pickSwatch('#dc2626')"></span>
+                        <span class="accent-swatch" style="background:#d97706;" title="#d97706" onclick="pickSwatch('#d97706')"></span>
+                        <span class="accent-swatch" style="background:#db2777;" title="#db2777" onclick="pickSwatch('#db2777')"></span>
+                        <span class="accent-swatch" style="background:#0891b2;" title="#0891b2" onclick="pickSwatch('#0891b2')"></span>
+                        <span class="accent-swatch" style="background:#64748b;" title="#64748b" onclick="pickSwatch('#64748b')"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Panel name -->
+            <div class="yu-panel" style="margin-top:1rem;">
+                <div class="yu-panel-hd"><i class="bi bi-type text-muted"></i> Panel Branding</div>
+                <div class="yu-panel-bd">
+                    <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Panel name</p>
+                    <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Displayed in the browser tab title and the sidebar header.</p>
+                    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+                        <input type="text" id="panel-name-input" class="yu-input" value="{{ panel_name }}" style="width:280px;font-size:.85rem;" placeholder="Yunexal Panel" maxlength="60">
+                        <button class="btn-yu btn-yu-primary" style="font-size:.8rem;padding:.4rem .9rem;" onclick="savePanelName()">
+                            <i class="bi bi-floppy"></i> Save
+                        </button>
+                    </div>
+                    <div id="panel-name-result" style="margin-top:.5rem;font-size:.82rem;"></div>
+                </div>
             </div>
         </div>
 

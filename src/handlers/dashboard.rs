@@ -130,5 +130,9 @@ pub async fn new_server_page(
             created_at: u.created_at,
         })
         .collect();
-    render(NewServerTemplate { error: None, users, cf_token: state.cf_analytics_token.clone(), nonce })
+    let default_quota_gb = {
+        let v = db::get_panel_setting(&state.db, "docker_default_quota").await;
+        if v.is_empty() { "15".to_string() } else { v }
+    };
+    render(NewServerTemplate { error: None, fix_cmd: None, users, cf_token: state.cf_analytics_token.clone(), nonce, default_quota_gb })
 }

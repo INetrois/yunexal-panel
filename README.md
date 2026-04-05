@@ -288,6 +288,7 @@ sudo certbot --nginx -d panel.example.com
 | **CPU** | For the panel process | 1 vCPU | 2 vCPU |
 | **GPU** | For hardware acceleration (optional) | None | Recommended if using GPU-intensive features |
 | **Disk space** | For the panel binary, database, and volumes | 100 MB | 500 MB |
+| **Filesystem** | For volume management and quotas | Any without disk quotas | XFS or ZFS with pquota/prjquota/refquota for disk quotas |
 | **Ports** | Panel port (default: 3000) + container ports | 1 free port for the panel + container ports | Multiple free ports for the panel and containers |
 | **Reverse proxy** | For production use with a domain and HTTPS | Optional (HTTP-only access) | Recommended (HTTPS + SSL with WebSocket support) |
 | **Ethernet** | For network connectivity | 100 Mbps | 1 Gbps or higher |

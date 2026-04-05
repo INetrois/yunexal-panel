@@ -330,8 +330,7 @@ pub async fn delete_server(
     let _ = docker::stop_container(&state.docker, &docker_id).await;
 
     // Delete volume directory
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
     // Remove XFS quota entries before deleting the directory
     docker::remove_xfs_quota(db_id as u32, &volume_path).await;
     if volume_path.exists() {
@@ -426,8 +425,7 @@ pub async fn api_factory_reset(
     let _ = docker::stop_container(&state.docker, &docker_id).await;
 
     // Wipe volume contents (keep directory)
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
     if volume_path.exists() {
         let abs = volume_path.canonicalize().unwrap_or(volume_path.clone());
         let mount_arg = format!("{}:/target", abs.display());

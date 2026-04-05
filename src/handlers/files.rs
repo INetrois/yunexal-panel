@@ -213,8 +213,7 @@ pub async fn list_files_api(
         .unwrap_or_else(|_| docker_id.clone());
 
     // ── Path traversal guard ──
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
     if resolve_path(&volume_path, &path).is_none() {
         return Html(String::from(r#"<div id="file-browser"><p style="color:var(--err);padding:1rem;">Access denied</p></div>"#)).into_response();
     }
@@ -315,8 +314,7 @@ pub async fn edit_file_page(
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id)
         .await
         .unwrap_or_else(|_| docker_id.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let file_path = match resolve_path(&volume_path, &query.path) {
         Some(p) => p,
@@ -385,8 +383,7 @@ pub async fn save_file_content(
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id)
         .await
         .unwrap_or_else(|_| docker_id.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let file_path = match resolve_path(&volume_path, &form.path) {
         Some(p) => p,
@@ -460,8 +457,7 @@ pub async fn create_new_file(
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id)
         .await
         .unwrap_or_else(|_| docker_id.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let name = form.name.trim();
     if name.is_empty() || name.contains('/') || name.contains('\\') || name.starts_with('.') {
@@ -578,8 +574,7 @@ pub async fn list_files_json(
         .await
         .unwrap_or_else(|_| docker_id.clone());
 
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
     if resolve_path(&volume_path, &path).is_none() {
         return (StatusCode::FORBIDDEN, Json(Vec::<FileJsonEntry>::new())).into_response();
     }
@@ -677,8 +672,7 @@ pub async fn delete_file(
     };
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id).await
         .unwrap_or_else(|_| docker_id.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let target = match resolve_path(&volume_path, &query.path) {
         Some(p) => p,
@@ -729,8 +723,7 @@ pub async fn rename_file(
     };
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id).await
         .unwrap_or_else(|_| docker_id.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let src = match resolve_path(&volume_path, &form.path) {
         Some(p) => p,
@@ -785,8 +778,7 @@ pub async fn copy_file(
     };
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id).await
         .unwrap_or_else(|_| docker_id.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let src = match resolve_path(&volume_path, &form.src) {
         Some(p) => p,
@@ -873,8 +865,7 @@ pub async fn upload_files(
     };
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id).await
         .unwrap_or_else(|_| docker_id.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let dest_dir = match resolve_path(&volume_path, &query.path) {
         Some(p) => p,
@@ -1027,8 +1018,7 @@ pub async fn extract_archive(
     };
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id).await
         .unwrap_or_else(|_| docker_id.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let archive_path = match resolve_path(&volume_path, &form.path) {
         Some(p) => p,
@@ -1115,8 +1105,7 @@ pub async fn create_archive(
     };
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id).await
         .unwrap_or_else(|_| docker_id.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let base_dir = match resolve_path(&volume_path, &form.dir) {
         Some(p) => p,
@@ -1201,8 +1190,7 @@ pub async fn bulk_delete(
     };
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id).await
         .unwrap_or_else(|_| docker_id.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let mut errors: Vec<String> = Vec::new();
     for line in form.paths.lines() {
@@ -1253,8 +1241,7 @@ pub async fn move_file(
     };
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id).await
         .unwrap_or_else(|_| docker_id.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volume_path = cwd.join("volumes").join(&volume_dir);
+    let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let src = match resolve_path(&volume_path, &form.src) {
         Some(p) => p,

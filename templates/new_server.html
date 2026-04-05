@@ -38,6 +38,15 @@
         <i class="bi bi-exclamation-triangle-fill"></i>
         <span>{{ error.as_ref().unwrap() }}</span>
     </div>
+    {% if fix_cmd.is_some() %}
+    <div class="yu-alert-fix" style="margin-top:.5rem;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:.85rem 1rem;font-size:.82rem;">
+        <div style="color:var(--muted);margin-bottom:.5rem;"><i class="bi bi-terminal"></i> Run this command on the server to fix it:</div>
+        <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;">
+            <code id="fix-cmd-code" style="flex:1;font-family:monospace;font-size:.8rem;color:#c4b5fd;word-break:break-all;">{{ fix_cmd.as_ref().unwrap() }}</code>
+            <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('fix-cmd-code').textContent).then(()=>{this.innerHTML='<i class=\'bi bi-check-lg\'></i> Copied';setTimeout(()=>this.innerHTML='<i class=\'bi bi-clipboard\'></i> Copy',2000)})" style="border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:#e2e8f0;border-radius:7px;padding:.25rem .65rem;font-size:.78rem;cursor:pointer;white-space:nowrap;"><i class="bi bi-clipboard"></i> Copy</button>
+        </div>
+    </div>
+    {% endif %}
     {% endif %}
 
     <div class="yu-alert-warn" id="xfs-warn-banner" style="display:none;">
@@ -135,7 +144,7 @@
                             <label class="field-label">Disk Limit</label>
                             <div class="input-group">
                                 <input type="number" class="form-control" id="gui_disk_val"
-                                    placeholder="Unlimited" oninput="updateYaml()">
+                                    placeholder="Unlimited" value="{{ default_quota_gb }}" oninput="updateYaml()">
                                 <select class="form-select" id="gui_disk_unit" style="max-width:72px;" onchange="updateYaml()">
                                     <option value="gb" selected>GB</option>
                                     <option value="mb">MB</option>
@@ -160,6 +169,26 @@
                                 <option value="unless-stopped" selected>Unless Stopped</option>
                                 <option value="on-failure">On Failure</option>
                             </select>
+                        </div>
+                        <div style="grid-column:span 2;">
+                            <label class="field-label">Storage Location <span style="font-size:.69rem;color:var(--muted);">where volumes are stored on the host</span></label>
+                            <!-- Hidden input submitted with the form -->
+                            <input type="hidden" name="container_storage_path" id="storage-path-hidden" value="">
+                            <!-- Custom dropdown -->
+                            <div class="stor-sel" id="stor-sel" tabindex="0"
+                                 onclick="storSelToggle(event)"
+                                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();storSelToggle(event);}else if(event.key==='Escape')storSelClose();">
+                                <div class="stor-sel-val">
+                                    <div class="stor-sel-icon"><i class="bi bi-hdd-fill" id="stor-sel-icon"></i></div>
+                                    <div class="stor-sel-info">
+                                        <span class="stor-sel-device" id="stor-sel-device">Loading…</span>
+                                        <span class="stor-sel-sub" id="stor-sel-sub"></span>
+                                    </div>
+                                    <i class="bi bi-chevron-down stor-sel-chev" id="stor-sel-chev"></i>
+                                </div>
+                                <div class="stor-sel-panel" id="stor-sel-panel"></div>
+                            </div>
+                            <div id="storage-path-note" style="margin-top:.45rem;font-size:.73rem;min-height:1.1rem;"></div>
                         </div>
                     </div>
                 </div>

@@ -139,12 +139,34 @@ fetch(`/api/servers/${YU_SERVER_ID}/disk`)
     .then(r => r.ok ? r.json() : null)
     .then(d => {
         if (!d) return;
-        const volMB   = (d.volume_used / 1048576).toFixed(0);
-        const totalGB = d.disk_total > 0 ? (d.disk_total / 1073741824).toFixed(1) : null;
-        document.getElementById('disk-space-val').textContent =
-            totalGB ? `${volMB} MB / ${totalGB} GB` : `${volMB} MB`;
-        const fsEl = document.getElementById('disk-space-fs');
-        if (fsEl) fsEl.textContent = totalGB ? 'volume used / disk total' : '';
+        const used      = d.volume_used  || 0;
+        const quota     = d.disk_quota_bytes || 0;
+        const diskTotal = d.disk_total   || 0;
+
+        const fmtBytes = b => b >= 1073741824
+            ? (b / 1073741824).toFixed(2) + ' GB'
+            : (b / 1048576).toFixed(0) + ' MB';
+
+        const valEl = document.getElementById('disk-space-val');
+        const fsEl  = document.getElementById('disk-space-fs');
+
+        if (quota > 0) {
+            // Show used vs allocated quota with a progress bar
+            const pct  = Math.min(100, (used / quota) * 100);
+            const barColor = pct > 85 ? '#f87171' : pct > 60 ? '#fbbf24' : '#34d399';
+            valEl.innerHTML = `<span style="font-size:.95rem;font-weight:600;">${fmtBytes(used)}</span>`
+                + `<span style="color:var(--muted);font-size:.78rem;"> / ${fmtBytes(quota)}</span>`;
+            if (fsEl) fsEl.innerHTML =
+                `<div style="margin-top:.4rem;background:rgba(255,255,255,.08);border-radius:4px;height:6px;overflow:hidden;">`
+                + `  <div style="height:100%;width:${pct.toFixed(1)}%;background:${barColor};border-radius:4px;transition:width .4s;"></div>`
+                + `</div>`
+                + `<div style="margin-top:.3rem;">${pct.toFixed(1)}% used of allocated quota</div>`;
+        } else {
+            // No quota — show volume used and optionally filesystem total
+            valEl.innerHTML = `<span style="font-weight:600;">${fmtBytes(used)}</span>`
+                + (diskTotal > 0 ? `<span style="color:var(--muted);font-size:.78rem;"> / ${fmtBytes(diskTotal)}</span>` : '');
+            if (fsEl) fsEl.textContent = diskTotal > 0 ? 'volume used / disk total' : 'volume used';
+        }
     }).catch(() => {});
 
 const _cmdInput = document.getElementById('cmd-input');
