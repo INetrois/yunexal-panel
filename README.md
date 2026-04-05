@@ -19,6 +19,7 @@ Templates and static assets are compiled into a single binary — no external ru
 - [Project Structure](#project-structure)
 - [Tech Stack](#tech-stack)
 - [License](#license)
+- [Contributors](CONTRIBUTORS.md)
 
 ---
 
