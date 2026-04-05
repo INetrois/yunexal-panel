@@ -40,6 +40,11 @@
     </div>
     {% endif %}
 
+    <div class="yu-alert-warn" id="xfs-warn-banner" style="display:none;">
+        <i class="bi bi-exclamation-triangle-fill"></i>
+        <span>The volumes directory is not on an XFS filesystem with <code style="font-size:.8em;">pquota</code>/<code style="font-size:.8em;">prjquota</code> mount options — <strong>disk_limit</strong> will have no effect.</span>
+    </div>
+
     <form action="/servers/new" method="POST" id="createServerForm" onsubmit="prepareSrvHiddenFields();">
     <div class="form-grid">
 

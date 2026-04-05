@@ -349,6 +349,16 @@ a { text-decoration: none; color: inherit; }
     display: flex; align-items: center; gap: .55rem;
     margin-bottom: 1.25rem;
 }
+.yu-alert-warn {
+    background: rgba(234,179,8,.08);
+    border: 1px solid rgba(234,179,8,.2);
+    color: #fde68a;
+    border-radius: 9px;
+    padding: .7rem 1rem;
+    font-size: .82rem;
+    display: flex; align-items: center; gap: .55rem;
+    margin-bottom: 1.25rem;
+}
 
 /* ── Proto select ─────────────────────────────── */
 .proto-sel {

@@ -4,6 +4,7 @@ mod images;
 mod files;
 mod network;
 mod edit;
+mod quota;
 
 pub use containers::*;
 pub use stats::*;
@@ -11,6 +12,7 @@ pub use images::*;
 pub use files::*;
 pub use network::*;
 pub use edit::*;
+pub use quota::{apply_xfs_quota, parse_disk_limit, remove_xfs_quota, xfs_pquota_mount};
 
 use bollard::Docker;
 use serde::{Deserialize, Serialize};

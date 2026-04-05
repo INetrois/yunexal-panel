@@ -60,12 +60,8 @@ impl ComposeService {
         // Resources
         let nano_cpus = self.cpus.map(|c| (c * 1_000_000_000.0) as i64);
         let memory = self.mem_limit.as_ref().map(|s| parse_bytes(s));
-
-        let storage_opt = self.disk_limit.as_ref().map(|s| {
-            let mut opts = HashMap::new();
-            opts.insert("size".to_string(), s.clone());
-            opts
-        });
+        // Note: disk_limit is enforced via XFS project quotas after container creation,
+        // not via Docker storage_opt (which requires devicemapper and rarely works).
 
         let host_config = HostConfig {
             port_bindings: if port_bindings.is_empty() { None } else { Some(port_bindings) },
@@ -81,7 +77,6 @@ impl ComposeService {
             }),
             nano_cpus,
             memory,
-            storage_opt,
             ..Default::default()
         };
 

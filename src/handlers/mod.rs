@@ -164,7 +164,7 @@ use dns::{
     api_server_dns_list, api_server_dns_add, api_server_dns_delete,
 };
 use auth::{login_page, login_submit, logout};
-use create::{api_image_env, api_image_env_overrides, api_local_images, create_server};
+use create::{api_image_env, api_image_env_overrides, api_local_images, api_xfs_check, create_server};
 use dashboard::{api_dashboard_json, dashboard, new_server_page, server_list_fragment};
 use files::{bulk_delete, copy_file, create_archive, create_new_file, delete_file, edit_file_page, extract_archive, list_files_api, list_files_json, move_file, rename_file, save_file_content, upload_files};
 use network::{api_add_port, api_get_bandwidth, api_remove_port, api_set_bandwidth, api_tag_port, api_toggle_port, api_toggle_port_ufw, api_server_disk, networking_page};
@@ -248,6 +248,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/image/env", get(api_image_env))
         .route("/api/image/env-overrides", get(api_image_env_overrides))
         .route("/api/image/local", get(api_local_images))
+        .route("/api/xfs-check", get(api_xfs_check))
         .route("/admin", get(admin_page))
         .route("/admin/{tab}", get(admin_tab_page))
         .route("/admin/servers/{id}/edit", get(admin_edit_page))

@@ -201,6 +201,13 @@ pub async fn create_server(
         return format!("Failed to create volume directory: {}", e).into_response();
     }
 
+    if docker::xfs_pquota_mount(&volume_host_path).is_none() {
+        warn!(
+            "Volumes directory '{}' is not on XFS with pquota/prjquota — disk_limit will have no effect",
+            volume_host_path.display()
+        );
+    }
+
     let mut host_config = config.host_config.clone().unwrap_or_default();
     let mut binds = host_config.binds.clone().unwrap_or_default();
 
@@ -264,11 +271,6 @@ pub async fn create_server(
         {
             error!("Failed to copy image files to volume: {}", e);
         }
-        // Remove eula.txt — user must accept EULA manually via the Files tab.
-        let eula_path = volume_host_path.join("eula.txt");
-        if eula_path.exists() {
-            let _ = tokio::fs::remove_file(&eula_path).await;
-        }
     }
 
     // Persist initial bandwidth limit if provided.
@@ -302,6 +304,22 @@ pub async fn create_server(
     };
 
     if db_id > 0 {
+        // ── XFS project quota ─────────────────────────────────────────────────
+        if let Some(ref limit_str) = service.disk_limit {
+            if let Some(limit_bytes) = docker::parse_disk_limit(limit_str) {
+                if docker::xfs_pquota_mount(&volume_host_path).is_some() {
+                    if let Err(e) = docker::apply_xfs_quota(&volume_host_path, db_id as u32, limit_bytes).await {
+                        warn!("Server #{}: failed to apply XFS quota (disk_limit='{}'): {}", db_id, limit_str, e);
+                    }
+                } else {
+                    warn!(
+                        "Server #{}: disk_limit='{}' specified but the volumes directory is not on XFS with pquota/prjquota — quota will not be enforced",
+                        db_id, limit_str
+                    );
+                }
+            }
+        }
+
         // ── Auto-create A + SRV DNS records ───────────────────────────────────
         if form.dns_srv_enabled.trim() == "1" {
             let pid: Option<i64> = form.dns_provider_id.trim().parse().ok();
@@ -452,4 +470,14 @@ pub async fn api_local_images(State(state): State<AppState>) -> impl IntoRespons
         Err(_) => vec![],
     };
     Json(serde_json::json!({ "tags": tags }))
+}
+
+/// Returns whether the volumes directory is on XFS with pquota/prjquota.
+/// Used by the "New Server" page to show a warning if disk limiting won't work.
+pub async fn api_xfs_check() -> impl IntoResponse {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let volumes_path = cwd.join("volumes");
+    let _ = tokio::fs::create_dir_all(&volumes_path).await;
+    let ok = docker::xfs_pquota_mount(&volumes_path).is_some();
+    Json(serde_json::json!({ "ok": ok }))
 }

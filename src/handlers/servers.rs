@@ -332,6 +332,8 @@ pub async fn delete_server(
     // Delete volume directory
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let volume_path = cwd.join("volumes").join(&volume_dir);
+    // Remove XFS quota entries before deleting the directory
+    docker::remove_xfs_quota(db_id as u32, &volume_path).await;
     if volume_path.exists() {
         let abs = volume_path.canonicalize().unwrap_or(volume_path.clone());
         let mount_arg = format!("{}:/target", abs.display());
