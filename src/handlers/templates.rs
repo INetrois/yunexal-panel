@@ -47,9 +47,11 @@ pub struct ServerCardTemplate {
 #[template(path = "new_server.html")]
 pub struct NewServerTemplate {
     pub error: Option<String>,
+    pub fix_cmd: Option<String>,
     pub users: Vec<UserInfo>,
     pub cf_token: String,
     pub nonce: String,
+    pub default_quota_gb: String,
 }
 
 #[derive(Template)]
@@ -180,6 +182,10 @@ pub struct AdminTemplate {
     pub settings_cf_l7_enabled: bool,
     pub cf_l7_threshold: String,
     pub cf_l7_ips_min: String,
+    pub docker_default_quota: String,
+    pub container_storage_path: String,
+    pub panel_accent: String,
+    pub panel_name: String,
 }
 
 #[derive(Template)]
@@ -255,6 +261,9 @@ pub struct CreateServerForm {
     /// IPv4 address for the A record
     #[serde(default)]
     pub dns_a_ip: String,
+    /// Custom storage path for this container's volume. Empty = use panel default.
+    #[serde(default)]
+    pub container_storage_path: String,
 }
 
 #[derive(Deserialize)]

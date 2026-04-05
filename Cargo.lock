@@ -4078,7 +4078,7 @@ dependencies = [
 
 [[package]]
 name = "yunexal-panel"
-version = "0.4.1"
+version = "0.0.0-snapshot-26m04d05a"
 dependencies = [
  "anyhow",
  "argon2",

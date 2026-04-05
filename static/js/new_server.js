@@ -140,6 +140,161 @@ fetch('/api/xfs-check').then(r => r.json()).then(d => {
     if (!d.ok) document.getElementById('xfs-warn-banner').style.display = '';
 }).catch(() => {});
 
+// ── Custom storage selector ──────────────────────────────────────────────────
+
+let _storMounts = []; // populated after fetch
+let _storIdx    = 0;  // currently selected index
+
+function _storIconClass(m) {
+    if (m.is_default) return 'bi-folder2';
+    const d = (m.device || '').toLowerCase();
+    if (d.includes('nvme')) return 'bi-device-ssd-fill';
+    if (d.includes('sd') || d.includes('hd')) return 'bi-hdd-fill';
+    return 'bi-hdd-fill';
+}
+
+function _storBarColor(pct) {
+    return pct > 80 ? '#f87171' : pct > 55 ? '#fbbf24' : '#34d399';
+}
+
+function _storRenderTrigger() {
+    const m = _storMounts[_storIdx];
+    if (!m) return;
+    const iconEl   = document.getElementById('stor-sel-icon');
+    const deviceEl = document.getElementById('stor-sel-device');
+    const subEl    = document.getElementById('stor-sel-sub');
+    const hidden   = document.getElementById('storage-path-hidden');
+    if (iconEl)  { iconEl.className = 'bi ' + _storIconClass(m); }
+    if (deviceEl) deviceEl.textContent = m.device;
+    if (subEl)    subEl.textContent    = m.sub;
+    if (hidden)   hidden.value         = m.value;
+    _storRenderNote(m);
+}
+
+function _storRenderPanel() {
+    const panel = document.getElementById('stor-sel-panel');
+    if (!panel) return;
+    panel.innerHTML = _storMounts.map((m, i) => {
+        const icon    = _storIconClass(m);
+        const badge   = m.is_default ? '' : (m.has_prjquota
+            ? `<span class="stor-opt-badge pq">prjquota</span>`
+            : `<span class="stor-opt-badge nq">no quota</span>`);
+        const row2    = m.path2 ? `<div class="stor-opt-row2">${esc(m.path2)}</div>` : '';
+        const barFill = m.total > 0
+            ? `<div class="stor-opt-usage">
+                 <div class="stor-opt-bar"><div class="stor-opt-bar-fill" style="width:${Math.min(m.pct,100)}%;background:${_storBarColor(m.pct)};"></div></div>
+                 <span class="stor-opt-free">${m.free} free</span>
+               </div>` : '';
+        const check = i === _storIdx ? '<i class="bi bi-check2"></i>' : '';
+        return `<div class="stor-opt${i === _storIdx ? ' active' : ''}" onclick="storSelPick(${i})">
+            <div class="stor-opt-icon"><i class="bi ${icon}"></i></div>
+            <div class="stor-opt-body">
+                <div class="stor-opt-row1">
+                    <span class="stor-opt-device">${esc(m.device)}</span>
+                    <span class="stor-opt-mount">${esc(m.mount)}</span>
+                    ${badge}
+                </div>
+                ${row2}
+            </div>
+            ${barFill}
+            <div class="stor-opt-check">${check}</div>
+        </div>`;
+    }).join('');
+}
+
+function _storRenderNote(m) {
+    const note = document.getElementById('storage-path-note');
+    if (!note) return;
+    if (!m || m.is_default) { note.innerHTML = ''; return; }
+    if (m.has_prjquota) {
+        note.innerHTML = `<span style="color:#34d399;"><i class="bi bi-check-circle"></i> XFS prjquota active on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits enforced.</span>`;
+    } else {
+        note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> No prjquota on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits will <strong>not</strong> be enforced.</span>`;
+    }
+}
+
+function storSelToggle(e) {
+    if (e) e.stopPropagation();
+    const el    = document.getElementById('stor-sel');
+    const panel = document.getElementById('stor-sel-panel');
+    if (!el || !panel) return;
+    if (el.classList.contains('open')) {
+        el.classList.remove('open');
+    } else {
+        _storRenderPanel(); // refresh marks
+        // Position the fixed panel under the trigger
+        const rect = el.getBoundingClientRect();
+        panel.style.top   = (rect.bottom + 5) + 'px';
+        panel.style.left  = rect.left + 'px';
+        panel.style.width = rect.width + 'px';
+        el.classList.add('open');
+    }
+}
+
+function storSelClose() {
+    const el = document.getElementById('stor-sel');
+    if (el) el.classList.remove('open');
+}
+
+function storSelPick(idx) {
+    _storIdx = idx;
+    _storRenderTrigger();
+    storSelClose();
+}
+
+// Close on outside click
+document.addEventListener('click', e => {
+    const el = document.getElementById('stor-sel');
+    if (el && !el.contains(e.target)) storSelClose();
+});
+
+// ── Fetch and initialise ─────────────────────────────────────────────────────
+(function loadStorMounts() {
+    // Default-only fallback
+    function initDefault(hint) {
+        _storMounts = [{
+            device: 'Default', mount: '', sub: hint || 'volumes/ in panel directory',
+            path2: '', value: '', is_default: true, has_prjquota: false,
+            free: '--', total: 0, pct: 0,
+        }];
+        _storIdx = 0;
+        _storRenderTrigger();
+    }
+
+    initDefault('loading…');
+
+    fetch('/api/admin/storage/mounts', { credentials: 'same-origin' })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+            if (!d || !d.ok) { initDefault(); return; }
+            const cp = d.current_path || '';
+            _storMounts = [{
+                device: 'Default', mount: '',
+                sub: cp ? `panel default → ${cp}` : 'panel default  (volumes/)',
+                path2: '', value: '', is_default: true, has_prjquota: false,
+                free: '--', total: 0, pct: 0,
+            }];
+            (d.mounts || []).forEach(m => {
+                const sp = m.suggested_path || '';
+                _storMounts.push({
+                    device:       m.device || 'disk',
+                    mount:        m.mount  || '',
+                    sub:          sp || m.mount,
+                    path2:        sp ? `→ ${sp}` : '',
+                    value:        sp,
+                    is_default:   false,
+                    has_prjquota: !!m.has_prjquota,
+                    free:         `${m.free_gib} GiB`,
+                    total:        parseFloat(m.total_gib) || 0,
+                    pct:          m.used_pct || 0,
+                });
+            });
+            _storIdx = 0;
+            _storRenderTrigger();
+        })
+        .catch(() => initDefault());
+})();
+
 // ── Fetch ENV ────────────────────────────────────────────────────────────────
 
 async function fetchImageEnv() {
@@ -196,37 +351,40 @@ async function fetchImageEnv() {
 
 // ── Monaco init ──────────────────────────────────────────────────────────────
 
-require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' } });
-require(['vs/editor/editor.main'], function () {
-    window.yamlEditor = monaco.editor.create(document.getElementById('yaml-editor-container'), {
-        value: '',
-        language: 'yaml',
-        theme: 'vs-dark',
-        automaticLayout: true,
-        minimap: { enabled: false },
-        scrollBeyondLastLine: false,
-        fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
-        fontSize: 12,
-        lineHeight: 19,
-        lineNumbers: 'on',
-        renderLineHighlight: 'gutter',
-        roundedSelection: true,
-        scrollbar: { verticalScrollbarSize: 4, horizontalScrollbarSize: 4 },
-        padding: { top: 10, bottom: 10 },
-        wordWrap: 'off',
-        overviewRulerLanes: 0,
-        hideCursorInOverviewRuler: true,
-        overviewRulerBorder: false,
-        glyphMargin: false,
-        folding: true,
-        renderWhitespace: 'none',
-        bracketPairColorization: { enabled: true },
+if (!window.__monacoEditorReady) {
+    window.__monacoEditorReady = true;
+    require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' } });
+    require(['vs/editor/editor.main'], function () {
+        window.yamlEditor = monaco.editor.create(document.getElementById('yaml-editor-container'), {
+            value: '',
+            language: 'yaml',
+            theme: 'vs-dark',
+            automaticLayout: true,
+            minimap: { enabled: false },
+            scrollBeyondLastLine: false,
+            fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+            fontSize: 12,
+            lineHeight: 19,
+            lineNumbers: 'on',
+            renderLineHighlight: 'gutter',
+            roundedSelection: true,
+            scrollbar: { verticalScrollbarSize: 4, horizontalScrollbarSize: 4 },
+            padding: { top: 10, bottom: 10 },
+            wordWrap: 'off',
+            overviewRulerLanes: 0,
+            hideCursorInOverviewRuler: true,
+            overviewRulerBorder: false,
+            glyphMargin: false,
+            folding: true,
+            renderWhitespace: 'none',
+            bracketPairColorization: { enabled: true },
+        });
+        window.yamlEditor.onDidChangeModelContent(() => {
+            document.getElementById('config').value = window.yamlEditor.getValue();
+        });
+        updateYaml();
     });
-    window.yamlEditor.onDidChangeModelContent(() => {
-        document.getElementById('config').value = window.yamlEditor.getValue();
-    });
-    updateYaml();
-});
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function esc(s) {

@@ -36,7 +36,7 @@ pub async fn create_server(
 
     macro_rules! err {
         ($msg:expr) => {{
-            return render(NewServerTemplate { users: users.clone(), error: Some($msg), cf_token: state.cf_analytics_token.clone(), nonce: nonce.clone() })
+            return render(NewServerTemplate { users: users.clone(), error: Some($msg), fix_cmd: None, cf_token: state.cf_analytics_token.clone(), nonce: nonce.clone(), default_quota_gb: "15".to_string() })
                 .into_response();
         }};
     }
@@ -156,8 +156,10 @@ pub async fn create_server(
         Ok(true) => return render(NewServerTemplate {
             users: users.clone(),
             error: Some(format!("A server named '{}' already exists. Choose a different name.", raw_name)),
+            fix_cmd: None,
             cf_token: state.cf_analytics_token.clone(),
             nonce: nonce.clone(),
+            default_quota_gb: "15".to_string(),
         }).into_response(),
         Err(e) => warn!("server_name_exists check failed: {}", e),
         Ok(false) => {}
@@ -195,15 +197,72 @@ pub async fn create_server(
         .map(char::from)
         .map(|c| c.to_ascii_lowercase())
         .collect();
-    let volume_host_path = cwd.join("volumes").join(&volume_key);
 
-    if let Err(e) = tokio::fs::create_dir_all(&volume_host_path).await {
-        return format!("Failed to create volume directory: {}", e).into_response();
+    // Determine volumes base directory: form override → panel setting → cwd/volumes
+    let volumes_base = {
+        let form_path = form.container_storage_path.trim();
+        if !form_path.is_empty() {
+            std::path::PathBuf::from(form_path)
+        } else {
+            let db_path = db::get_panel_setting(&state.db, "container_storage_path").await;
+            if db_path.trim().is_empty() {
+                cwd.join("volumes")
+            } else {
+                std::path::PathBuf::from(db_path.trim().to_string())
+            }
+        }
+    };
+    let volume_host_path = volumes_base.join(&volume_key);
+
+    // For ZFS mounts: create a child dataset (which creates its own mountpoint).
+    // For Btrfs mounts: create a subvolume (apply_btrfs_quota handles creation).
+    // For all others: create the directory normally.
+    if docker::zfs_dataset_for(&volumes_base).is_some() {
+        // Pre-create the child ZFS dataset so the bind mount path exists before container launch.
+        // Quota/refquota is set later once db_id is known.
+        if let Err(e) = tokio::process::Command::new("zfs")
+            .args(["create", &format!("{}/{}", docker::zfs_dataset_for(&volumes_base).unwrap(), &volume_key)])
+            .status()
+            .await
+        {
+            return format!("Failed to create ZFS dataset for volume: {}", e).into_response();
+        }
+    } else if docker::btrfs_mount_for(&volumes_base).is_some() {
+        // Pre-create a Btrfs subvolume; quota will be applied after db_id is known.
+        if let Err(e) = tokio::process::Command::new("btrfs")
+            .args(["subvolume", "create", &volume_host_path.to_string_lossy().to_string()])
+            .status()
+            .await
+        {
+            return format!("Failed to create Btrfs subvolume for volume: {}", e).into_response();
+        }
+    } else if let Err(e) = tokio::fs::create_dir_all(&volume_host_path).await {
+        let fix_cmd = if e.raw_os_error() == Some(13) {
+            // EACCES — either the volumes dir doesn't exist, its parent isn't traversable
+            // (e.g. /var/lib/docker is 710), or it's not owned by the panel user.
+            let path = volumes_base.display();
+            let parent = volumes_base.parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            Some(format!(
+                "sudo chmod 711 {parent} && sudo mkdir -p {path} && sudo chown $(whoami):$(whoami) {path}",
+            ))
+        } else {
+            None
+        };
+        return render(NewServerTemplate {
+            users: users.clone(),
+            error: Some(format!("Failed to create volume directory: {}", e)),
+            fix_cmd,
+            cf_token: state.cf_analytics_token.clone(),
+            nonce: nonce.clone(),
+            default_quota_gb: "15".to_string(),
+        }).into_response();
     }
 
-    if docker::xfs_pquota_mount(&volume_host_path).is_none() {
+    if docker::xfs_pquota_mount(&volumes_base).is_none() && docker::zfs_dataset_for(&volumes_base).is_none() {
         warn!(
-            "Volumes directory '{}' is not on XFS with pquota/prjquota — disk_limit will have no effect",
+            "Volumes directory '{}' is not on XFS+prjquota or ZFS — disk_limit will have no effect",
             volume_host_path.display()
         );
     }
@@ -236,6 +295,10 @@ pub async fn create_server(
     let mut labels = std::collections::HashMap::new();
     labels.insert("yunexal.managed".to_string(), "true".to_string());
     labels.insert("yunexal.volume_dir".to_string(), volume_key.clone());
+    // Persist disk_limit so the console page can show used-vs-quota progress.
+    if let Some(ref limit_str) = service.disk_limit {
+        labels.insert("yunexal.disk_limit".to_string(), limit_str.clone());
+    }
 
     // ── Per-container network isolation ─────────────────────────────────────
     // Each container gets its own bridge so it is invisible to every other
@@ -304,16 +367,30 @@ pub async fn create_server(
     };
 
     if db_id > 0 {
-        // ── XFS project quota ─────────────────────────────────────────────────
+        // ── Disk quota (XFS / ZFS / Btrfs) ───────────────────────────────────
         if let Some(ref limit_str) = service.disk_limit {
             if let Some(limit_bytes) = docker::parse_disk_limit(limit_str) {
                 if docker::xfs_pquota_mount(&volume_host_path).is_some() {
                     if let Err(e) = docker::apply_xfs_quota(&volume_host_path, db_id as u32, limit_bytes).await {
                         warn!("Server #{}: failed to apply XFS quota (disk_limit='{}'): {}", db_id, limit_str, e);
                     }
+                } else if docker::zfs_dataset_for(&volume_host_path).is_some() {
+                    // Dataset was pre-created; set refquota only (apply_zfs_quota handles "already exists")
+                    if let Err(e) = docker::apply_zfs_quota(&volume_host_path, limit_bytes).await {
+                        warn!("Server #{}: failed to apply ZFS quota (disk_limit='{}'): {}", db_id, limit_str, e);
+                    }
+                } else if docker::btrfs_mount_for(&volume_host_path).is_some() {
+                    // Subvolume was pre-created; apply_btrfs_quota sets the qgroup limit.
+                    if let Err(e) = docker::apply_btrfs_quota(&volume_host_path, limit_bytes).await {
+                        warn!("Server #{}: failed to apply Btrfs quota (disk_limit='{}'): {}", db_id, limit_str, e);
+                    }
+                } else if docker::ext4_pquota_mount(&volume_host_path).is_some() {
+                    if let Err(e) = docker::apply_ext4_quota(&volume_host_path, db_id as u32, limit_bytes).await {
+                        warn!("Server #{}: failed to apply ext4 quota (disk_limit='{}'): {}", db_id, limit_str, e);
+                    }
                 } else {
                     warn!(
-                        "Server #{}: disk_limit='{}' specified but the volumes directory is not on XFS with pquota/prjquota — quota will not be enforced",
+                        "Server #{}: disk_limit='{}' specified but the volumes directory is not on XFS+prjquota, ZFS, Btrfs, or ext4+prjquota — quota will not be enforced",
                         db_id, limit_str
                     );
                 }
@@ -475,9 +552,15 @@ pub async fn api_local_images(State(state): State<AppState>) -> impl IntoRespons
 /// Returns whether the volumes directory is on XFS with pquota/prjquota.
 /// Used by the "New Server" page to show a warning if disk limiting won't work.
 pub async fn api_xfs_check() -> impl IntoResponse {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let volumes_path = cwd.join("volumes");
-    let _ = tokio::fs::create_dir_all(&volumes_path).await;
-    let ok = docker::xfs_pquota_mount(&volumes_path).is_some();
+    // Show a warning only if no XFS mount with prjquota/pquota exists anywhere on the system.
+    let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+    let ok = mounts.lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        let _dev   = parts.next();
+        let _mount = parts.next();
+        let fstype = parts.next().unwrap_or("");
+        let opts   = parts.next().unwrap_or("");
+        fstype == "xfs" && opts.split(',').any(|o| o == "pquota" || o == "prjquota")
+    });
     Json(serde_json::json!({ "ok": ok }))
 }

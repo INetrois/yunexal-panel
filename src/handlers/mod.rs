@@ -10,6 +10,7 @@ pub mod templates;
 pub mod ws;
 
 use axum::{
+    extract::State,
     http::{header, HeaderValue, StatusCode},
     middleware,
     response::{Html, IntoResponse},
@@ -19,6 +20,7 @@ use axum::{
 use axum_embed::ServeEmbed;
 use rust_embed::Embed;
 use crate::auth as auth_middleware;
+use crate::db;
 use crate::state::AppState;
 use std::net::SocketAddr;
 use axum::extract::ConnectInfo;
@@ -41,6 +43,52 @@ async fn serve_embedded(path: &str, content_type: &'static str) -> impl IntoResp
 }
 async fn serve_manifest() -> impl IntoResponse { serve_embedded("manifest.json", "application/json").await }
 async fn serve_sw()       -> impl IntoResponse { serve_embedded("sw.js", "application/javascript").await }
+
+/// GET /favicon.ico — serves the custom favicon from {cwd}/custom/favicon.{ext}
+/// if one has been uploaded, otherwise falls back to the embedded fav.jpg.
+async fn serve_favicon(State(state): State<AppState>) -> impl IntoResponse {
+    let ext = db::get_panel_setting(&state.db, "panel_favicon").await;
+    if !ext.is_empty() {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let path = cwd.join("custom").join(format!("favicon.{ext}"));
+        if let Ok(data) = tokio::fs::read(&path).await {
+            let ct = match ext.as_str() {
+                "png"  => "image/png",
+                "gif"  => "image/gif",
+                "webp" => "image/webp",
+                "ico"  => "image/x-icon",
+                _      => "image/jpeg",
+            };
+            return ([(header::CONTENT_TYPE, ct)], data).into_response();
+        }
+    }
+    // Fallback: embedded fav.jpg
+    match StaticAssets::get("fav.jpg") {
+        Some(f) => ([(header::CONTENT_TYPE, "image/jpeg")], f.data.into_owned()).into_response(),
+        None    => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// GET /api/theme/css — returns a tiny CSS file with the panel accent colour.
+async fn serve_theme_css(State(state): State<AppState>) -> impl IntoResponse {
+    let accent = db::get_panel_setting(&state.db, "panel_accent").await;
+    let accent = if accent.is_empty() { "#7c3aed".to_string() } else { accent };
+    // Sanitise: only allow valid hex colours (#xxxxxx / #xxx) or CSS named colours (alpha-only)
+    let safe_accent = if accent.starts_with('#')
+        && accent.len() >= 4
+        && accent.len() <= 7
+        && accent[1..].chars().all(|c| c.is_ascii_hexdigit())
+    {
+        accent.clone()
+    } else {
+        "#7c3aed".to_string()
+    };
+    let css = format!(":root {{ --accent: {safe_accent}; }}");
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        css,
+    ).into_response()
+}
 
 // ── L7 request-rate tracking middleware ─────────────────────────────────────
 
@@ -154,6 +202,9 @@ use admin::{
     api_admin_set_setting,
     api_ufw_status, api_ufw_toggle,
     api_cf_status, api_cf_uam_set,
+    api_admin_storage_stats, api_admin_docker_daemon,
+    api_admin_storage_mounts, api_admin_db_integrity,
+    api_admin_theme_favicon,
 };
 use dns::{
     api_dns_list_providers, api_dns_add_provider, api_dns_update_provider, api_dns_delete_provider,
@@ -177,7 +228,9 @@ use ws::{console_ws, stats_ws};
 pub fn create_router(state: AppState) -> Router {
     let public = Router::new()
         .route("/login", get(login_page).post(login_submit))
-        .route("/logout", post(logout));
+        .route("/logout", post(logout))
+        .route("/favicon.ico", get(serve_favicon))
+        .route("/api/theme/css", get(serve_theme_css));
 
     // Routes accessible by any authenticated user
     let protected = Router::new()
@@ -290,6 +343,11 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/admin/ufw/toggle", post(api_ufw_toggle))
         .route("/api/admin/cf/status", get(api_cf_status))
         .route("/api/admin/cf/uam", post(api_cf_uam_set))
+        .route("/api/admin/storage/stats", get(api_admin_storage_stats))
+        .route("/api/admin/storage/daemon", post(api_admin_docker_daemon))
+        .route("/api/admin/storage/mounts", get(api_admin_storage_mounts))
+        .route("/api/admin/db-integrity", post(api_admin_db_integrity))
+        .route("/api/admin/theme/favicon", post(api_admin_theme_favicon))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware::require_admin,

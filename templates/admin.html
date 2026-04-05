@@ -608,6 +608,193 @@
             </div>
 
             <div class="yu-panel" style="margin-top:1.5rem;">
+                <div class="yu-panel-hd"><i class="bi bi-hdd-stack text-muted"></i> Storage &amp; Docker Daemon</div>
+                <div class="yu-panel-bd">
+                    <!-- Disk bars -->
+                    <div id="storage-bars" style="display:flex;flex-direction:column;gap:.75rem;margin-bottom:1.25rem;">
+                        <div style="font-size:.8rem;color:var(--muted);">Loading disk stats…</div>
+                    </div>
+
+                    <!-- Default container quota -->
+                    <div style="padding-top:1rem;border-top:1px solid var(--bdr);">
+                        <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Default container disk quota</p>
+                        <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Sets <code style="font-size:.78rem;">overlay2.size</code> in <code style="font-size:.78rem;">/etc/docker/daemon.json</code>. Applies to new containers. Requires Docker daemon restart — all running containers will briefly stop.</p>
+                        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+                            <input type="number" id="storage-quota-input" class="yu-input" min="1" max="900" value="{{ docker_default_quota }}" style="width:100px;font-size:.85rem;" placeholder="GB">
+                            <span style="font-size:.85rem;color:var(--muted);">GB</span>
+                            <button class="btn-yu btn-yu-primary" style="font-size:.8rem;padding:.4rem .9rem;" id="storage-daemon-btn" onclick="saveDockerDaemon()">
+                                <i class="bi bi-floppy"></i> Apply &amp; Restart Docker
+                            </button>
+                        </div>
+                        <div id="storage-daemon-result" style="margin-top:.6rem;font-size:.82rem;"></div>
+                    </div>
+
+                    <!-- Default container storage path -->
+                    <div style="padding-top:1rem;border-top:1px solid var(--bdr);margin-top:1rem;">
+                        <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Default container storage location</p>
+                        <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Choose which mounted disk to use for new container volumes. Leave blank to use <code style="font-size:.78rem;">volumes/</code> relative to the panel working directory.</p>
+
+                        <!-- Custom disk picker -->
+                        <div style="max-width:440px;position:relative;" id="admin-stor-wrap">
+                            <div class="stor-sel" id="admin-stor-sel" tabindex="0" onclick="adminStorSelToggle()" onkeydown="if(event.key==='Enter'||event.key===' ')adminStorSelToggle();">
+                                <div class="stor-sel-val" id="admin-stor-trigger">
+                                    <div class="stor-sel-icon"><i class="bi bi-hdd"></i></div>
+                                    <div class="stor-sel-info">
+                                        <span class="stor-sel-device" id="admin-stor-trigger-device">Loading…</span>
+                                        <span class="stor-sel-sub" id="admin-stor-trigger-sub"></span>
+                                    </div>
+                                    <i class="bi bi-chevron-down stor-sel-chev"></i>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="storage-path-result" style="margin-top:.6rem;font-size:.82rem;"></div>
+
+                        <!-- Advanced: raw path override -->
+                        <div style="margin-top:.85rem;">
+                            <button type="button" style="font-size:.75rem;color:var(--muted);background:none;border:none;padding:0;cursor:pointer;" onclick="toggleAdminStorAdvanced()">
+                                <i class="bi bi-chevron-right" id="adv-chev" style="font-size:.68rem;transition:transform .15s;"></i> Advanced: enter absolute path manually
+                            </button>
+                            <div id="admin-stor-advanced" style="display:none;margin-top:.6rem;display:none;">
+                                <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+                                    <input type="text" id="storage-path-input" class="yu-input" value="{{ container_storage_path }}" style="width:340px;font-size:.85rem;font-family:monospace;" placeholder="/var/lib/docker/yunexal-volumes">
+                                    <button class="btn-yu btn-yu-primary" style="font-size:.8rem;padding:.4rem .9rem;" onclick="saveStoragePath()">
+                                        <i class="bi bi-floppy"></i> Save
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="yu-panel" style="border:1px solid rgba(139,92,246,.15);margin-top:1rem;">
+                <div class="yu-panel-hd" style="color:#a78bfa;font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;"><i class="bi bi-info-circle"></i> Storage Architecture</div>
+                <div class="yu-panel-bd" style="font-size:.8rem;color:var(--muted);line-height:1.7;">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem 1.5rem;margin-bottom:1.25rem;">
+                        <div><i class="bi bi-device-ssd" style="color:#60a5fa;"></i> <strong style="color:var(--txt);">sda1</strong> — System partition (XFS)<br><span style="padding-left:1.3rem;">OS, panel binary, SQLite DB</span></div>
+                        <div><i class="bi bi-nvme" style="color:#34d399;"></i> <strong style="color:var(--txt);">nvme0n1p2</strong> — Container partition (XFS + prjquota)<br><span style="padding-left:1.3rem;">/var/lib/docker — images, volumes, overlay2</span></div>
+                        <div><i class="bi bi-layers" style="color:#f59e0b;"></i> <strong style="color:var(--txt);">Storage driver</strong>: overlay2<br><span style="padding-left:1.3rem;">XFS project quotas enforce per-container limits</span></div>
+                        <div><i class="bi bi-shield-check" style="color:#a78bfa;"></i> <strong style="color:var(--txt);">prjquota</strong> active on NVMe<br><span style="padding-left:1.3rem;">overlay2.size applies to each new container</span></div>
+                    </div>
+                    <!-- XFS vs ZFS vs Btrfs vs ext4 comparison -->
+                    <div style="border-top:1px solid var(--bdr);padding-top:.85rem;">
+                        <p style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:.6rem;">XFS vs ZFS vs Btrfs vs ext4 — Quota Method Comparison</p>
+                        <div style="overflow-x:auto;">
+                            <table style="width:100%;border-collapse:collapse;font-size:.78rem;">
+                                <thead>
+                                    <tr style="border-bottom:1px solid var(--bdr);">
+                                        <th style="text-align:left;padding:.35rem .6rem;color:var(--muted);font-weight:600;"></th>
+                                        <th style="text-align:center;padding:.35rem .6rem;color:#60a5fa;font-weight:600;"><i class="bi bi-hdd"></i> XFS (prjquota)</th>
+                                        <th style="text-align:center;padding:.35rem .6rem;color:#34d399;font-weight:600;"><i class="bi bi-layers"></i> ZFS (refquota)</th>
+                                        <th style="text-align:center;padding:.35rem .6rem;color:#fbbf24;font-weight:600;"><i class="bi bi-stack"></i> Btrfs (qgroup)</th>
+                                        <th style="text-align:center;padding:.35rem .6rem;color:#fb923c;font-weight:600;"><i class="bi bi-hdd-fill"></i> ext4 (prjquota)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Quota method</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Project quotas per directory tree</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">refquota per child dataset</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">qgroup limit per subvolume</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Project quotas (<code>chattr +P</code> + <code>setquota</code>)</td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Overhead</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Low</span></td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#fbbf24;">Medium</span></td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Low</span></td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Very low</span></td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Data integrity</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">None</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Checksums + self-healing</span></td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#fbbf24;">Checksums (no self-healing)</span></td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Journaling only</td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Snapshots</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">No</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Yes (<code>zfs snapshot</code>)</span></td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Yes (<code>btrfs subvolume snapshot</code>)</span></td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">No (requires LVM)</td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Compression</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">No</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Yes (lz4 / zstd)</span></td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Yes (zstd / lzo / zlib)</span></td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">No</td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Setup</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Mount with <code>prjquota</code> option</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><code>zfs create</code> parent dataset</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Format as Btrfs; panel auto-enables quotas</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Mount with <code>prjquota</code>; install <code>quota</code> package</td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Best for</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">High performance / existing NVMe</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Data integrity + snapshots</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Linux-native CoW + snapshots</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Legacy systems / maximum compatibility</td>
+                                    </tr>
+                                    <!-- Hardware recommendations -->
+                                    <tr style="border-bottom:1px solid var(--bdr);">
+                                        <td colspan="5" style="padding:.45rem .6rem;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:rgba(255,255,255,.02);">Hardware Recommendations</td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Min RAM</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Any (512 MiB+)</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#fbbf24;">8 GiB+</span> <span style="color:var(--muted);font-size:.7rem;">(ARC cache)</span></td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Any (512 MiB+)</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Any (256 MiB+)</td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Storage type</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">NVMe / SSD</span> preferred</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">SSD / NVMe</span> + optional L2ARC</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">SSD or HDD</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Any (HDD, SSD, NVMe)</td>
+                                    </tr>
+                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">ECC RAM</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Not required</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#fbbf24;">Recommended</span></td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Not required</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Not required</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Ideal workload</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Game servers, DBs, high IOPS</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Storage servers, critical data</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Dev servers, general-purpose</td>
+                                        <td style="text-align:center;padding:.3rem .6rem;">Any workload, max compatibility</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- DB Integrity Check -->
+            <div class="yu-panel" style="margin-top:1rem;">
+                <div class="yu-panel-hd"><i class="bi bi-database-check text-muted"></i> Database Integrity</div>
+                <div class="yu-panel-bd">
+                    <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Cleanup orphaned records</p>
+                    <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Scans the database and removes server entries that no longer have a matching Docker container, as well as orphaned port bindings and DNS records linked to deleted servers.</p>
+                    <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;">
+                        <button class="btn-yu" style="font-size:.8rem;padding:.4rem .9rem;border-color:rgba(239,68,68,.4);color:#f87171;" id="db-integrity-btn" onclick="runDbIntegrity()">
+                            <i class="bi bi-database-check"></i> Run Integrity Check
+                        </button>
+                        <span id="db-integrity-result" style="font-size:.82rem;color:var(--muted);"></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="yu-panel" style="margin-top:1rem;">
                 <div class="yu-panel-hd"><i class="bi bi-shield-shaded text-muted"></i> Firewall (UFW)</div>
                 <div class="yu-panel-bd">
                     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">

@@ -96,6 +96,7 @@ function switchTab(name, btn) {
     if (name === 'images') loadImages();
     if (name === 'audit') auditLoad();
     if (name === 'dns') { dnsLoadProviders(); dnsGetPublicIp(); }
+    if (name === 'settings') loadStorageStats();
 }
 
 // Handle browser back/forward
@@ -111,6 +112,7 @@ window.addEventListener('popstate', (e) => {
     if (tab === 'images') loadImages();
     if (tab === 'audit') auditLoad();
     if (tab === 'dns') { dnsLoadProviders(); dnsGetPublicIp(); }
+    if (tab === 'settings') loadStorageStats();
 });
 
 
@@ -1483,6 +1485,10 @@ function escAttr(s) {
 if (document.getElementById('tab-images') && document.getElementById('tab-images').classList.contains('active')) {
     loadImages();
 }
+// Auto-load storage stats if already on settings tab
+if (document.getElementById('tab-settings') && document.getElementById('tab-settings').classList.contains('active')) {
+    loadStorageStats();
+}
 
 // ── Containers: render helpers ──────────────────────────────────────────────────
 
@@ -1940,4 +1946,411 @@ function escHtml(s) {
 }
 function escAttr(s) {
     return escHtml(s).replace(/'/g,'&#39;');
+}
+
+// ── Storage stats ────────────────────────────────────────────────────────────
+
+function diskBarHtml(info, id) {
+    if (info.error) return `<div style="font-size:.8rem;color:var(--muted);">${escHtml(id)}: unavailable</div>`;
+    const pct = info.pct || 0;
+    const color = pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#22c55e';
+    return `<div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.3rem;">
+            <span style="font-size:.82rem;font-weight:600;">${escHtml(info.label)}</span>
+            <span style="font-size:.78rem;color:var(--muted);">${escHtml(info.used_gib)} GiB / ${escHtml(info.total_gib)} GiB &nbsp;(${pct}%)</span>
+        </div>
+        <div style="height:8px;background:rgba(255,255,255,.07);border-radius:4px;overflow:hidden;">
+            <div style="height:100%;width:${pct}%;background:${color};border-radius:4px;transition:width .4s;"></div>
+        </div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:.2rem;">${escHtml(info.free_gib)} GiB free &nbsp;·&nbsp; <code style="font-size:.73rem;">${escHtml(info.mount)}</code></div>
+    </div>`;
+}
+
+async function loadStorageStats() {
+    const bars = document.getElementById('storage-bars');
+    if (!bars) return;
+    try {
+        const r = await fetch('/api/admin/storage/stats', { credentials: 'same-origin' });
+        const d = await r.json();
+        if (d.ok) {
+            bars.innerHTML = diskBarHtml(d.system, 'system') + '<div style="margin-top:.5rem;"></div>' + diskBarHtml(d.docker, 'docker');
+            const inp = document.getElementById('storage-quota-input');
+            if (inp && d.current_quota_gb) inp.value = d.current_quota_gb;
+        } else {
+            bars.innerHTML = `<span style="font-size:.8rem;color:var(--muted);">Could not load disk stats.</span>`;
+        }
+    } catch {
+        bars.innerHTML = `<span style="font-size:.8rem;color:var(--muted);">Could not load disk stats.</span>`;
+    }
+    loadStorageMountsHint();
+}
+
+async function saveDockerDaemon() {
+    const inp = document.getElementById('storage-quota-input');
+    const btn = document.getElementById('storage-daemon-btn');
+    const res = document.getElementById('storage-daemon-result');
+    if (!inp || !btn || !res) return;
+    const quota = parseInt(inp.value, 10);
+    if (!quota || quota < 1 || quota > 900) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> Enter a valid quota between 1 and 900 GB.</span>`;
+        return;
+    }
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Applying…';
+    res.innerHTML = '';
+    try {
+        const r = await fetch('/api/admin/storage/daemon', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ default_quota_gb: quota }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+            res.innerHTML = `<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> ${escHtml(d.message)}</span>`;
+            setTimeout(loadStorageStats, 2000);
+        } else if (d.needs_permission) {
+            res.innerHTML = `<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:.65rem .85rem;font-size:.8rem;">
+                <p style="margin:0 0 .4rem;font-weight:600;color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> Sudo permission needed</p>
+                <p style="margin:0 0 .4rem;color:var(--muted);">${escHtml(d.message || "Run this on the server to grant permission:")}</p>
+                <code style="display:block;background:rgba(0,0,0,.35);padding:.4rem .65rem;border-radius:5px;font-size:.75rem;color:#a5f3fc;word-break:break-all;">${escHtml(d.fix_command)}</code>
+            </div>`;
+        } else {
+            res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(d.error)}</span>`;
+        }
+    } catch (e) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(e.message)}</span>`;
+    }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-floppy"></i> Apply &amp; Restart Docker';
+}
+
+async function saveStoragePath() {
+    const inp = document.getElementById('storage-path-input');
+    if (!inp) return;
+    await saveStoragePathValue(inp.value.trim());
+}
+
+async function loadStorageMountsHint() {
+    // Show loading state immediately
+    _adminStorLoading = true;
+    _adminStorRenderTrigger();
+    try {
+        const r = await fetch('/api/admin/storage/mounts', { credentials: 'same-origin' });
+        const d = await r.json();
+        if (!d.ok) {
+            _adminStorLoading = false;
+            _adminStorRenderTrigger();
+            return;
+        }
+        // Initialise the admin disk picker — this clears the loading state
+        await initAdminStorSel(d.mounts, d.current_path);
+    } catch {
+        _adminStorLoading = false;
+        _adminStorRenderTrigger();
+    }
+}
+
+async function runDbIntegrity() {
+    const btn = document.getElementById('db-integrity-btn');
+    const res = document.getElementById('db-integrity-result');
+    if (!btn || !res) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning…';
+    res.innerHTML = '';
+    try {
+        const r = await fetch('/api/admin/db-integrity', {
+            method: 'POST',
+            credentials: 'same-origin',
+        });
+        const d = await r.json();
+        if (d.ok) {
+            if (d.total_fixed === 0) {
+                res.innerHTML = `<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> Database is clean — no orphaned records found.</span>`;
+            } else {
+                res.innerHTML = `<span style="color:#fbbf24;"><i class="bi bi-exclamation-triangle-fill"></i> Fixed ${d.total_fixed} record(s): `
+                    + `${d.removed_servers} orphaned server(s), `
+                    + `${d.removed_orphan_ports} orphaned port(s), `
+                    + `${d.removed_orphan_dns_records} orphaned DNS record(s).</span>`;
+            }
+        } else {
+            res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(d.error || 'Error')}</span>`;
+        }
+    } catch (e) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(e.message)}</span>`;
+    }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-database-check"></i> Run Integrity Check';
+}
+
+// ── Theme tab ─────────────────────────────────────────────────────────────────
+
+function previewAccent(color) {
+    document.documentElement.style.setProperty('--accent', color);
+    const lbl = document.getElementById('accent-hex-label');
+    if (lbl) lbl.textContent = color;
+}
+
+function pickSwatch(color) {
+    const inp = document.getElementById('accent-color-input');
+    if (inp) { inp.value = color; previewAccent(color); }
+}
+
+async function saveAccent() {
+    const inp = document.getElementById('accent-color-input');
+    const res = document.getElementById('accent-result');
+    if (!inp || !res) return;
+    const val = inp.value.trim();
+    res.innerHTML = '';
+    try {
+        const r = await fetch('/api/admin/settings', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: 'panel_accent', value: val }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+            res.innerHTML = `<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> Accent colour saved.</span>`;
+            // Reload the theme CSS so all pages pick it up on next load
+            document.querySelectorAll('link[href="/api/theme/css"]').forEach(l => {
+                l.href = '/api/theme/css?_=' + Date.now();
+            });
+        } else {
+            res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(d.error || 'Error')}</span>`;
+        }
+    } catch (e) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(e.message)}</span>`;
+    }
+}
+
+function resetAccent() {
+    pickSwatch('#7c3aed');
+    saveAccent();
+}
+
+async function savePanelName() {
+    const inp = document.getElementById('panel-name-input');
+    const res = document.getElementById('panel-name-result');
+    if (!inp || !res) return;
+    const val = inp.value.trim();
+    if (!val) { res.innerHTML = `<span style="color:var(--danger);">Name cannot be empty.</span>`; return; }
+    res.innerHTML = '';
+    try {
+        const r = await fetch('/api/admin/settings', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: 'panel_name', value: val }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+            res.innerHTML = `<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> Panel name saved.</span>`;
+        } else {
+            res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(d.error || 'Error')}</span>`;
+        }
+    } catch (e) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(e.message)}</span>`;
+    }
+}
+
+async function uploadFavicon() {
+    const fileInp = document.getElementById('favicon-file-input');
+    const res = document.getElementById('favicon-result');
+    if (!fileInp || !res || !fileInp.files.length) return;
+    res.innerHTML = '<span style="color:var(--muted);">Uploading…</span>';
+    const fd = new FormData();
+    fd.append('file', fileInp.files[0]);
+    try {
+        const r = await fetch('/api/admin/theme/favicon', {
+            method: 'POST', credentials: 'same-origin', body: fd,
+        });
+        const d = await r.json();
+        if (d.ok) {
+            res.innerHTML = `<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> Favicon updated.</span>`;
+            // Refresh the favicon preview
+            const prev = document.getElementById('favicon-preview');
+            if (prev) prev.src = '/favicon.ico?_=' + Date.now();
+            // Update browser tab favicon
+            document.querySelectorAll('link[rel="icon"]').forEach(l => {
+                l.href = '/favicon.ico?_=' + Date.now();
+            });
+        } else {
+            res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(d.error || 'Upload failed')}</span>`;
+        }
+    } catch (e) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(e.message)}</span>`;
+    }
+    fileInp.value = '';
+}
+
+// ── Admin storage disk picker ─────────────────────────────────────────────────
+
+let _adminStorMounts = [];
+let _adminStorIdx = -1;  // -1 = "default (blank)"
+let _adminStorLoading = true;
+// Detached panel element portalled to <body> so no ancestor stacking context clips it
+let _adminStorPanelEl = null;
+
+function _adminStorBarFill(pct) {
+    const h = pct > 80 ? '#f87171' : pct > 55 ? '#fbbf24' : '#34d399';
+    return `<div class="stor-opt-bar-fill" style="width:${pct}%;background:${h};"></div>`;
+}
+
+function _adminStorRenderTrigger() {
+    const dev  = document.getElementById('admin-stor-trigger-device');
+    const sub  = document.getElementById('admin-stor-trigger-sub');
+    if (!dev || !sub) return;
+    if (_adminStorLoading) {
+        dev.innerHTML = '<span class="spinner-border spinner-border-sm" style="width:.85em;height:.85em;border-width:2px;"></span> Scanning disks…';
+        sub.textContent = '';
+        document.getElementById('admin-stor-sel')?.setAttribute('disabled-sel', '1');
+        return;
+    }
+    document.getElementById('admin-stor-sel')?.removeAttribute('disabled-sel');
+    if (_adminStorIdx < 0 || !_adminStorMounts[_adminStorIdx]) {
+        dev.textContent = 'Default (panel working dir)';
+        sub.textContent = 'volumes/ relative to panel binary';
+    } else {
+        const m = _adminStorMounts[_adminStorIdx];
+        dev.textContent = m.device;
+        sub.textContent = m.has_zfs ? `ZFS • ${m.free_gib} GiB free` : m.has_btrfs ? `Btrfs • ${m.free_gib} GiB free` : m.has_ext4 ? `ext4 • ${m.free_gib} GiB free` : `${m.mount} • ${m.free_gib} GiB free`;
+    }
+}
+
+function _adminStorRenderPanel() {
+    if (!_adminStorPanelEl) return;
+    let html = `<div class="stor-opt${_adminStorIdx < 0 ? ' active' : ''}" onclick="adminStorSelPick(-1)">
+        <div class="stor-opt-icon"><i class="bi bi-folder2"></i></div>
+        <div class="stor-opt-body">
+            <div class="stor-opt-row1"><span class="stor-opt-device">Default</span></div>
+            <div class="stor-opt-row2">volumes/ relative to panel working directory</div>
+        </div>
+        <div class="stor-opt-check">${_adminStorIdx < 0 ? '<i class="bi bi-check-lg"></i>' : ''}</div>
+    </div>`;
+    _adminStorMounts.forEach((m, i) => {
+        const isActive = i === _adminStorIdx;
+        const badge = m.has_zfs
+            ? '<span class="stor-opt-badge zfs">ZFS</span>'
+            : m.has_btrfs
+            ? '<span class="stor-opt-badge btrfs">Btrfs</span>'
+            : m.has_ext4
+            ? (m.has_prjquota ? '<span class="stor-opt-badge ext4">ext4</span>' : '<span class="stor-opt-badge nq">no prjquota</span>')
+            : (m.has_prjquota ? '<span class="stor-opt-badge pq">prjquota</span>' : '<span class="stor-opt-badge nq">no quota</span>');
+        html += `<div class="stor-opt${isActive ? ' active' : ''}" onclick="adminStorSelPick(${i})">
+            <div class="stor-opt-icon"><i class="bi bi-${m.has_zfs ? 'layers' : m.has_btrfs ? 'stack' : m.has_ext4 ? 'hdd-fill' : 'hdd'}"></i></div>
+            <div class="stor-opt-body">
+                <div class="stor-opt-row1">
+                    <span class="stor-opt-device">${escHtml(m.device)}</span>
+                    ${(m.has_zfs || m.has_btrfs) ? '' : `<span class="stor-opt-mount">${escHtml(m.mount)}</span>`}
+                    ${badge}
+                </div>
+                <div class="stor-opt-row2">${escHtml(m.suggested_path || m.mount)}</div>
+            </div>
+            <div class="stor-opt-usage">
+                <div class="stor-opt-bar">${_adminStorBarFill(m.used_pct)}</div>
+                <span class="stor-opt-free">${m.free_gib}G</span>
+            </div>
+            <div class="stor-opt-check">${isActive ? '<i class="bi bi-check-lg"></i>' : ''}</div>
+        </div>`;
+    });
+    _adminStorPanelEl.innerHTML = html;
+}
+
+function adminStorSelToggle() {
+    if (_adminStorLoading) return;
+    const sel = document.getElementById('admin-stor-sel');
+    if (!sel) return;
+    const isOpen = sel.classList.contains('open');
+    if (isOpen) {
+        _adminStorClose();
+        return;
+    }
+    // Portal: create or reuse detached panel element on body
+    if (!_adminStorPanelEl) {
+        _adminStorPanelEl = document.createElement('div');
+        _adminStorPanelEl.className = 'stor-sel-panel';
+        _adminStorPanelEl.id = 'admin-stor-panel-portal';
+        _adminStorPanelEl.style.display = 'block';
+    }
+    document.body.appendChild(_adminStorPanelEl);
+    _adminStorRenderPanel();
+
+    sel.classList.add('open');
+    const rect = sel.getBoundingClientRect();
+    _adminStorPanelEl.style.top   = (rect.bottom + window.scrollY + 4) + 'px';
+    _adminStorPanelEl.style.left  = (rect.left + window.scrollX) + 'px';
+    _adminStorPanelEl.style.width = rect.width + 'px';
+
+    setTimeout(() => document.addEventListener('click', _adminStorOutsideClick, { once: true, capture: true }), 0);
+}
+
+function _adminStorOutsideClick(e) {
+    const sel    = document.getElementById('admin-stor-sel');
+    const portal = document.getElementById('admin-stor-panel-portal');
+    if ((sel && sel.contains(e.target)) || (portal && portal.contains(e.target))) {
+        // Click was inside — re-register listener
+        document.addEventListener('click', _adminStorOutsideClick, { once: true, capture: true });
+        return;
+    }
+    _adminStorClose();
+}
+
+function _adminStorClose() {
+    const sel = document.getElementById('admin-stor-sel');
+    if (sel) sel.classList.remove('open');
+    if (_adminStorPanelEl && _adminStorPanelEl.parentNode === document.body) {
+        document.body.removeChild(_adminStorPanelEl);
+    }
+}
+
+async function adminStorSelPick(idx) {
+    _adminStorIdx = idx;
+    _adminStorClose();
+    _adminStorRenderTrigger();
+    const value = idx < 0 ? '' : (_adminStorMounts[idx].suggested_path || '');
+    const inp = document.getElementById('storage-path-input');
+    if (inp) inp.value = value;
+    await saveStoragePathValue(value);
+}
+
+async function saveStoragePathValue(val) {
+    const res = document.getElementById('storage-path-result');
+    if (!res) return;
+    res.innerHTML = '';
+    try {
+        const r = await fetch('/api/admin/settings', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: 'container_storage_path', value: val }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+            res.innerHTML = `<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> Saved. New containers will use this path.</span>`;
+        } else {
+            res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(d.error || 'Error')}</span>`;
+        }
+    } catch (e) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(e.message)}</span>`;
+    }
+}
+
+function toggleAdminStorAdvanced() {
+    const el = document.getElementById('admin-stor-advanced');
+    const chev = document.getElementById('adv-chev');
+    if (!el) return;
+    const visible = el.style.display !== 'none';
+    el.style.display = visible ? 'none' : 'block';
+    if (chev) chev.style.transform = visible ? '' : 'rotate(90deg)';
+}
+
+async function initAdminStorSel(mounts, currentPath) {
+    _adminStorMounts = mounts || [];
+    _adminStorLoading = false;
+    _adminStorIdx = -1;
+    if (currentPath) {
+        const idx = _adminStorMounts.findIndex(m =>
+            m.suggested_path === currentPath || m.mount === currentPath
+        );
+        _adminStorIdx = idx;
+    }
+    _adminStorRenderTrigger();
 }

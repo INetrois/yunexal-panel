@@ -242,6 +242,21 @@ pub async fn init_db() -> Result<Pool<Sqlite>> {
     let _ = sqlx::query(
         "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('cf_l7_ips_min', '2')"
     ).execute(&pool).await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('docker_default_quota', '15')"
+    ).execute(&pool).await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('container_storage_path', '')"
+    ).execute(&pool).await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('panel_favicon', '')"
+    ).execute(&pool).await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('panel_accent', '#7c3aed')"
+    ).execute(&pool).await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('panel_name', 'Yunexal Panel')"
+    ).execute(&pool).await;
 
     // ufw_blocked column for server_ports (no-op if already present)
     let _ = sqlx::query(

@@ -174,6 +174,19 @@ async fn build_admin_template(state: &AppState, tab: String, username: String, n
             let v = db::get_panel_setting(&state.db, "cf_l7_ips_min").await;
             if v.is_empty() { "2".into() } else { v }
         },
+        docker_default_quota: {
+            let v = db::get_panel_setting(&state.db, "docker_default_quota").await;
+            if v.is_empty() { "15".into() } else { v }
+        },
+        container_storage_path: db::get_panel_setting(&state.db, "container_storage_path").await,
+        panel_accent: {
+            let v = db::get_panel_setting(&state.db, "panel_accent").await;
+            if v.is_empty() { "#7c3aed".into() } else { v }
+        },
+        panel_name: {
+            let v = db::get_panel_setting(&state.db, "panel_name").await;
+            if v.is_empty() { "Yunexal Panel".into() } else { v }
+        },
     }
 }
 
@@ -1291,39 +1304,47 @@ pub async fn api_update_apply(
 
     let new_bin_path = new_binary.unwrap();
 
-    // Backup current binary
-    let backup_path = current_exe.with_extension("bak");
+    // Backup current binary (hard-link copy; not the running inode so no ETXTBSY)
+    let backup_path = parent_dir.join("yunexal-panel.bak");
     if let Err(e) = tokio::fs::copy(&current_exe, &backup_path).await {
         let _ = tokio::fs::remove_dir_all(&tmp_extract).await;
         return Json(serde_json::json!({"ok": false, "error": format!("Backup failed: {e}")}));
     }
 
-    // Replace binary
-    if let Err(e) = tokio::fs::copy(&new_bin_path, &current_exe).await {
-        // Restore backup
-        let _ = tokio::fs::copy(&backup_path, &current_exe).await;
+    // Stage the new binary next to the running one, set permissions, then
+    // atomically rename it into place.  rename(2) replaces the directory
+    // entry without opening the existing inode, so it works on a running binary.
+    let staged = parent_dir.join(".yunexal-panel.new");
+    if let Err(e) = tokio::fs::copy(&new_bin_path, &staged).await {
         let _ = tokio::fs::remove_dir_all(&tmp_extract).await;
-        return Json(serde_json::json!({"ok": false, "error": format!("Replace failed: {e}")}));
+        return Json(serde_json::json!({"ok": false, "error": format!("Stage failed: {e}")}));
     }
-
-    // Ensure the new binary is executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o755);
-        if let Err(e) = std::fs::set_permissions(&current_exe, perms) {
-            error!("Failed to set binary permissions: {}", e);
+        if let Err(e) = std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)) {
+            error!("Failed to set staged binary permissions: {}", e);
         }
+    }
+    if let Err(e) = tokio::fs::rename(&staged, &current_exe).await {
+        // Restore from backup
+        let _ = tokio::fs::copy(&backup_path, &current_exe).await;
+        let _ = tokio::fs::remove_file(&staged).await;
+        let _ = tokio::fs::remove_dir_all(&tmp_extract).await;
+        return Json(serde_json::json!({"ok": false, "error": format!("Replace failed: {e}")}));
     }
 
     // Also update setup binary if present
     if let Some(setup_path) = new_setup {
         let setup_dest = parent_dir.join("yunexal-setup");
-        let _ = tokio::fs::copy(&setup_path, &setup_dest).await;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&setup_dest, std::fs::Permissions::from_mode(0o755));
+        let staged_setup = parent_dir.join(".yunexal-setup.new");
+        if tokio::fs::copy(&setup_path, &staged_setup).await.is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&staged_setup, std::fs::Permissions::from_mode(0o755));
+            }
+            let _ = tokio::fs::rename(&staged_setup, &setup_dest).await;
         }
     }
 
@@ -1394,6 +1415,10 @@ pub async fn api_admin_set_setting(
         "cf_zone_id", "cf_api_token",
         "cf_uam_threshold", "cf_uam_cooldown_mins",
         "cf_l7_threshold", "cf_l7_ips_min",
+        "docker_default_quota",
+        "container_storage_path",
+        "panel_accent",
+        "panel_name",
     ];
     let is_bool = BOOL_KEYS.contains(&body.key.as_str());
     let is_str  = STR_KEYS.contains(&body.key.as_str());
@@ -1413,6 +1438,180 @@ pub async fn api_admin_set_setting(
         Err(e) => {
             error!("api_admin_set_setting: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+// ── Storage stats API ────────────────────────────────────────────────────────
+
+/// GET /api/admin/storage/stats
+/// Returns disk usage for the system partition and the Docker container partition.
+pub async fn api_admin_storage_stats(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+) -> impl IntoResponse {
+    if !auth::is_root_session(&state, &jar).await {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Root access required"}))).into_response();
+    }
+
+    // Parse `df -B1 <path>` to get (total_bytes, used_bytes, free_bytes)
+    async fn df_info(path: &str) -> Option<(u64, u64, u64)> {
+        let out = tokio::process::Command::new("df")
+            .args(["-B1", "--output=size,used,avail", path])
+            .output()
+            .await
+            .ok()?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        // skip header line
+        let line = stdout.lines().nth(1)?;
+        let mut parts = line.split_whitespace();
+        let total: u64 = parts.next()?.parse().ok()?;
+        let used:  u64 = parts.next()?.parse().ok()?;
+        let free:  u64 = parts.next()?.parse().ok()?;
+        Some((total, used, free))
+    }
+
+    let gib = |b: u64| format!("{:.1}", b as f64 / 1_073_741_824.0);
+    let pct = |used: u64, total: u64| -> u64 {
+        if total == 0 { 0 } else { used * 100 / total }
+    };
+
+    let sys    = df_info("/").await;
+    let docker = df_info("/var/lib/docker").await;
+
+    let sys_json = sys.map(|(tot, used, free)| serde_json::json!({
+        "mount": "/", "label": "System (sda1)",
+        "total_gib": gib(tot), "used_gib": gib(used), "free_gib": gib(free),
+        "pct": pct(used, tot),
+    })).unwrap_or(serde_json::json!({"error": "unavailable"}));
+
+    let docker_json = docker.map(|(tot, used, free)| serde_json::json!({
+        "mount": "/var/lib/docker", "label": "Containers (NVMe)",
+        "total_gib": gib(tot), "used_gib": gib(used), "free_gib": gib(free),
+        "pct": pct(used, tot),
+    })).unwrap_or(serde_json::json!({"error": "unavailable"}));
+
+    let current_quota = {
+        let v = db::get_panel_setting(&state.db, "docker_default_quota").await;
+        if v.is_empty() { "15".to_string() } else { v }
+    };
+
+    Json(serde_json::json!({
+        "ok": true,
+        "system": sys_json,
+        "docker": docker_json,
+        "current_quota_gb": current_quota,
+    })).into_response()
+}
+
+// ── Docker daemon.json management ────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct DockerDaemonForm {
+    pub default_quota_gb: u32,
+}
+
+/// POST /api/admin/storage/daemon
+/// Updates overlay2.size in /etc/docker/daemon.json and restarts the Docker daemon.
+pub async fn api_admin_docker_daemon(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    addr: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<DockerDaemonForm>,
+) -> impl IntoResponse {
+    if !auth::is_root_session(&state, &jar).await {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Root access required"}))).into_response();
+    }
+
+    let quota_gb = body.default_quota_gb;
+    if quota_gb < 1 || quota_gb > 900 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Quota must be between 1 and 900 GB"}))).into_response();
+    }
+
+    let daemon_path = "/etc/docker/daemon.json";
+    let existing_raw = tokio::fs::read_to_string(daemon_path).await.unwrap_or_else(|_| "{}".to_string());
+    let mut daemon_cfg: serde_json::Value = serde_json::from_str(&existing_raw).unwrap_or(serde_json::json!({}));
+
+    let size_str = format!("overlay2.size={}G", quota_gb);
+    let opts = daemon_cfg
+        .get("storage-opts")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            let mut filtered: Vec<serde_json::Value> = arr
+                .iter()
+                .filter(|v| !v.as_str().map_or(false, |s| s.starts_with("overlay2.size=")))
+                .cloned()
+                .collect();
+            filtered.push(serde_json::Value::String(size_str.clone()));
+            filtered
+        })
+        .unwrap_or_else(|| vec![serde_json::Value::String(size_str.clone())]);
+
+    daemon_cfg["storage-driver"] = serde_json::Value::String("overlay2".to_string());
+    daemon_cfg["storage-opts"]   = serde_json::Value::Array(opts);
+
+    let new_json = match serde_json::to_string_pretty(&daemon_cfg) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("JSON error: {e}")}))).into_response(),
+    };
+
+    // Write via `sudo tee` so the panel process doesn't need to own /etc/docker/daemon.json
+    let write_ok = {
+        let spawn_result = tokio::process::Command::new("sudo")
+            .args(["-n", "tee", daemon_path])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        match spawn_result {
+            Ok(mut child) => {
+                use tokio::io::AsyncWriteExt;
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(new_json.as_bytes()).await;
+                    // Drop stdin to signal EOF to tee
+                }
+                child.wait().await.map(|s| s.success()).unwrap_or(false)
+            }
+            Err(_) => {
+                // Fall back: try direct write (works if panel runs as root)
+                tokio::fs::write(daemon_path, &new_json).await.is_ok()
+            }
+        }
+    };
+
+    if !write_ok {
+        let user = std::env::var("USER").unwrap_or_else(|_| "yunexal".into());
+        let fix = format!("echo '{user} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/docker/daemon.json, /usr/bin/systemctl restart docker' | sudo tee /etc/sudoers.d/yunexal-docker && sudo chmod 440 /etc/sudoers.d/yunexal-docker");
+        return Json(serde_json::json!({"ok": false, "needs_permission": true, "fix_command": fix, "message": "Need sudo permission to write daemon.json"})).into_response();
+    }
+
+    let _ = db::set_panel_setting(&state.db, "docker_default_quota", &quota_gb.to_string()).await;
+
+    let restart_out = tokio::process::Command::new("sudo")
+        .args(["-n", "systemctl", "restart", "docker"])
+        .output()
+        .await;
+
+    let ip = auth::client_ip(&headers, addr);
+    let _ = db::audit_log(&state.db, "admin", "storage.daemon_updated", "docker", &format!("overlay2.size={}G", quota_gb), &ip, &auth::user_agent(&headers)).await;
+
+    match restart_out {
+        Ok(out) if out.status.success() => {
+            Json(serde_json::json!({"ok": true, "message": format!("Docker daemon updated to {}G quota and restarted.", quota_gb)})).into_response()
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("password is required") || stderr.contains("not allowed") {
+                let user = std::env::var("USER").unwrap_or_else(|_| "yunexal".into());
+                let fix = format!("echo '{user} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart docker' | sudo tee /etc/sudoers.d/yunexal-docker && sudo chmod 440 /etc/sudoers.d/yunexal-docker");
+                Json(serde_json::json!({"ok": false, "needs_permission": true, "fix_command": fix, "message": "daemon.json updated but Docker needs sudo permission to restart"})).into_response()
+            } else {
+                Json(serde_json::json!({"ok": false, "error": format!("Restart failed: {}", stderr.trim())})).into_response()
+            }
+        }
+        Err(e) => {
+            Json(serde_json::json!({"ok": false, "error": format!("Cannot run systemctl: {e}. daemon.json was updated.")})).into_response()
         }
     }
 }
@@ -1572,5 +1771,248 @@ pub async fn api_cf_uam_set(
         }
         Err(e) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
+}
+
+// ── Storage mounts API ───────────────────────────────────────────────────────
+
+/// GET /api/admin/storage/mounts
+/// Returns a list of XFS-capable mount points available on the host.
+pub async fn api_admin_storage_mounts(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+) -> impl IntoResponse {
+    if !auth::is_root_session(&state, &jar).await {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Root access required"}))).into_response();
+    }
+
+    // df helper: returns (free_gib, total_gib, used_pct)
+    async fn df_stats(path: &str) -> Option<(f64, f64, u64)> {
+        let out = tokio::process::Command::new("df")
+            .args(["-B1", "--output=size,used,avail", path])
+            .output().await.ok()?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let line = stdout.lines().nth(1)?;
+        let mut parts = line.split_whitespace();
+        let total: u64 = parts.next()?.parse().ok()?;
+        let used:  u64 = parts.next()?.parse().ok()?;
+        let free:  u64 = parts.next()?.parse().ok()?;
+        let pct = if total > 0 { used * 100 / total } else { 0 };
+        Some((free as f64 / 1_073_741_824.0, total as f64 / 1_073_741_824.0, pct))
+    }
+
+    let mounts_raw = tokio::fs::read_to_string("/proc/mounts").await.unwrap_or_default();
+    let mut mounts: Vec<serde_json::Value> = Vec::new();
+
+    // Deduplicate by mount point (proc/mounts can have multiple entries)
+    let mut seen: std::collections::HashSet<String> = Default::default();
+
+    for line in mounts_raw.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 4 { continue; }
+        let device_path = parts[0];
+        let mount_point = parts[1];
+        let fs_type     = parts[2];
+        let opts        = parts[3];
+
+        // Accept real XFS block devices, ZFS datasets, or Btrfs block devices
+        let is_xfs   = fs_type == "xfs"   && device_path.starts_with("/dev/");
+        let is_zfs   = fs_type == "zfs";
+        let is_btrfs = fs_type == "btrfs" && device_path.starts_with("/dev/");
+        let is_ext4  = fs_type == "ext4"  && device_path.starts_with("/dev/");
+        if !is_xfs && !is_zfs && !is_btrfs && !is_ext4 { continue; }
+        if !seen.insert(mount_point.to_string()) { continue; }
+
+        let device = if is_zfs {
+            // For ZFS the "device" field is the dataset name
+            device_path.to_string()
+        } else {
+            std::path::Path::new(device_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(device_path)
+                .to_string()
+        };
+
+        let has_prjquota = (is_xfs && (opts.contains("prjquota") || opts.contains("pquota")))
+            || (is_ext4 && (opts.contains("prjquota") || opts.contains("prjjquota")));
+        let (free_gib, total_gib, used_pct) = df_stats(mount_point).await.unwrap_or((0.0, 0.0, 0));
+
+        let suggested_path = if is_zfs {
+            // For ZFS suggest using the dataset itself as the volumes parent
+            device_path.to_string()
+        } else if mount_point == "/var/lib/docker" {
+            "/var/lib/docker/yunexal-volumes".to_string()
+        } else if mount_point == "/" {
+            String::new()
+        } else {
+            format!("{}/yunexal-volumes", mount_point)
+        };
+
+        mounts.push(serde_json::json!({
+            "device":         device,
+            "mount":          mount_point,
+            "fs_type":        fs_type,
+            "has_prjquota":   has_prjquota,
+            "has_zfs":        is_zfs,
+            "has_btrfs":      is_btrfs,
+            "has_ext4":       is_ext4,
+            "free_gib":       format!("{:.1}", free_gib),
+            "total_gib":      format!("{:.1}", total_gib),
+            "used_pct":       used_pct,
+            "suggested_path": suggested_path,
+        }));
+    }
+
+    let current_path = db::get_panel_setting(&state.db, "container_storage_path").await;
+    Json(serde_json::json!({
+        "ok": true,
+        "mounts": mounts,
+        "current_path": current_path,
+    })).into_response()
+}
+
+// ── DB integrity check ───────────────────────────────────────────────────────
+
+/// POST /api/admin/db-integrity
+/// Scans the database and removes records that are no longer linked to real
+/// Docker containers or existing server rows. Returns counts of removed rows.
+pub async fn api_admin_db_integrity(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    addr: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !auth::is_root_session(&state, &jar).await {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Root access required"}))).into_response();
+    }
+
+    // 1. Collect all currently-known yunexal container IDs from Docker.
+    let live_ids: std::collections::HashSet<String> = docker::list_containers(&state.docker)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+
+    // 2. Find servers in DB whose container_id is not in Docker.
+    let db_servers: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, container_id FROM servers"
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    let mut removed_servers: u64 = 0;
+    for (server_id, cid) in &db_servers {
+        if !live_ids.contains(cid) {
+            let _ = sqlx::query("DELETE FROM servers WHERE id = ?")
+                .bind(server_id)
+                .execute(&state.db)
+                .await;
+            removed_servers += 1;
+        }
+    }
+
+    // 3. Remove orphaned server_ports (server_id not in servers).
+    let orphan_ports = sqlx::query(
+        "DELETE FROM server_ports WHERE server_id NOT IN (SELECT id FROM servers)"
+    )
+    .execute(&state.db)
+    .await
+    .map(|r| r.rows_affected())
+    .unwrap_or(0);
+
+    // 4. Remove orphaned dns_records whose container_id references non-existent server rows.
+    let orphan_dns = sqlx::query(
+        "DELETE FROM dns_records WHERE container_id IS NOT NULL AND container_id NOT IN (SELECT id FROM servers)"
+    )
+    .execute(&state.db)
+    .await
+    .map(|r| r.rows_affected())
+    .unwrap_or(0);
+
+    let ip = auth::client_ip(&headers, addr);
+    let _ = db::audit_log(
+        &state.db, "admin", "panel.db_integrity",
+        "check",
+        &format!("removed_servers={} orphan_ports={} orphan_dns={}", removed_servers, orphan_ports, orphan_dns),
+        &ip,
+        &auth::user_agent(&headers),
+    ).await;
+
+    Json(serde_json::json!({
+        "ok": true,
+        "removed_servers": removed_servers,
+        "removed_orphan_ports": orphan_ports,
+        "removed_orphan_dns_records": orphan_dns,
+        "total_fixed": removed_servers + orphan_ports + orphan_dns,
+    })).into_response()
+}
+
+// ── Favicon upload ────────────────────────────────────────────────────────────
+
+/// POST /api/admin/theme/favicon
+/// Accepts a multipart `file` field containing an image (jpeg/png/gif/webp/ico).
+/// Saves it to `{cwd}/custom/favicon.{ext}` and records the extension in panel_settings.
+pub async fn api_admin_theme_favicon(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    addr: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> impl IntoResponse {
+    if !auth::is_root_session(&state, &jar).await {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Root access required"}))).into_response();
+    }
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        if name != "file" { continue; }
+
+        let content_type = field.content_type().unwrap_or("").to_string();
+        let ext = match content_type.as_str() {
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/png"  => "png",
+            "image/gif"  => "gif",
+            "image/webp" => "webp",
+            "image/x-icon" | "image/vnd.microsoft.icon" => "ico",
+            _ => {
+                // Try to infer from filename
+                let fname = field.file_name().unwrap_or("").to_lowercase();
+                if fname.ends_with(".png") { "png" }
+                else if fname.ends_with(".gif") { "gif" }
+                else if fname.ends_with(".webp") { "webp" }
+                else if fname.ends_with(".ico") { "ico" }
+                else { "jpg" }
+            }
+        };
+
+        let data = match field.bytes().await {
+            Ok(b) => b,
+            Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("Read failed: {e}")}))).into_response(),
+        };
+
+        if data.len() > 5 * 1024 * 1024 {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "File too large (max 5 MB)"}))).into_response();
+        }
+
+        // Save to {cwd}/custom/favicon.{ext}
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let custom_dir = cwd.join("custom");
+        if let Err(e) = tokio::fs::create_dir_all(&custom_dir).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Dir create failed: {e}")}))).into_response();
+        }
+        let dest = custom_dir.join(format!("favicon.{ext}"));
+        if let Err(e) = tokio::fs::write(&dest, &data).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Write failed: {e}")}))).into_response();
+        }
+
+        let _ = db::set_panel_setting(&state.db, "panel_favicon", ext).await;
+        let ip = auth::client_ip(&headers, addr);
+        let _ = db::audit_log(&state.db, "admin", "panel.theme.favicon", "upload", ext, &ip, &auth::user_agent(&headers)).await;
+
+        return Json(serde_json::json!({"ok": true, "ext": ext})).into_response();
+    }
+    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "No file field in request"}))).into_response()
 }
 
