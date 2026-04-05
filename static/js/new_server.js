@@ -134,6 +134,12 @@ fetch('/api/image/local').then(r => r.json()).then(d => {
     });
 }).catch(() => {});
 
+// ── XFS quota check ──────────────────────────────────────────────────────────
+
+fetch('/api/xfs-check').then(r => r.json()).then(d => {
+    if (!d.ok) document.getElementById('xfs-warn-banner').style.display = '';
+}).catch(() => {});
+
 // ── Fetch ENV ────────────────────────────────────────────────────────────────
 
 async function fetchImageEnv() {
