@@ -219,6 +219,10 @@ The panel itself speaks plain HTTP. For production use with a domain and HTTPS (
 
 > **Important:** The WebSocket console (`wss://`) will **not work** unless the reverse proxy is configured to forward WebSocket upgrade headers. Without this, Firefox shows *"can't establish a connection to the server at wss://…"*.
 
+> **Cloudflare Proxy users:** Disable **Rocket Loader** for the panel domain.
+> Rocket Loader rewrites `<script>` tags and injects its own scripts without a CSP nonce, which conflicts with the panel's Content Security Policy and breaks Monaco Editor, Chart.js and WebSocket initialization.
+> **Cloudflare Dashboard → Your Domain → Speed → Settings → Rocket Loader → OFF**
+
 The setup wizard (`yunexal-setup`) detects nginx and can generate this config automatically (Step 7). If you prefer to configure it manually:
 
 **`/etc/nginx/sites-available/yunexal-panel`**

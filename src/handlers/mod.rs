@@ -91,7 +91,7 @@ async fn security_headers(
 
     let csp = format!(
         "default-src 'self'; \
-         script-src 'nonce-{nonce}' 'self' https://unpkg.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://static.cloudflareinsights.com; \
+         script-src 'nonce-{nonce}' https://unpkg.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://static.cloudflareinsights.com; \
          script-src-attr 'unsafe-inline'; \
          style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; \
          font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; \
