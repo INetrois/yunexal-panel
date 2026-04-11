@@ -294,6 +294,9 @@ pub struct CreateFileForm {
     /// Current directory path — set by the file browser JS
     #[serde(default)]
     pub path: String,
+    /// "file" (default) or "folder"
+    #[serde(default)]
+    pub entry_type: String,
 }
 
 #[derive(Deserialize)]

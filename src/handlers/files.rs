@@ -425,7 +425,7 @@ pub async fn edit_file_page(
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_string();
-    if filename.starts_with('.') || filename.ends_with(".example") || filename.ends_with(".test") {
+    if filename.ends_with(".example") || filename.ends_with(".test") {
         return Redirect::to(&format!("/servers/{}/files", db_id)).into_response();
     }
 
@@ -559,9 +559,14 @@ pub async fn create_new_file(
     let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let name = form.name.trim();
-    if name.is_empty() || name.contains('/') || name.contains('\\') || name.starts_with('.') {
-        return "Invalid file name (cannot start with dot)".into_response();
+    if !is_safe_entry_name(name) {
+        return "Invalid name".into_response();
     }
+
+    let create_folder = matches!(
+        form.entry_type.trim().to_lowercase().as_str(),
+        "folder" | "dir" | "directory"
+    );
 
     // Resolve the target directory from form.path
     let dir_path = {
@@ -592,32 +597,62 @@ pub async fn create_new_file(
 
     let file_path = dir_path.join(name);
     if file_path.exists() {
-        return "File already exists".into_response();
+        return if create_folder {
+            "Folder already exists".into_response()
+        } else {
+            "File already exists".into_response()
+        };
     }
 
     let rel_file = file_path.strip_prefix(&volume_path)
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let create_result = tokio::fs::write(&file_path, "").await;
-    if let Err(e) = create_result {
-        if e.kind() == std::io::ErrorKind::PermissionDenied {
-            let cmd = format!("touch '/mnt/{}'", sh_esc(&rel_file));
-            if let Err(e2) = docker_volume_cmd(&volume_path, &cmd).await {
-                return format!("Failed to create file: {e2}").into_response();
+
+    if create_folder {
+        let create_result = tokio::fs::create_dir(&file_path).await;
+        if let Err(e) = create_result {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                let cmd = format!("mkdir '/mnt/{}'", sh_esc(&rel_file));
+                if let Err(e2) = docker_volume_cmd(&volume_path, &cmd).await {
+                    return format!("Failed to create folder: {e2}").into_response();
+                }
+            } else {
+                return format!("Failed to create folder: {e}").into_response();
             }
-        } else {
-            return format!("Failed to create file: {e}").into_response();
+        }
+    } else {
+        let create_result = tokio::fs::write(&file_path, "").await;
+        if let Err(e) = create_result {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                let cmd = format!("touch '/mnt/{}'", sh_esc(&rel_file));
+                if let Err(e2) = docker_volume_cmd(&volume_path, &cmd).await {
+                    return format!("Failed to create file: {e2}").into_response();
+                }
+            } else {
+                return format!("Failed to create file: {e}").into_response();
+            }
         }
     }
 
     let actor = auth::session_username(&jar).unwrap_or_default();
-    let _ = db::audit_log(&state.db, &actor, "file.create", name, &format!("#{}", db_id), &ip, &auth::user_agent(&headers)).await;
+    let audit_action = if create_folder { "folder.create" } else { "file.create" };
+    let _ = db::audit_log(&state.db, &actor, audit_action, name, &format!("#{}", db_id), &ip, &auth::user_agent(&headers)).await;
 
     [(
         axum::http::header::HeaderName::from_static("hx-trigger"),
         "file-created",
     )]
     .into_response()
+}
+
+fn is_safe_entry_name(name: &str) -> bool {
+    let n = name.trim();
+    if n.is_empty() { return false; }
+    if n == "." || n == ".." { return false; }
+    if n.contains('/') || n.contains('\\') || n.contains('\0') { return false; }
+    // Block traversal-like names such as ../foo or ..bar to avoid ambiguous handling.
+    if n.contains("..") { return false; }
+    true
 }
 
 // ── Run a shell command inside Alpine with the volume mounted ───────────────

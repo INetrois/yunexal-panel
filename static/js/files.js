@@ -39,15 +39,31 @@ function refreshBrowser() {
 // Returns a Promise<boolean> — resolves true on confirm, false on cancel.
 // ── "New File" modal ──────────────────────────────────────────────────────────
 
-function fbOpenCreate() {
+function fbOpenCreate(kind = 'file') {
     const path = currentBrowserPath();
     const inp = document.getElementById('fb-create-path');
     if (inp) inp.value = path;
     const lbl = document.getElementById('fb-create-dir');
     if (lbl) lbl.textContent = path === '/' ? '/ (root)' : path;
+    const isFolder = kind === 'folder';
+    const typeEl = document.getElementById('fb-create-type');
+    const titleEl = document.getElementById('fb-create-title');
+    const nameLblEl = document.getElementById('fb-create-name-label');
+    const submitEl = document.getElementById('fb-create-submit');
     // clear name field
     const name = document.getElementById('fb-create-name');
-    if (name) name.value = '';
+    if (name) {
+        name.value = '';
+        name.placeholder = isFolder ? 'plugins' : 'eula.txt';
+    }
+    if (typeEl) typeEl.value = isFolder ? 'folder' : 'file';
+    if (titleEl) titleEl.textContent = isFolder ? 'Create New Folder' : 'Create New File';
+    if (nameLblEl) nameLblEl.textContent = isFolder ? 'Folder name' : 'Filename';
+    if (submitEl) {
+        submitEl.innerHTML = isFolder
+            ? '<i class="bi bi-folder-plus"></i> Create Folder'
+            : '<i class="bi bi-file-earmark-plus"></i> Create File';
+    }
     new bootstrap.Modal(document.getElementById('createFileModal')).show();
 }
 
@@ -59,7 +75,8 @@ document.body.addEventListener('htmx:afterRequest', function (e) {
     if (!action.includes('files/create')) return;
 
     if (e.detail.successful) {
-        showToast('File created', 'ok');
+        const type = el.querySelector('[name="entry_type"]')?.value || 'file';
+        showToast(type === 'folder' ? 'Folder created' : 'File created', 'ok');
         bootstrap.Modal.getInstance(document.getElementById('createFileModal'))?.hide();
     } else {
         showToast(e.detail.xhr?.responseText || 'Failed to create file', 'err');
@@ -69,7 +86,7 @@ document.body.addEventListener('htmx:afterRequest', function (e) {
 // Keyboard shortcut: n = new file
 document.addEventListener('keydown', function (e) {
     if (document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
-    if (e.key === 'n' && !e.ctrlKey && !e.metaKey) fbOpenCreate();
+    if (e.key === 'n' && !e.ctrlKey && !e.metaKey) fbOpenCreate('file');
 });
 
 // ── Context Menu ──────────────────────────────────────────────────────────────
