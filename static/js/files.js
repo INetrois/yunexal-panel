@@ -87,18 +87,22 @@ function ctxShow(x, y, row) {
     _ctxTarget = row;
     const type    = row.dataset.type; // "file" | "dir"
     const hasClip = !!_clipboard;
+    const isArchive = row.dataset.archive === 'true';
 
     const editEl  = ctxEl('fb-ctx-edit');
     const openEl  = ctxEl('fb-ctx-open');
     const pasteEl = ctxEl('fb-ctx-paste');
-    if (editEl)  editEl.style.display  = type === 'file' ? '' : 'none';
+    const primarySepEl = ctxEl('fb-ctx-sep-primary');
+    if (editEl)  editEl.style.display  = type === 'file' && !isArchive ? '' : 'none';
     if (openEl)  openEl.style.display  = type === 'dir'  ? '' : 'none';
     if (pasteEl) pasteEl.classList.toggle('disabled', !hasClip);
+    if (primarySepEl) primarySepEl.style.display = (type === 'file' && !isArchive) || type === 'dir' ? '' : 'none';
 
-    const extractEl  = ctxEl('fb-ctx-extract');
+    const extractFolderEl = ctxEl('fb-ctx-extract-folder');
+    const extractHereEl = ctxEl('fb-ctx-extract-here');
     const extractSep = ctxEl('fb-ctx-sep-archive');
-    const isArchive  = row.dataset.archive === 'true';
-    if (extractEl)  extractEl.style.display  = isArchive ? '' : 'none';
+    if (extractFolderEl) extractFolderEl.style.display = isArchive ? '' : 'none';
+    if (extractHereEl) extractHereEl.style.display = isArchive ? '' : 'none';
     if (extractSep) extractSep.style.display = isArchive ? '' : 'none';
 
     const hasSel     = _selection.size > 0;
@@ -305,11 +309,17 @@ function fbInit() {
         }
     });
 
-    // Extract archive contextmenu item
-    ctxEl('fb-ctx-extract')?.addEventListener('click', function () {
+    // Extract archive contextmenu items
+    ctxEl('fb-ctx-extract-folder')?.addEventListener('click', function () {
         if (!_ctxTarget) return;
         ctxHide();
-        fbExtractArchive(_ctxTarget.dataset.path);
+        fbExtractArchive(_ctxTarget.dataset.path, 'folder');
+    });
+
+    ctxEl('fb-ctx-extract-here')?.addEventListener('click', function () {
+        if (!_ctxTarget) return;
+        ctxHide();
+        fbExtractArchive(_ctxTarget.dataset.path, 'here');
     });
 
     // Archive selected items (context menu)
@@ -551,10 +561,11 @@ async function fbArchiveSelected() {
 
 // ── Extract archive in-place ────────────────────────────────────────────────────────────
 
-async function fbExtractArchive(path) {
+async function fbExtractArchive(path, destination = 'folder') {
     const sid = getServerId();
     const fd  = new URLSearchParams();
     fd.append('path', path);
+    fd.append('destination', destination);
     try {
         const res = await fetch(`/api/servers/${sid}/files/extract`, {
             method: 'POST', body: fd,
@@ -577,6 +588,10 @@ async function fbUploadFiles(files) {
     const path  = currentBrowserPath();
     const total = files.length;
     let ok = 0;
+    const CF_SAFE_CHUNK_BYTES = 85 * 1024 * 1024;
+    const CHUNK_UPLOAD_THRESHOLD = 85 * 1024 * 1024;
+    const CHUNK_MAX_RETRIES = 3;
+    const CHUNK_PARALLELISM = 3;
 
     const bar     = document.getElementById('fb-up-bar');
     const label   = document.getElementById('fb-up-label');
@@ -591,11 +606,31 @@ async function fbUploadFiles(files) {
         label.textContent   = file.name;
         bar.style.width     = '0%';
 
+        const result = file.size > CHUNK_UPLOAD_THRESHOLD
+            ? await fbUploadFileInChunks(file, sid, path, bar, label)
+            : await fbUploadFileMultipart(file, sid, path, bar);
+
+        if (result.ok) {
+            ok++;
+        } else {
+            showToast('Failed: ' + file.name + ' — ' + result.body, 'err');
+        }
+    }
+
+    panel.style.display = 'none';
+    bar.style.width = '0%';
+
+    if (ok > 0) {
+        showToast('Uploaded ' + ok + ' file' + (ok > 1 ? 's' : ''), 'ok');
+        refreshBrowser();
+    }
+
+    async function fbUploadFileMultipart(file, sid, path, bar) {
         const fd = new FormData();
         fd.append('file', file, file.name);
         const url = `/api/servers/${sid}/files/upload?path=${encodeURIComponent(path)}`;
 
-        const result = await new Promise(resolve => {
+        return await new Promise(resolve => {
             const xhr = new XMLHttpRequest();
             xhr.open('POST', url);
 
@@ -615,19 +650,95 @@ async function fbUploadFiles(files) {
 
             xhr.send(fd);
         });
-
-        if (result.ok) {
-            ok++;
-        } else {
-            showToast('Failed: ' + file.name + ' — ' + result.body, 'err');
-        }
     }
 
-    panel.style.display = 'none';
-    bar.style.width = '0%';
+    async function fbUploadFileInChunks(file, sid, path, bar, label) {
+        const totalChunks = Math.ceil(file.size / CF_SAFE_CHUNK_BYTES);
+        const uploadId = (window.crypto && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : `yx-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const progressByChunk = new Array(totalChunks).fill(0);
+        const chunkSizeFor = (chunkIndex) => {
+            const start = chunkIndex * CF_SAFE_CHUNK_BYTES;
+            const end = Math.min(start + CF_SAFE_CHUNK_BYTES, file.size);
+            return end - start;
+        };
+        const updateProgress = () => {
+            const uploaded = progressByChunk.reduce((sum, n) => sum + n, 0);
+            bar.style.width = Math.min(100, Math.round(uploaded / file.size * 100)) + '%';
+        };
 
-    if (ok > 0) {
-        showToast('Uploaded ' + ok + ' file' + (ok > 1 ? 's' : ''), 'ok');
-        refreshBrowser();
+        async function uploadChunk(chunkIndex, attempt = 1) {
+            const start = chunkIndex * CF_SAFE_CHUNK_BYTES;
+            const end = Math.min(start + CF_SAFE_CHUNK_BYTES, file.size);
+            const chunk = file.slice(start, end);
+            label.textContent = `${file.name} (chunk ${chunkIndex + 1}/${totalChunks})`;
+
+            const result = await new Promise(resolve => {
+                const qs = new URLSearchParams({
+                    path,
+                    filename: file.name,
+                    upload_id: uploadId,
+                    chunk_index: String(chunkIndex),
+                    total_chunks: String(totalChunks),
+                });
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', `/api/servers/${sid}/files/upload-chunk?${qs.toString()}`);
+                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+                xhr.upload.addEventListener('progress', e => {
+                    progressByChunk[chunkIndex] = e.lengthComputable ? e.loaded : chunk.size;
+                    updateProgress();
+                });
+
+                xhr.addEventListener('load', () => {
+                    progressByChunk[chunkIndex] = chunkSizeFor(chunkIndex);
+                    updateProgress();
+                    resolve({ ok: xhr.status >= 200 && xhr.status < 300, body: xhr.responseText });
+                });
+
+                xhr.addEventListener('error', () => resolve({ ok: false, body: 'network error' }));
+                xhr.addEventListener('abort', () => resolve({ ok: false, body: 'aborted' }));
+                xhr.send(chunk);
+            });
+
+            if (result.ok) return result;
+            if (attempt >= CHUNK_MAX_RETRIES) return result;
+
+            progressByChunk[chunkIndex] = 0;
+            updateProgress();
+            await new Promise(resolve => setTimeout(resolve, 400 * attempt));
+            return uploadChunk(chunkIndex, attempt + 1);
+        }
+
+        let nextChunk = 0;
+        let failed = null;
+        const workers = Array.from({ length: Math.min(CHUNK_PARALLELISM, totalChunks) }, async () => {
+            while (nextChunk < totalChunks && !failed) {
+                const chunkIndex = nextChunk++;
+                const result = await uploadChunk(chunkIndex);
+                if (!result.ok && !failed) failed = result;
+            }
+        });
+        await Promise.all(workers);
+        if (failed) return failed;
+
+        label.textContent = `${file.name} (finalizing)`;
+        const completeQs = new URLSearchParams({
+            path,
+            filename: file.name,
+            upload_id: uploadId,
+            total_chunks: String(totalChunks),
+        });
+        const completeRes = await fetch(`/api/servers/${sid}/files/upload-complete?${completeQs.toString()}`, {
+            method: 'POST',
+            credentials: 'same-origin',
+        });
+        if (!completeRes.ok) {
+            return { ok: false, body: await completeRes.text() || 'finalize failed' };
+        }
+
+        bar.style.width = '100%';
+        return { ok: true, body: '' };
     }
 }

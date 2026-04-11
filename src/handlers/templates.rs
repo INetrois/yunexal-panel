@@ -322,6 +322,25 @@ pub struct FileUploadQuery {
 }
 
 #[derive(Deserialize)]
+pub struct FileChunkUploadQuery {
+    #[serde(default)]
+    pub path: String,
+    pub filename: String,
+    pub upload_id: String,
+    pub chunk_index: u32,
+    pub total_chunks: u32,
+}
+
+#[derive(Deserialize)]
+pub struct FileChunkCompleteQuery {
+    #[serde(default)]
+    pub path: String,
+    pub filename: String,
+    pub upload_id: String,
+    pub total_chunks: u32,
+}
+
+#[derive(Deserialize)]
 pub struct RenameServerForm {
     pub name: String,
 }
@@ -364,6 +383,8 @@ pub struct EditContainerForm {
 #[derive(Deserialize)]
 pub struct ExtractForm {
     pub path: String,
+    #[serde(default)]
+    pub destination: String,
 }
 
 #[derive(Deserialize)]
