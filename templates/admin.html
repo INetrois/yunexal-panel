@@ -4,7 +4,7 @@
     {% include "_head_common.html" %}
     <title>Admin — Yunexal Panel</title>
     <link href="/static/css/base.css?v=2" rel="stylesheet">
-    <link href="/static/css/admin.css?v=5" rel="stylesheet">
+    <link href="/static/css/admin.css?v=6" rel="stylesheet">
 </head>
 <body>
     {% include "_admin_header.html" %}
@@ -274,9 +274,11 @@
                             <span><i class="bi bi-people me-2 text-muted"></i>All Users</span>
                             <span style="font-size:.75rem;color:var(--muted);" id="user-count-lbl">{{ users_count }} total</span>
                         </div>
-                        <div class="yu-search-bar">
-                            <i class="bi bi-search"></i>
-                            <input id="users-search" type="text" placeholder="Search by username or role…" oninput="filterTableRows(this.value, 'users-tbody')">
+                        <div class="search-wrap">
+                            <div class="yu-search-bar">
+                                <i class="bi bi-search"></i>
+                                <input id="users-search" type="text" placeholder="Search by username or role…" oninput="filterTableRows(this.value, 'users-tbody')">
+                            </div>
                         </div>
                         <div style="overflow-x:auto;">
                             <table class="yu-table" id="users-table">
