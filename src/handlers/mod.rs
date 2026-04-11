@@ -217,7 +217,7 @@ use dns::{
 use auth::{login_page, login_submit, logout};
 use create::{api_image_env, api_image_env_overrides, api_local_images, api_xfs_check, create_server};
 use dashboard::{api_dashboard_json, dashboard, new_server_page, server_list_fragment};
-use files::{bulk_delete, copy_file, create_archive, create_new_file, delete_file, edit_file_page, extract_archive, list_files_api, list_files_json, move_file, rename_file, save_file_content, upload_files};
+use files::{bulk_delete, copy_file, create_archive, create_new_file, delete_file, edit_file_page, extract_archive, finalize_file_upload, list_files_api, list_files_json, move_file, rename_file, save_file_content, upload_file_chunk, upload_files};
 use network::{api_add_port, api_get_bandwidth, api_remove_port, api_set_bandwidth, api_tag_port, api_toggle_port, api_toggle_port_ufw, api_server_disk, networking_page};
 use servers::{
     console_page, delete_server, files_page, get_server_stats, kill_server, rename_server,
@@ -271,6 +271,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/servers/{id}/files/copy", post(copy_file))
         .route("/api/servers/{id}/files/upload", post(upload_files)
             .layer(axum::extract::DefaultBodyLimit::disable()))
+        .route("/api/servers/{id}/files/upload-chunk", post(upload_file_chunk)
+            .layer(axum::extract::DefaultBodyLimit::disable()))
+        .route("/api/servers/{id}/files/upload-complete", post(finalize_file_upload))
         .route("/api/servers/{id}/files/extract", post(extract_archive))
         .route("/api/servers/{id}/files/archive", post(create_archive))
         .route("/api/servers/{id}/files/bulk-delete", post(bulk_delete))

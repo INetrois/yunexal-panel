@@ -1,4 +1,5 @@
 use axum::{
+    body::Bytes,
     extract::{ConnectInfo, Form, Multipart, Path, Query, State},
     http::StatusCode,
     http::HeaderMap,
@@ -8,9 +9,75 @@ use axum::{
 use axum_extra::extract::cookie::PrivateCookieJar;
 use std::net::SocketAddr;
 use crate::{auth, db, docker};
+use crate::handlers::CspNonce;
 use crate::state::AppState;
-use super::CspNonce;
-use super::templates::{ArchiveForm, CopyFileForm, CreateFileForm, DeleteFileQuery, ExtractForm, FileContentQuery, FileEditTemplate, FileListQuery, FileUploadQuery, RenameFileForm, SaveFileForm};
+use super::templates::{ArchiveForm, CopyFileForm, CreateFileForm, DeleteFileQuery, ExtractForm, FileChunkCompleteQuery, FileChunkUploadQuery, FileContentQuery, FileEditTemplate, FileListQuery, FileUploadQuery, RenameFileForm, SaveFileForm};
+
+fn sanitized_upload_filename(filename: &str) -> String {
+    std::path::Path::new(filename)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("upload")
+        .to_string()
+}
+
+fn chunk_upload_temp_path(upload_id: &str, fname: &str) -> std::path::PathBuf {
+    let safe_id: String = upload_id.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .take(96)
+        .collect();
+    let safe_id = if safe_id.is_empty() { "upload".to_string() } else { safe_id };
+    std::env::temp_dir().join(format!("yxchunk_{}_{}", safe_id, fname))
+}
+
+fn chunk_upload_dir(upload_id: &str, fname: &str) -> std::path::PathBuf {
+    chunk_upload_temp_path(upload_id, fname).with_extension("parts")
+}
+
+fn chunk_part_path(upload_id: &str, fname: &str, chunk_index: u32) -> std::path::PathBuf {
+    chunk_upload_dir(upload_id, fname).join(format!("{:08}.part", chunk_index))
+}
+
+async fn install_uploaded_file(
+    volume_path: &std::path::Path,
+    dest_dir: &std::path::Path,
+    fname: &str,
+    tmp_path: &std::path::Path,
+) -> Result<(), String> {
+    let file_path = dest_dir.join(fname);
+    if !file_path.starts_with(volume_path) {
+        return Err(format!("path traversal blocked: {fname}"));
+    }
+
+    let tmp_str = tmp_path.display().to_string();
+    if tokio::fs::rename(tmp_path, &file_path).await.is_ok() {
+        return Ok(());
+    }
+    if tokio::fs::copy(tmp_path, &file_path).await.is_ok() {
+        let _ = tokio::fs::remove_file(tmp_path).await;
+        return Ok(());
+    }
+
+    let mount_vol = format!("{}:/mnt:rw", volume_path.display());
+    let mount_tmp = format!("{}:/srcfile:ro", tmp_str);
+    let rel_dst = file_path.strip_prefix(volume_path)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| fname.to_string());
+    let out = tokio::process::Command::new("docker")
+        .args(["run", "--rm",
+            "-v", &mount_tmp,
+            "-v", &mount_vol,
+            "alpine",
+            "cp", "/srcfile", &format!("/mnt/{}", rel_dst)])
+        .output().await;
+    let _ = tokio::fs::remove_file(tmp_path).await;
+    match out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(format!("docker cp failed for {fname}: {}", String::from_utf8_lossy(&o.stderr))),
+        Err(e) => Err(format!("docker spawn failed: {e}")),
+    }
+}
 
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -164,6 +231,38 @@ fn is_extractable(name: &str) -> bool {
     || n.ends_with(".tar") || n.ends_with(".zip") || n.ends_with(".jar")
     || n.ends_with(".rar") || n.ends_with(".7z")
     || n.ends_with(".gz") || n.ends_with(".bz2") || n.ends_with(".xz")
+}
+
+fn archive_extract_dir_name(name: &str) -> String {
+    const SUFFIXES: [&str; 14] = [
+        ".tar.gz",
+        ".tgz",
+        ".tar.bz2",
+        ".tbz2",
+        ".tar.xz",
+        ".txz",
+        ".tar",
+        ".zip",
+        ".jar",
+        ".rar",
+        ".7z",
+        ".gz",
+        ".bz2",
+        ".xz",
+    ];
+
+    let lower = name.to_lowercase();
+    for suffix in SUFFIXES {
+        if lower.ends_with(suffix) && name.len() > suffix.len() {
+            return name[..name.len() - suffix.len()].to_string();
+        }
+    }
+
+    std::path::Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name)
+        .to_string()
 }
 
 /// Builds a breadcrumb bar HTML for the given path.
@@ -672,7 +771,8 @@ pub async fn delete_file(
     };
     let volume_dir = docker::get_volume_dir(&state.docker, &docker_id).await
         .unwrap_or_else(|_| docker_id.clone());
-    let volume_path = docker::volume_dir_to_path(&volume_dir);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let volume_path = cwd.join("volumes").join(&volume_dir);
 
     let target = match resolve_path(&volume_path, &query.path) {
         Some(p) => p,
@@ -892,18 +992,7 @@ pub async fn upload_files(
             .unwrap_or_else(|| "upload".to_string());
         if filename.is_empty() { last_err = "empty filename".to_string(); continue; }
 
-        // Sanitise — strip directory components
-        let fname = std::path::Path::new(&filename)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("upload")
-            .to_string();
-
-        let file_path = dest_dir.join(&fname);
-        if !file_path.starts_with(&volume_path) {
-            last_err = format!("path traversal blocked: {fname}");
-            continue;
-        }
+        let fname = sanitized_upload_filename(&filename);
 
         // Always stream to a temp file first (volume dirs are root-owned)
         let tmp_path = std::env::temp_dir().join(format!("yxupload_{}", fname));
@@ -942,37 +1031,11 @@ pub async fn upload_files(
         }
         drop(f); // close the file before moving
 
-        // Try direct rename (same FS), then direct copy, then docker fallback
-        let tmp_str = tmp_path.display().to_string();
-
-        let installed = if tokio::fs::rename(&tmp_path, &file_path).await.is_ok() {
-            true
-        } else if tokio::fs::copy(&tmp_path, &file_path).await.is_ok() {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            true
-        } else {
-            // Fallback: docker run with both volumes mounted, copy inside container
-            let mount_vol = format!("{}:/mnt:rw", volume_path.display());
-            let mount_tmp = format!("{}:/srcfile:ro", tmp_str);
-            let rel_dst = file_path.strip_prefix(&volume_path)
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| fname.clone());
-            let out = tokio::process::Command::new("docker")
-                .args(["run", "--rm",
-                    "-v", &mount_tmp,
-                    "-v", &mount_vol,
-                    "alpine",
-                    "cp", "/srcfile", &format!("/mnt/{}", rel_dst)])
-                .output().await;
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            match out {
-                Ok(o) if o.status.success() => true,
-                Ok(o) => {
-                    last_err = format!("docker cp failed for {fname}: {}",
-                        String::from_utf8_lossy(&o.stderr));
-                    false
-                }
-                Err(e) => { last_err = format!("docker spawn failed: {e}"); false }
+        let installed = match install_uploaded_file(&volume_path, &dest_dir, &fname, &tmp_path).await {
+            Ok(()) => true,
+            Err(e) => {
+                last_err = e;
+                false
             }
         };
         if installed { saved += 1; }
@@ -999,7 +1062,174 @@ pub async fn upload_files(
     ).into_response()
 }
 
-// ── EXTRACT an archive file in-place ─────────────────────────────────────────
+pub async fn upload_file_chunk(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    addr: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(db_id): Path<i64>,
+    Query(query): Query<FileChunkUploadQuery>,
+    body: Bytes,
+) -> impl IntoResponse {
+    let ip = auth::client_ip(&headers, addr);
+    if !auth::can_access_server(&state, &jar, db_id).await {
+        return (StatusCode::FORBIDDEN, "Access denied").into_response();
+    }
+    if query.total_chunks == 0 {
+        return (StatusCode::BAD_REQUEST, "total_chunks must be positive").into_response();
+    }
+    if query.chunk_index >= query.total_chunks {
+        return (StatusCode::BAD_REQUEST, "chunk_index out of range").into_response();
+    }
+
+    let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
+        Some(cid) => cid,
+        None => return (StatusCode::NOT_FOUND, "Server not found").into_response(),
+    };
+    let volume_dir = docker::get_volume_dir(&state.docker, &docker_id).await
+        .unwrap_or_else(|_| docker_id.clone());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let volume_path = cwd.join("volumes").join(&volume_dir);
+
+    let dest_dir = match resolve_path(&volume_path, &query.path) {
+        Some(p) => p,
+        None => return (StatusCode::FORBIDDEN, "Access denied").into_response(),
+    };
+    if let Err(e) = tokio::fs::create_dir_all(&dest_dir).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    let fname = sanitized_upload_filename(&query.filename);
+    let parts_dir = chunk_upload_dir(&query.upload_id, &fname);
+    if let Err(e) = tokio::fs::create_dir_all(&parts_dir).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("tmp dir create failed: {e}")).into_response();
+    }
+    let part_path = chunk_part_path(&query.upload_id, &fname, query.chunk_index);
+
+    let mut open = tokio::fs::OpenOptions::new();
+    open.create(true).write(true).truncate(true);
+    let mut f = match open.open(&part_path).await {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("tmp create failed: {e}")).into_response(),
+    };
+
+    use tokio::io::AsyncWriteExt;
+    if let Err(e) = f.write_all(&body).await {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("write error for {fname}: {e}")).into_response();
+    }
+    let _ = f.flush().await;
+    let _ = f.sync_data().await;
+    let _ = (jar, ip, dest_dir, volume_path, headers, db_id); // keep signature vars intentionally used by sibling finalize endpoint
+    StatusCode::NO_CONTENT.into_response()
+}
+
+pub async fn finalize_file_upload(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    addr: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(db_id): Path<i64>,
+    Query(query): Query<FileChunkCompleteQuery>,
+) -> impl IntoResponse {
+    let ip = auth::client_ip(&headers, addr);
+    if !auth::can_access_server(&state, &jar, db_id).await {
+        return (StatusCode::FORBIDDEN, "Access denied").into_response();
+    }
+    if query.total_chunks == 0 {
+        return (StatusCode::BAD_REQUEST, "total_chunks must be positive").into_response();
+    }
+
+    let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
+        Some(cid) => cid,
+        None => return (StatusCode::NOT_FOUND, "Server not found").into_response(),
+    };
+    let volume_dir = docker::get_volume_dir(&state.docker, &docker_id).await
+        .unwrap_or_else(|_| docker_id.clone());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let volume_path = cwd.join("volumes").join(&volume_dir);
+
+    let dest_dir = match resolve_path(&volume_path, &query.path) {
+        Some(p) => p,
+        None => return (StatusCode::FORBIDDEN, "Access denied").into_response(),
+    };
+    if let Err(e) = tokio::fs::create_dir_all(&dest_dir).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    let fname = sanitized_upload_filename(&query.filename);
+    let parts_dir = chunk_upload_dir(&query.upload_id, &fname);
+    let tmp_path = chunk_upload_temp_path(&query.upload_id, &fname);
+
+    let mut out = match tokio::fs::File::create(&tmp_path).await {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("tmp create failed: {e}")).into_response(),
+    };
+
+    use tokio::io::{AsyncWriteExt, AsyncReadExt};
+    for idx in 0..query.total_chunks {
+        let part_path = chunk_part_path(&query.upload_id, &fname, idx);
+        if !part_path.exists() {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return (StatusCode::BAD_REQUEST, format!("missing chunk {}", idx + 1)).into_response();
+        }
+
+        let mut part = match tokio::fs::File::open(&part_path).await {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("chunk open failed: {e}")).into_response();
+            }
+        };
+        let mut buf = vec![0u8; 1024 * 1024];
+        loop {
+            match part.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Err(e) = out.write_all(&buf[..n]).await {
+                        let _ = tokio::fs::remove_file(&tmp_path).await;
+                        return (StatusCode::INTERNAL_SERVER_ERROR, format!("merge failed: {e}")).into_response();
+                    }
+                }
+                Err(e) => {
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("chunk read failed: {e}")).into_response();
+                }
+            }
+        }
+    }
+    let _ = out.flush().await;
+    drop(out);
+
+    match install_uploaded_file(&volume_path, &dest_dir, &fname, &tmp_path).await {
+        Ok(()) => {
+            let _ = tokio::fs::remove_dir_all(&parts_dir).await;
+            let actor = auth::session_username(&jar).unwrap_or_default();
+            let _ = db::audit_log(
+                &state.db,
+                &actor,
+                "file.upload",
+                &query.path,
+                &format!("#{} file={} chunked complete", db_id, fname),
+                &ip,
+                &auth::user_agent(&headers),
+            ).await;
+            (
+                StatusCode::OK,
+                axum::http::HeaderMap::from_iter([(
+                    axum::http::header::HeaderName::from_static("hx-trigger"),
+                    axum::http::HeaderValue::from_static("file-created"),
+                )]),
+            ).into_response()
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Upload failed: {e}")).into_response()
+        }
+    }
+}
+
+// ── EXTRACT an archive file ──────────────────────────────────────────────────
 pub async fn extract_archive(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
@@ -1036,36 +1266,98 @@ pub async fn extract_archive(
         Some(p) => p.to_path_buf(),
         None => return (StatusCode::BAD_REQUEST, "Invalid path").into_response(),
     };
-    let rel_dir = arch_dir.strip_prefix(&volume_path)
+    let rel_dir = arch_dir
+        .strip_prefix(&volume_path)
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let cd_part = if rel_dir.is_empty() {
-        "cd /mnt".to_string()
+    let archive_mount_path = if rel_dir.is_empty() {
+        format!("/mnt/{}", arch_name)
     } else {
-        format!("cd '/mnt/{}'", sh_esc(&rel_dir))
+        format!("/mnt/{}/{}", rel_dir, arch_name)
     };
+    let destination = if form.destination == "here" { "here" } else { "folder" };
+    let work_dir = if rel_dir.is_empty() {
+        "/mnt".to_string()
+    } else {
+        format!("/mnt/{}", rel_dir)
+    };
+    let (prefix_cmd, target_dir, extracted_name, post_cmd) = if destination == "here" {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let tmp_extract_dir = format!("{}/.yxextract_tmp_{}", work_dir, stamp);
+        let finalize_cmd = format!(
+            " && src_dir='{tmp}' \
+&& entries=$(find \"$src_dir\" -mindepth 1 -maxdepth 1 | wc -l) \
+&& if [ \"$entries\" -eq 1 ]; then only=$(find \"$src_dir\" -mindepth 1 -maxdepth 1); if [ -d \"$only\" ]; then src_dir=\"$only\"; fi; fi \
+&& for f in \"$src_dir\"/* \"$src_dir\"/.[!.]* \"$src_dir\"/..?*; do [ -e \"$f\" ] || continue; mv \"$f\" '{dst}/'; done \
+&& rm -rf '{tmp}'",
+            tmp = sh_esc(&tmp_extract_dir),
+            dst = sh_esc(&work_dir),
+        );
+        (
+            format!("rm -rf '{}' && mkdir -p '{}' && ", sh_esc(&tmp_extract_dir), sh_esc(&tmp_extract_dir)),
+            tmp_extract_dir,
+            String::new(),
+            finalize_cmd,
+        )
+    } else {
+        let target_name = archive_extract_dir_name(&arch_name);
+        if target_name.trim().is_empty() {
+            return (StatusCode::BAD_REQUEST, "Invalid archive name").into_response();
+        }
+        let target_mount_path = if rel_dir.is_empty() {
+            format!("/mnt/{}", target_name)
+        } else {
+            format!("/mnt/{}/{}", rel_dir, target_name)
+        };
+        (
+            format!("mkdir -p '{}' && ", sh_esc(&target_mount_path)),
+            target_mount_path,
+            target_name,
+            String::new(),
+        )
+    };
+    let archive_arg = format!("'{}'", sh_esc(&archive_mount_path));
+    let target_arg = format!("'{}'", sh_esc(&target_dir));
 
     let name_lower = arch_name.to_lowercase();
     let sh_cmd = if name_lower.ends_with(".tar.gz") || name_lower.ends_with(".tgz") {
-        format!("{} && tar xzf '{}'", cd_part, sh_esc(&arch_name))
+        format!("{}tar xzf {} -C {}{}", prefix_cmd, archive_arg, target_arg, post_cmd)
     } else if name_lower.ends_with(".tar.bz2") || name_lower.ends_with(".tbz2") {
-        format!("{} && tar xjf '{}'", cd_part, sh_esc(&arch_name))
+        format!("{}tar xjf {} -C {}{}", prefix_cmd, archive_arg, target_arg, post_cmd)
     } else if name_lower.ends_with(".tar.xz") || name_lower.ends_with(".txz") {
-        format!("{} && tar xJf '{}'", cd_part, sh_esc(&arch_name))
+        format!("{}tar xJf {} -C {}{}", prefix_cmd, archive_arg, target_arg, post_cmd)
     } else if name_lower.ends_with(".tar") {
-        format!("{} && tar xf '{}'", cd_part, sh_esc(&arch_name))
+        format!("{}tar xf {} -C {}{}", prefix_cmd, archive_arg, target_arg, post_cmd)
     } else if name_lower.ends_with(".zip") || name_lower.ends_with(".jar") {
-        format!("{} && unzip -o '{}'", cd_part, sh_esc(&arch_name))
+        format!("{}unzip -o {} -d {}{}", prefix_cmd, archive_arg, target_arg, post_cmd)
     } else if name_lower.ends_with(".rar") {
-        format!("{} && apk add --no-cache unrar >/dev/null 2>&1 && unrar x -o+ '{}'", cd_part, sh_esc(&arch_name))
+        format!("{}apk add --no-cache unrar >/dev/null 2>&1 && unrar x -o+ {} '{}/'{}", prefix_cmd, archive_arg, sh_esc(&target_dir), post_cmd)
     } else if name_lower.ends_with(".7z") {
-        format!("{} && apk add --no-cache p7zip >/dev/null 2>&1 && 7z x -aoa '{}'", cd_part, sh_esc(&arch_name))
+        format!("{}apk add --no-cache p7zip >/dev/null 2>&1 && 7z x -aoa -o{} {}{}", prefix_cmd, target_arg, archive_arg, post_cmd)
     } else if name_lower.ends_with(".gz") {
-        format!("{} && gunzip -k '{}'", cd_part, sh_esc(&arch_name))
+        let output_path = if destination == "here" {
+            format!("{}/{}", target_dir, archive_extract_dir_name(&arch_name))
+        } else {
+            format!("{}/{}", target_dir, extracted_name)
+        };
+        format!("{}gunzip -c {} > '{}'{}", prefix_cmd, archive_arg, sh_esc(&output_path), post_cmd)
     } else if name_lower.ends_with(".bz2") {
-        format!("{} && bunzip2 -k '{}'", cd_part, sh_esc(&arch_name))
+        let output_path = if destination == "here" {
+            format!("{}/{}", target_dir, archive_extract_dir_name(&arch_name))
+        } else {
+            format!("{}/{}", target_dir, extracted_name)
+        };
+        format!("{}bunzip2 -c {} > '{}'{}", prefix_cmd, archive_arg, sh_esc(&output_path), post_cmd)
     } else if name_lower.ends_with(".xz") {
-        format!("{} && unxz -k '{}'", cd_part, sh_esc(&arch_name))
+        let output_path = if destination == "here" {
+            format!("{}/{}", target_dir, archive_extract_dir_name(&arch_name))
+        } else {
+            format!("{}/{}", target_dir, extracted_name)
+        };
+        format!("{}unxz -c {} > '{}'{}", prefix_cmd, archive_arg, sh_esc(&output_path), post_cmd)
     } else {
         return (StatusCode::BAD_REQUEST, "Unsupported archive format").into_response();
     };
