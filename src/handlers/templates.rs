@@ -194,6 +194,8 @@ pub struct AdminEditTemplate {
     pub id: i64,
     pub container: ContainerInfo,
     pub edit: ContainerEditInfo,
+    pub current_storage_source: String,
+    pub current_storage_base: String,
     pub users: Vec<UserInfo>,
     pub error: Option<String>,
     pub cf_token: String,
@@ -212,6 +214,10 @@ pub struct ContainerEditInfo {
     pub cpu: String,
     /// Memory limit in MB as string (empty = unlimited).
     pub memory_mb: String,
+    /// Disk limit as string (e.g. "15gb", empty = unlimited).
+    pub disk_limit: String,
+    /// Bandwidth limit in Mbit/s (empty = unlimited).
+    pub bandwidth_mbit: String,
     pub owner_id: i64,
 }
 
@@ -376,6 +382,10 @@ pub struct EditContainerForm {
     pub owner_id: i64,
     pub memory_mb: i64,
     pub cpu: f64,
+    #[serde(default)]
+    pub disk_limit: String,
+    #[serde(default)]
+    pub bandwidth_mbit: String,
     pub ports: String,
     pub env: String,
 }

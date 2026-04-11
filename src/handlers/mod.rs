@@ -203,7 +203,9 @@ use admin::{
     api_ufw_status, api_ufw_toggle,
     api_cf_status, api_cf_uam_set,
     api_admin_storage_stats, api_admin_docker_daemon,
-    api_admin_storage_mounts, api_admin_db_integrity,
+    api_admin_storage_mounts, api_admin_storage_disks,
+    api_admin_storage_change_fs, api_admin_storage_migrate,
+    api_admin_db_integrity,
     api_admin_theme_favicon,
 };
 use dns::{
@@ -215,7 +217,7 @@ use dns::{
     api_server_dns_list, api_server_dns_add, api_server_dns_delete,
 };
 use auth::{login_page, login_submit, logout};
-use create::{api_image_env, api_image_env_overrides, api_local_images, api_xfs_check, create_server};
+use create::{api_image_env, api_image_env_overrides, api_local_images, api_quota_check, api_xfs_check, create_server};
 use dashboard::{api_dashboard_json, dashboard, new_server_page, server_list_fragment};
 use files::{bulk_delete, copy_file, create_archive, create_new_file, delete_file, edit_file_page, extract_archive, finalize_file_upload, list_files_api, list_files_json, move_file, rename_file, save_file_content, upload_file_chunk, upload_files};
 use network::{api_add_port, api_get_bandwidth, api_remove_port, api_set_bandwidth, api_tag_port, api_toggle_port, api_toggle_port_ufw, api_server_disk, networking_page};
@@ -304,6 +306,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/image/env", get(api_image_env))
         .route("/api/image/env-overrides", get(api_image_env_overrides))
         .route("/api/image/local", get(api_local_images))
+        .route("/api/quota-check", get(api_quota_check))
         .route("/api/xfs-check", get(api_xfs_check))
         .route("/admin", get(admin_page))
         .route("/admin/{tab}", get(admin_tab_page))
@@ -349,6 +352,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/admin/storage/stats", get(api_admin_storage_stats))
         .route("/api/admin/storage/daemon", post(api_admin_docker_daemon))
         .route("/api/admin/storage/mounts", get(api_admin_storage_mounts))
+        .route("/api/admin/storage/disks", get(api_admin_storage_disks))
+        .route("/api/admin/storage/change-fs", post(api_admin_storage_change_fs))
+        .route("/api/admin/storage/migrate", post(api_admin_storage_migrate))
         .route("/api/admin/db-integrity", post(api_admin_db_integrity))
         .route("/api/admin/theme/favicon", post(api_admin_theme_favicon))
         .route_layer(middleware::from_fn_with_state(

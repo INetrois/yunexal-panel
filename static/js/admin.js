@@ -1983,6 +1983,7 @@ async function loadStorageStats() {
         bars.innerHTML = `<span style="font-size:.8rem;color:var(--muted);">Could not load disk stats.</span>`;
     }
     loadStorageMountsHint();
+    loadStorageDiskCandidates();
 }
 
 async function saveDockerDaemon() {
@@ -2049,6 +2050,229 @@ async function loadStorageMountsHint() {
         _adminStorLoading = false;
         _adminStorRenderTrigger();
     }
+}
+
+async function loadStorageDiskCandidates() {
+    const sel = document.getElementById('storage-fs-disk-select');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Loading partitions…</option>';
+    try {
+        const r = await fetch('/api/admin/storage/disks', { credentials: 'same-origin' });
+        const d = await r.json();
+        if (!d.ok || !Array.isArray(d.disks) || d.disks.length === 0) {
+            sel.innerHTML = '<option value="">No eligible non-system partitions found</option>';
+            return;
+        }
+        const opts = ['<option value="">Select partition…</option>'];
+        d.disks.forEach((disk) => {
+            const label = `${disk.device} • ${disk.fs_type || 'unknown fs'} • ${disk.mountpoint || 'unmounted'} • ${disk.size || '?'}`;
+            opts.push(`<option value="${escAttr(disk.device)}">${escHtml(label)}</option>`);
+        });
+        sel.innerHTML = opts.join('');
+    } catch {
+        sel.innerHTML = '<option value="">Failed to load partitions</option>';
+    }
+}
+
+async function changeDiskFilesystem() {
+    const diskSel = document.getElementById('storage-fs-disk-select');
+    const fsSel = document.getElementById('storage-fs-type-select');
+    const confirmInp = document.getElementById('storage-fs-confirm');
+    const btn = document.getElementById('storage-fs-btn');
+    const res = document.getElementById('storage-fs-result');
+    if (!diskSel || !fsSel || !confirmInp || !btn || !res) return;
+
+    const device = (diskSel.value || '').trim();
+    const fsType = (fsSel.value || '').trim();
+    const phrase = (confirmInp.value || '').trim();
+
+    if (!device) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> Select a target partition first.</span>`;
+        return;
+    }
+
+    const expected = `FORMAT ${device}`;
+    if (phrase !== expected) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> Confirmation must match <code>${escHtml(expected)}</code>.</span>`;
+        return;
+    }
+
+    if (!confirm(`This will format ${device} to ${fsType} and ERASE all data on it. Continue?`)) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Formatting…';
+    res.innerHTML = '';
+
+    try {
+        const r = await fetch('/api/admin/storage/change-fs', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                device,
+                fs_type: fsType,
+                confirm_phrase: phrase,
+            }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+            let hintHtml = '';
+            if (d.ext4_prjquota_hint) {
+                hintHtml = `<div style="margin-top:.4rem;padding:.55rem .7rem;border:1px solid rgba(251,191,36,.35);border-radius:8px;background:rgba(251,191,36,.08);color:#fbbf24;">
+                    <div style="font-weight:600;margin-bottom:.25rem;"><i class="bi bi-lightbulb"></i> ext4 + prjquota recommendation</div>
+                    <div style="color:var(--muted);margin-bottom:.35rem;">${escHtml(d.ext4_prjquota_hint)}</div>
+                    <code style="display:block;background:rgba(0,0,0,.35);padding:.38rem .6rem;border-radius:5px;color:#a5f3fc;word-break:break-all;">${escHtml(d.ext4_prjquota_command || '')}</code>
+                </div>`;
+            }
+            res.innerHTML = `<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> ${escHtml(d.message || 'Filesystem updated.')}</span>${hintHtml}`;
+            confirmInp.value = '';
+            loadStorageDiskCandidates();
+            loadStorageStats();
+        } else if (d.needs_permission) {
+            res.innerHTML = `<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:.65rem .85rem;font-size:.8rem;">
+                <p style="margin:0 0 .4rem;font-weight:600;color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> Sudo permission needed</p>
+                <p style="margin:0 0 .4rem;color:var(--muted);">${escHtml(d.message || 'Run this command on host:')}</p>
+                <code style="display:block;background:rgba(0,0,0,.35);padding:.4rem .65rem;border-radius:5px;font-size:.75rem;color:#a5f3fc;word-break:break-all;">${escHtml(d.fix_command || '')}</code>
+            </div>`;
+        } else {
+            res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(d.error || 'Filesystem change failed')}</span>`;
+        }
+    } catch (e) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(e.message)}</span>`;
+    }
+
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Format Partition';
+}
+
+async function loadStorageMigrationContainers() {
+    const sel = document.getElementById('storage-migrate-container-select');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Loading containers…</option>';
+    try {
+        const r = await fetch('/api/admin/containers', { credentials: 'same-origin' });
+        const d = await r.json();
+        if (!d.ok || !Array.isArray(d.containers)) {
+            sel.innerHTML = '<option value="">Failed to load containers</option>';
+            return;
+        }
+        const rows = d.containers.filter(c => Number(c.db_id) > 0);
+        rows.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+        if (!rows.length) {
+            sel.innerHTML = '<option value="">No registered containers</option>';
+            return;
+        }
+        const opts = ['<option value="">Select container…</option>'];
+        rows.forEach((c) => {
+            const label = `${c.name || 'Unnamed'} (#${c.db_id}) • ${c.state || 'unknown'}`;
+            opts.push(`<option value="${Number(c.db_id)}">${escHtml(label)}</option>`);
+        });
+        sel.innerHTML = opts.join('');
+    } catch {
+        sel.innerHTML = '<option value="">Failed to load containers</option>';
+    }
+}
+
+function _storageMountSuggestedPath(m) {
+    if (!m) return '';
+    if (typeof m.suggested_path === 'string' && m.suggested_path.startsWith('/')) return m.suggested_path;
+    if (typeof m.mount === 'string' && m.mount.startsWith('/')) {
+        return m.mount === '/'
+            ? '/var/lib/docker/yunexal-volumes'
+            : `${m.mount.replace(/\/$/, '')}/yunexal-volumes`;
+    }
+    return m.suggested_path || '';
+}
+
+function populateStorageMigrationTargets() {
+    const sel = document.getElementById('storage-migrate-target-select');
+    if (!sel) return;
+    if (!_adminStorMounts.length) {
+        sel.innerHTML = '<option value="">No mount targets found</option>';
+        return;
+    }
+    const opts = ['<option value="">Select target path…</option>'];
+    _adminStorMounts.forEach((m) => {
+        const path = _storageMountSuggestedPath(m);
+        if (!path) return;
+        const fsLabel = m.has_zfs
+            ? 'ZFS'
+            : m.has_btrfs
+            ? 'Btrfs'
+            : m.has_ext4
+            ? (m.has_prjquota ? 'ext4+prjquota' : 'ext4 (no prjquota)')
+            : (m.has_prjquota ? 'XFS+prjquota' : (m.fs_type || 'fs'));
+        const label = `${path} • ${fsLabel}`;
+        opts.push(`<option value="${escAttr(path)}">${escHtml(label)}</option>`);
+    });
+    sel.innerHTML = opts.join('');
+}
+
+async function migrateContainerStorage() {
+    const containerSel = document.getElementById('storage-migrate-container-select');
+    const targetSel = document.getElementById('storage-migrate-target-select');
+    const targetCustom = document.getElementById('storage-migrate-target-custom');
+    const btn = document.getElementById('storage-migrate-btn');
+    const res = document.getElementById('storage-migrate-result');
+    if (!containerSel || !targetSel || !targetCustom || !btn || !res) return;
+
+    const serverId = Number(containerSel.value || 0);
+    const targetPath = (targetCustom.value || '').trim() || (targetSel.value || '').trim();
+
+    if (!serverId) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> Select a container to migrate.</span>`;
+        return;
+    }
+    if (!targetPath || !targetPath.startsWith('/')) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> Select or enter an absolute target path.</span>`;
+        return;
+    }
+
+    if (!confirm('This will stop, copy data, recreate the container with a new storage source, and then start it again. Continue?')) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Migrating…';
+    res.innerHTML = '';
+
+    try {
+        const r = await fetch('/api/admin/storage/migrate', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                server_id: serverId,
+                target_base_path: targetPath,
+            }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+            const quotaLine = d.quota_note
+                ? `<div style="margin-top:.35rem;color:var(--muted);"><i class="bi bi-info-circle"></i> ${escHtml(d.quota_note)}</div>`
+                : '';
+            res.innerHTML = `<div style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> ${escHtml(d.message || 'Migration complete.')}</div>
+                <div style="margin-top:.2rem;color:var(--muted);font-size:.78rem;">
+                    Source: <code>${escHtml(d.source_path || '')}</code><br>
+                    Target: <code>${escHtml(d.target_path || '')}</code><br>
+                    New container id: <code>${escHtml(d.new_container_id || '')}</code>
+                </div>${quotaLine}`;
+            targetCustom.value = '';
+            loadStorageMigrationContainers();
+            loadStorageStats();
+        } else if (d.needs_permission) {
+            res.innerHTML = `<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:.65rem .85rem;font-size:.8rem;">
+                <p style="margin:0 0 .4rem;font-weight:600;color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> Sudo permission needed</p>
+                <p style="margin:0 0 .4rem;color:var(--muted);">${escHtml(d.message || 'Run this command on host:')}</p>
+                <code style="display:block;background:rgba(0,0,0,.35);padding:.4rem .65rem;border-radius:5px;font-size:.75rem;color:#a5f3fc;word-break:break-all;">${escHtml(d.fix_command || '')}</code>
+            </div>`;
+        } else {
+            res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(d.error || 'Migration failed')}</span>`;
+        }
+    } catch (e) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(e.message)}</span>`;
+    }
+
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-left-right"></i> Migrate Container';
 }
 
 async function runDbIntegrity() {
@@ -2243,7 +2467,7 @@ function _adminStorRenderPanel() {
                     ${(m.has_zfs || m.has_btrfs) ? '' : `<span class="stor-opt-mount">${escHtml(m.mount)}</span>`}
                     ${badge}
                 </div>
-                <div class="stor-opt-row2">${escHtml(m.suggested_path || m.mount)}</div>
+                <div class="stor-opt-row2">${escHtml(_storageMountSuggestedPath(m) || m.mount)}</div>
             </div>
             <div class="stor-opt-usage">
                 <div class="stor-opt-bar">${_adminStorBarFill(m.used_pct)}</div>
@@ -2306,7 +2530,7 @@ async function adminStorSelPick(idx) {
     _adminStorIdx = idx;
     _adminStorClose();
     _adminStorRenderTrigger();
-    const value = idx < 0 ? '' : (_adminStorMounts[idx].suggested_path || '');
+    const value = idx < 0 ? '' : _storageMountSuggestedPath(_adminStorMounts[idx]);
     const inp = document.getElementById('storage-path-input');
     if (inp) inp.value = value;
     await saveStoragePathValue(value);
@@ -2348,7 +2572,7 @@ async function initAdminStorSel(mounts, currentPath) {
     _adminStorIdx = -1;
     if (currentPath) {
         const idx = _adminStorMounts.findIndex(m =>
-            m.suggested_path === currentPath || m.mount === currentPath
+            _storageMountSuggestedPath(m) === currentPath || m.mount === currentPath
         );
         _adminStorIdx = idx;
     }

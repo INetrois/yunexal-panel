@@ -260,9 +260,13 @@ pub async fn create_server(
         }).into_response();
     }
 
-    if docker::xfs_pquota_mount(&volumes_base).is_none() && docker::zfs_dataset_for(&volumes_base).is_none() {
+    if docker::xfs_pquota_mount(&volumes_base).is_none()
+        && docker::zfs_dataset_for(&volumes_base).is_none()
+        && docker::btrfs_mount_for(&volumes_base).is_none()
+        && docker::ext4_pquota_mount(&volumes_base).is_none()
+    {
         warn!(
-            "Volumes directory '{}' is not on XFS+prjquota or ZFS — disk_limit will have no effect",
+            "Volumes directory '{}' is not on XFS+prjquota, ext4+prjquota, ZFS, or Btrfs — disk_limit will have no effect",
             volume_host_path.display()
         );
     }
@@ -549,18 +553,55 @@ pub async fn api_local_images(State(state): State<AppState>) -> impl IntoRespons
     Json(serde_json::json!({ "tags": tags }))
 }
 
-/// Returns whether the volumes directory is on XFS with pquota/prjquota.
-/// Used by the "New Server" page to show a warning if disk limiting won't work.
-pub async fn api_xfs_check() -> impl IntoResponse {
-    // Show a warning only if no XFS mount with prjquota/pquota exists anywhere on the system.
+/// Returns whether any host filesystem supports quota enforcement for containers.
+///
+/// Supported capabilities:
+/// - XFS with pquota/prjquota
+/// - ext4 with prjquota/prjjquota
+/// - ZFS (native dataset quotas)
+/// - Btrfs (native qgroup quotas)
+pub async fn api_quota_check() -> impl IntoResponse {
     let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
-    let ok = mounts.lines().any(|line| {
+
+    let mut has_xfs_prjquota = false;
+    let mut has_ext4_prjquota = false;
+    let mut has_zfs = false;
+    let mut has_btrfs = false;
+    let mut ext4_without_prjquota = false;
+
+    for line in mounts.lines() {
         let mut parts = line.split_whitespace();
-        let _dev   = parts.next();
-        let _mount = parts.next();
+        let dev    = parts.next().unwrap_or("");
+        let _mount = parts.next().unwrap_or("");
         let fstype = parts.next().unwrap_or("");
         let opts   = parts.next().unwrap_or("");
-        fstype == "xfs" && opts.split(',').any(|o| o == "pquota" || o == "prjquota")
-    });
-    Json(serde_json::json!({ "ok": ok }))
+
+        if fstype == "xfs" && dev.starts_with("/dev/") {
+            has_xfs_prjquota = opts.split(',').any(|o| o == "pquota" || o == "prjquota");
+        } else if fstype == "ext4" && dev.starts_with("/dev/") {
+            let has_prj = opts.split(',').any(|o| o == "prjquota" || o == "prjjquota");
+            has_ext4_prjquota |= has_prj;
+            ext4_without_prjquota |= !has_prj;
+        } else if fstype == "zfs" {
+            has_zfs = true;
+        } else if fstype == "btrfs" && dev.starts_with("/dev/") {
+            has_btrfs = true;
+        }
+    }
+
+    let ok = has_xfs_prjquota || has_ext4_prjquota || has_zfs || has_btrfs;
+    Json(serde_json::json!({
+        "ok": ok,
+        "has_quota": ok,
+        "has_xfs_prjquota": has_xfs_prjquota,
+        "has_ext4_prjquota": has_ext4_prjquota,
+        "has_zfs": has_zfs,
+        "has_btrfs": has_btrfs,
+        "ext4_without_prjquota": ext4_without_prjquota,
+    }))
+}
+
+/// Backward-compatible alias used by older frontend code.
+pub async fn api_xfs_check() -> impl IntoResponse {
+    api_quota_check().await
 }

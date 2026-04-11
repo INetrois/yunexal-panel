@@ -465,7 +465,15 @@ async fn step_import_containers(dir: &Path) {
     for idx in selected_indices {
         let (cid, cname, _cimage, _) = &containers[idx];
         match db::register_server(&panel_pool, cid, cname, 0).await {
-            Ok(_) => ok!("Imported: {} ({})", cname, &cid[..12.min(cid.len())]),
+            Ok(_) => {
+                match yunexal_panel::docker::ensure_management_labels(&docker, cid).await {
+                    Ok(true) => ok!("Imported: {} ({}) [labels normalized]", cname, &cid[..12.min(cid.len())]),
+                    Ok(false) => ok!("Imported: {} ({})", cname, &cid[..12.min(cid.len())]),
+                    Err(e) => {
+                        warn!("Imported: {} ({}), but label migration failed: {}", cname, &cid[..12.min(cid.len())], e);
+                    }
+                }
+            }
             Err(e) => warn!("Failed to import {}: {}", cname, e),
         }
     }

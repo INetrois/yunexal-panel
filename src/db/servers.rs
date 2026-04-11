@@ -217,3 +217,16 @@ pub async fn list_servers_basic_info(pool: &Pool<Sqlite>) -> Result<Vec<(i64, St
     .await?;
     Ok(rows)
 }
+
+/// Returns server rows needed by startup migration: (db_id, container_id, name).
+pub async fn list_servers_with_container_ids(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<(i64, String, String)>> {
+    let rows = sqlx::query_as::<_, (i64, String, String)>(
+        "SELECT id, container_id, name FROM servers ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
+    .context("list_servers_with_container_ids")?;
+    Ok(rows)
+}

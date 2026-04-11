@@ -1,10 +1,11 @@
-use bollard::query_parameters::{ListContainersOptions, StartContainerOptions, StopContainerOptions, AttachContainerOptions};
+use bollard::query_parameters::{AttachContainerOptions, InspectContainerOptions, ListContainersOptions, StartContainerOptions, StopContainerOptions};
 use bollard::container::LogOutput;
 use bollard::Docker;
-use anyhow::{Result, Context};
+use anyhow::{bail, Context, Result};
 use futures_util::Stream;
 use std::pin::Pin;
 use tokio::io::AsyncWrite;
+use tokio::process::Command;
 use std::time::SystemTime;
 
 use super::ContainerInfo;
@@ -62,6 +63,97 @@ fn parse_uptime(started_at: &str) -> Option<String> {
     } else {
         Some(format!("Up {} min", mins.max(1)))
     }
+}
+
+/// Ensures the canonical Yunexal management labels are present on a container.
+///
+/// Returns `Ok(true)` when labels were added/updated, `Ok(false)` when no
+/// changes were needed.
+pub async fn ensure_management_labels(docker: &Docker, id: &str) -> Result<bool> {
+    let inspect = docker
+        .inspect_container(id, None::<InspectContainerOptions>)
+        .await
+        .context("Container not found for label migration")?;
+
+    let labels = inspect
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.labels.clone())
+        .unwrap_or_default();
+
+    let mut to_add: Vec<(String, String)> = Vec::new();
+
+    let managed_ok = labels
+        .get("yunexal.managed")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if !managed_ok {
+        to_add.push(("yunexal.managed".to_string(), "true".to_string()));
+    }
+
+    let has_volume_dir = labels
+        .get("yunexal.volume_dir")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+
+    if !has_volume_dir {
+        let legacy_keys = [
+            "panel.volume_dir",
+            "panel-volume-dir",
+            "volume_key",
+            "volume-dir",
+            "volume_dir",
+        ];
+
+        let mut inferred = legacy_keys
+            .iter()
+            .find_map(|k| labels.get(*k).cloned())
+            .filter(|v| !v.trim().is_empty());
+
+        if inferred.is_none() {
+            inferred = inspect
+                .host_config
+                .as_ref()
+                .and_then(|hc| hc.binds.as_ref())
+                .and_then(|binds| binds.first())
+                .and_then(|b| b.split(':').next())
+                .and_then(|src| std::path::Path::new(src).file_name())
+                .and_then(|name| name.to_str())
+                .map(|s| s.to_string());
+        }
+
+        let fallback = inspect.id.unwrap_or_else(|| id.to_string());
+        to_add.push((
+            "yunexal.volume_dir".to_string(),
+            inferred.unwrap_or(fallback),
+        ));
+    }
+
+    if to_add.is_empty() {
+        return Ok(false);
+    }
+
+    let mut args: Vec<String> = vec!["update".to_string()];
+    for (k, v) in &to_add {
+        args.push("--label-add".to_string());
+        args.push(format!("{}={}", k, v));
+    }
+    args.push(id.to_string());
+
+    let output = Command::new("docker")
+        .args(&args)
+        .output()
+        .await
+        .context("Failed to run docker update for label migration")?;
+
+    if !output.status.success() {
+        bail!(
+            "docker update label migration failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(true)
 }
 
 // ── Container listing ────────────────────────────────────────────────────────

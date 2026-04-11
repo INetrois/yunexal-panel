@@ -51,7 +51,7 @@
 
     <div class="yu-alert-warn" id="xfs-warn-banner" style="display:none;">
         <i class="bi bi-exclamation-triangle-fill"></i>
-        <span>The volumes directory is not on an XFS filesystem with <code style="font-size:.8em;">pquota</code>/<code style="font-size:.8em;">prjquota</code> mount options — <strong>disk_limit</strong> will have no effect.</span>
+        <span id="quota-warn-text">Filesystem quota support is unavailable — <strong>disk_limit</strong> may have no effect.</span>
     </div>
 
     <form action="/servers/new" method="POST" id="createServerForm" onsubmit="prepareSrvHiddenFields();">
@@ -229,24 +229,6 @@
                     </button>
                 </div>
             </div><!-- /Environment -->
-
-            <!-- ── Volumes ── -->
-            <div class="sec-card">
-                <div class="sec-hd" style="cursor:pointer;user-select:none;" onclick="toggleSecCard(this)">
-                    <div class="sec-hd-icon"><i class="bi bi-hdd-fill"></i></div>
-                    <div class="sec-hd-title">Volume Mounts</div>
-                    <i class="bi bi-chevron-down sec-chev" style="margin-left:auto;color:var(--muted);transition:transform .2s;"></i>
-                </div>
-                <div class="sec-bd" style="display:none;">
-                    <div style="display:grid;grid-template-columns:1fr 20px 1fr 26px;gap:.45rem;padding:0 .6rem .35rem;font-size:.69rem;color:var(--muted);font-weight:500;letter-spacing:.04em;text-transform:uppercase;">
-                        <span>Host Path</span><span></span><span>Container Path</span><span></span>
-                    </div>
-                    <div class="row-list" id="vol-container"></div>
-                    <button type="button" class="add-row-btn" onclick="addVolRow()">
-                        <i class="bi bi-plus"></i> Add Volume
-                    </button>
-                </div>
-            </div><!-- /Volumes -->
 
             <!-- ── DNS / SRV Record ── -->
             <div class="sec-card">

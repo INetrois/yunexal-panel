@@ -1,8 +1,57 @@
 use anyhow::{Context, Result};
-use tracing::info;
+use tracing::{info, warn};
 use axum_extra::extract::cookie::Key;
 use yunexal_panel::{db, docker, handlers, password};
 use yunexal_panel::state::AppState;
+
+async fn auto_migrate_legacy_labels(pool: &sqlx::Pool<sqlx::Sqlite>, docker_client: &bollard::Docker) {
+    let servers = match db::list_servers_with_container_ids(pool).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!("Skipping startup legacy migration: failed to list servers: {}", e);
+            return;
+        }
+    };
+
+    let mut migrated = 0u64;
+    let mut failed = 0u64;
+
+    for (db_id, container_id, name) in servers {
+        match docker::ensure_management_labels(docker_client, &container_id).await {
+            Ok(true) => {
+                migrated += 1;
+                let _ = db::audit_log(
+                    pool,
+                    "system",
+                    "container.label_autofix",
+                    &name,
+                    &format!("db_id={} container_id={}", db_id, container_id),
+                    "127.0.0.1",
+                    "startup",
+                )
+                .await;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                failed += 1;
+                warn!(
+                    "Legacy label migration failed for db_id={} container={}: {}",
+                    db_id,
+                    container_id,
+                    e
+                );
+            }
+        }
+    }
+
+    if migrated > 0 || failed > 0 {
+        info!(
+            "Startup legacy migration finished: migrated={} failed={}",
+            migrated,
+            failed
+        );
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -56,6 +105,10 @@ async fn main() -> Result<()> {
 
     let version = docker_client.version().await.context("Failed to ping Docker daemon")?;
     info!("Connected to Docker: {:?}", version.version.unwrap_or_default());
+
+    // Auto-migrate legacy container labels before the router starts using
+    // managed-only filters.
+    auto_migrate_legacy_labels(&pool, &docker_client).await;
 
     // 6. Create App State
     let cf_analytics_token = std::env::var("CF_ANALYTICS_TOKEN").unwrap_or_default();

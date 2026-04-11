@@ -642,6 +642,18 @@ fn sh_esc(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "'\\''")
 }
 
+#[cfg(unix)]
+fn owner_uid_gid(path: &std::path::Path) -> Option<(u32, u32)> {
+    use std::os::unix::fs::MetadataExt;
+    let md = std::fs::metadata(path).ok()?;
+    Some((md.uid(), md.gid()))
+}
+
+#[cfg(not(unix))]
+fn owner_uid_gid(_path: &std::path::Path) -> Option<(u32, u32)> {
+    None
+}
+
 // ── JSON file listing ──────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize)]
@@ -1281,23 +1293,37 @@ pub async fn extract_archive(
     } else {
         format!("/mnt/{}", rel_dir)
     };
+    let owner_spec = owner_uid_gid(&archive_path)
+        .or_else(|| owner_uid_gid(&arch_dir))
+        .or_else(|| owner_uid_gid(&volume_path))
+        .map(|(uid, gid)| format!("{}:{}", uid, gid));
     let (prefix_cmd, target_dir, extracted_name, post_cmd) = if destination == "here" {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0);
         let tmp_extract_dir = format!("{}/.yxextract_tmp_{}", work_dir, stamp);
+        let chown_each_cmd = owner_spec
+            .as_ref()
+            .map(|spec| format!(" chown -R {} \"$dst/$base\" || true;", spec))
+            .unwrap_or_default();
         let finalize_cmd = format!(
-            " && src_dir='{tmp}' \
+            " && dst='{dst}' \
+&& src_dir='{tmp}' \
 && entries=$(find \"$src_dir\" -mindepth 1 -maxdepth 1 | wc -l) \
 && if [ \"$entries\" -eq 1 ]; then only=$(find \"$src_dir\" -mindepth 1 -maxdepth 1); if [ -d \"$only\" ]; then src_dir=\"$only\"; fi; fi \
-&& for f in \"$src_dir\"/* \"$src_dir\"/.[!.]* \"$src_dir\"/..?*; do [ -e \"$f\" ] || continue; mv \"$f\" '{dst}/'; done \
+&& for f in \"$src_dir\"/* \"$src_dir\"/.[!.]* \"$src_dir\"/..?*; do [ -e \"$f\" ] || continue; base=$(basename \"$f\"); mv \"$f\" \"$dst/$base\";{chown_each} done \
 && rm -rf '{tmp}'",
-            tmp = sh_esc(&tmp_extract_dir),
             dst = sh_esc(&work_dir),
+            tmp = sh_esc(&tmp_extract_dir),
+            chown_each = chown_each_cmd,
         );
         (
-            format!("rm -rf '{}' && mkdir -p '{}' && ", sh_esc(&tmp_extract_dir), sh_esc(&tmp_extract_dir)),
+            format!(
+                "rm -rf '{}' && mkdir -p '{}' && ",
+                sh_esc(&tmp_extract_dir),
+                sh_esc(&tmp_extract_dir)
+            ),
             tmp_extract_dir,
             String::new(),
             finalize_cmd,
@@ -1312,11 +1338,15 @@ pub async fn extract_archive(
         } else {
             format!("/mnt/{}/{}", rel_dir, target_name)
         };
+        let ownership_cmd = owner_spec
+            .as_ref()
+            .map(|spec| format!(" && (chown -R {} '{}' || true)", spec, sh_esc(&target_mount_path)))
+            .unwrap_or_default();
         (
             format!("mkdir -p '{}' && ", sh_esc(&target_mount_path)),
             target_mount_path,
             target_name,
-            String::new(),
+            ownership_cmd,
         )
     };
     let archive_arg = format!("'{}'", sh_esc(&archive_mount_path));
@@ -1334,30 +1364,60 @@ pub async fn extract_archive(
     } else if name_lower.ends_with(".zip") || name_lower.ends_with(".jar") {
         format!("{}unzip -o {} -d {}{}", prefix_cmd, archive_arg, target_arg, post_cmd)
     } else if name_lower.ends_with(".rar") {
-        format!("{}apk add --no-cache unrar >/dev/null 2>&1 && unrar x -o+ {} '{}/'{}", prefix_cmd, archive_arg, sh_esc(&target_dir), post_cmd)
+        format!(
+            "{}apk add --no-cache unrar >/dev/null 2>&1 && unrar x -o+ {} '{}/'{}",
+            prefix_cmd,
+            archive_arg,
+            sh_esc(&target_dir),
+            post_cmd
+        )
     } else if name_lower.ends_with(".7z") {
-        format!("{}apk add --no-cache p7zip >/dev/null 2>&1 && 7z x -aoa -o{} {}{}", prefix_cmd, target_arg, archive_arg, post_cmd)
+        format!(
+            "{}apk add --no-cache p7zip >/dev/null 2>&1 && 7z x -aoa -o{} {}{}",
+            prefix_cmd,
+            target_arg,
+            archive_arg,
+            post_cmd
+        )
     } else if name_lower.ends_with(".gz") {
         let output_path = if destination == "here" {
             format!("{}/{}", target_dir, archive_extract_dir_name(&arch_name))
         } else {
             format!("{}/{}", target_dir, extracted_name)
         };
-        format!("{}gunzip -c {} > '{}'{}", prefix_cmd, archive_arg, sh_esc(&output_path), post_cmd)
+        format!(
+            "{}gunzip -c {} > '{}'{}",
+            prefix_cmd,
+            archive_arg,
+            sh_esc(&output_path),
+            post_cmd
+        )
     } else if name_lower.ends_with(".bz2") {
         let output_path = if destination == "here" {
             format!("{}/{}", target_dir, archive_extract_dir_name(&arch_name))
         } else {
             format!("{}/{}", target_dir, extracted_name)
         };
-        format!("{}bunzip2 -c {} > '{}'{}", prefix_cmd, archive_arg, sh_esc(&output_path), post_cmd)
+        format!(
+            "{}bunzip2 -c {} > '{}'{}",
+            prefix_cmd,
+            archive_arg,
+            sh_esc(&output_path),
+            post_cmd
+        )
     } else if name_lower.ends_with(".xz") {
         let output_path = if destination == "here" {
             format!("{}/{}", target_dir, archive_extract_dir_name(&arch_name))
         } else {
             format!("{}/{}", target_dir, extracted_name)
         };
-        format!("{}unxz -c {} > '{}'{}", prefix_cmd, archive_arg, sh_esc(&output_path), post_cmd)
+        format!(
+            "{}unxz -c {} > '{}'{}",
+            prefix_cmd,
+            archive_arg,
+            sh_esc(&output_path),
+            post_cmd
+        )
     } else {
         return (StatusCode::BAD_REQUEST, "Unsupported archive format").into_response();
     };

@@ -666,6 +666,40 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Disk filesystem change (non-system partitions only) -->
+                    <div style="padding-top:1rem;border-top:1px solid var(--bdr);margin-top:1rem;">
+                        <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Disk filesystem conversion</p>
+                        <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Formats a selected non-system partition to <strong>ext4</strong>, <strong>xfs</strong>, or <strong>btrfs</strong>. This erases all data on that partition.</p>
+
+                        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.6rem;align-items:end;">
+                            <div>
+                                <label class="yu-label" style="font-size:.76rem;">Target partition</label>
+                                <select id="storage-fs-disk-select" class="yu-input" style="font-size:.82rem;">
+                                    <option value="">Loading partitions…</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="yu-label" style="font-size:.76rem;">New filesystem</label>
+                                <select id="storage-fs-type-select" class="yu-input" style="font-size:.82rem;">
+                                    <option value="ext4">ext4</option>
+                                    <option value="xfs">xfs</option>
+                                    <option value="btrfs">btrfs</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="yu-label" style="font-size:.76rem;">Safety confirm phrase</label>
+                                <input id="storage-fs-confirm" class="yu-input" type="text" style="font-size:.82rem;font-family:monospace;" placeholder="FORMAT /dev/sdb1">
+                            </div>
+                            <div>
+                                <button class="btn-yu" id="storage-fs-btn" onclick="changeDiskFilesystem()" style="font-size:.8rem;padding:.45rem .9rem;border-color:rgba(239,68,68,.45);color:#f87171;">
+                                    <i class="bi bi-exclamation-triangle"></i> Format Partition
+                                </button>
+                            </div>
+                        </div>
+                        <div id="storage-fs-result" style="margin-top:.65rem;font-size:.82rem;"></div>
+                    </div>
+
                 </div>
             </div>
 

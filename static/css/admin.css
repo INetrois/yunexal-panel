@@ -174,15 +174,15 @@ body { overflow: hidden; }
 
 /* ── Admin Buttons ── */
 .btn-yu { display: inline-flex; align-items: center; gap: .35rem; padding: .42rem .9rem; border-radius: 8px; font-size: .82rem; font-weight: 500; cursor: pointer; border: none; font-family: 'Inter', sans-serif; transition: all .15s; }
-.btn-primary-yu { background: var(--accent); color: #fff; }
-.btn-primary-yu:hover { background: #6d28d9; color: #fff; }
-.btn-ghost-yu { background: rgba(255,255,255,.05); color: var(--txt); border: 1px solid var(--bdr); }
-.btn-ghost-yu:hover { background: rgba(255,255,255,.09); }
-.btn-danger-yu { background: rgba(239,68,68,.1); color: #ef4444; border: 1px solid rgba(239,68,68,.2); }
-.btn-danger-yu:hover { background: rgba(239,68,68,.2); }
-.btn-success-yu { background: rgba(16,185,129,.1); color: #10b981; border: 1px solid rgba(16,185,129,.2); }
-.btn-success-yu:hover { background: rgba(16,185,129,.2); }
-.btn-sm-yu { padding: .28rem .65rem; font-size: .775rem; }
+.btn-yu-primary, .btn-primary-yu { background: var(--accent); color: #fff; }
+.btn-yu-primary:hover, .btn-primary-yu:hover { background: #6d28d9; color: #fff; }
+.btn-yu-ghost, .btn-ghost-yu { background: rgba(255,255,255,.05); color: var(--txt); border: 1px solid var(--bdr); }
+.btn-yu-ghost:hover, .btn-ghost-yu:hover { background: rgba(255,255,255,.09); }
+.btn-yu-danger, .btn-danger-yu { background: rgba(239,68,68,.1); color: #ef4444; border: 1px solid rgba(239,68,68,.2); }
+.btn-yu-danger:hover, .btn-danger-yu:hover { background: rgba(239,68,68,.2); }
+.btn-yu-success, .btn-success-yu { background: rgba(16,185,129,.1); color: #10b981; border: 1px solid rgba(16,185,129,.2); }
+.btn-yu-success:hover, .btn-success-yu:hover { background: rgba(16,185,129,.2); }
+.btn-yu-sm, .btn-sm-yu { padding: .28rem .65rem; font-size: .775rem; }
 
 /* ── Admin Forms ── */
 .yu-input { background: var(--surface2); border: 1px solid rgba(255,255,255,.1); color: var(--txt); padding: .6rem .9rem; border-radius: 8px; font-size: .875rem; width: 100%; outline: none; transition: border-color .15s, box-shadow .15s; font-family: 'Inter', sans-serif; }
@@ -259,6 +259,15 @@ body { overflow: hidden; }
     .row.g-3 > .col-6 { max-width: 50%; }
     /* Card header: allow wrap */
     .yu-card-hd { flex-wrap: wrap; gap: .4rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
 }
 
 /* ── DNS inner tabs ── */

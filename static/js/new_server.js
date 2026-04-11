@@ -30,18 +30,6 @@ function getEnvRowHtml(key='', val='') {
     </div>`;
 }
 
-function getVolRowHtml(host='', container='') {
-    return `
-    <div class="entry-row" style="display:grid;grid-template-columns:1fr 20px 1fr 26px;gap:.45rem;align-items:center;">
-        <input type="text" class="form-control host-input" placeholder="/host/path" value="${host}" oninput="updateYaml()">
-        <span class="row-sep" style="text-align:center;">:</span>
-        <input type="text" class="form-control container-input" placeholder="/data" value="${container}" oninput="updateYaml()">
-        <button type="button" class="row-del" onclick="this.closest('.entry-row').remove();updateYaml()" title="Remove">
-            <i class="bi bi-trash3"></i>
-        </button>
-    </div>`;
-}
-
 // ── Add helpers ──────────────────────────────────────────────────────────────
 
 function addPortRow(h, c, p) {
@@ -52,10 +40,6 @@ function addEnvRow(k, v) {
     document.getElementById('env-container').insertAdjacentHTML('beforeend', getEnvRowHtml(k, v));
     if (k === undefined) updateYaml();
 }
-function addVolRow(h, c) {
-    document.getElementById('vol-container').insertAdjacentHTML('beforeend', getVolRowHtml(h, c));
-    if (h === undefined) updateYaml();
-}
 
 // ── YAML generation ──────────────────────────────────────────────────────────
 
@@ -64,8 +48,7 @@ function updateYaml() {
         image:       document.getElementById('image').value || undefined,
         restart:     document.getElementById('gui_restart').value,
         ports:       [],
-        environment: [],
-        volumes:     []
+        environment: []
     };
 
     const cpus = document.getElementById('gui_cpus').value;
@@ -90,15 +73,8 @@ function updateYaml() {
         if (k) config.environment.push(`${k}=${v}`);
     });
 
-    document.querySelectorAll('#vol-container .entry-row').forEach(row => {
-        const h = row.querySelector('.host-input').value;
-        const c = row.querySelector('.container-input').value;
-        if (h && c) config.volumes.push(`${h}:${c}`);
-    });
-
     if (!config.ports.length)       delete config.ports;
     if (!config.environment.length) delete config.environment;
-    if (!config.volumes.length)     delete config.volumes;
     if (!config.image)              delete config.image;
 
     const yamlStr = jsyaml.dump(config, { indent: 2, lineWidth: -1 });
@@ -134,11 +110,41 @@ fetch('/api/image/local').then(r => r.json()).then(d => {
     });
 }).catch(() => {});
 
-// ── XFS quota check ──────────────────────────────────────────────────────────
+// ── Filesystem quota preflight ───────────────────────────────────────────────
 
-fetch('/api/xfs-check').then(r => r.json()).then(d => {
-    if (!d.ok) document.getElementById('xfs-warn-banner').style.display = '';
-}).catch(() => {});
+function renderQuotaPreflightBanner(d) {
+    const banner = document.getElementById('xfs-warn-banner');
+    const text = document.getElementById('quota-warn-text');
+    if (!banner || !text) return;
+
+    if (d && d.ok) {
+        banner.style.display = 'none';
+        return;
+    }
+
+    let msg = 'No quota-capable filesystem detected (XFS/ext4 with prjquota, ZFS, or Btrfs). disk_limit may not be enforced.';
+    if (d && d.ext4_without_prjquota) {
+        msg = 'ext4 detected without prjquota/prjjquota. disk_limit will not be enforced. Enable prjquota in your mount options and remount to enforce per-container disk limits.';
+    }
+
+    text.textContent = msg;
+    banner.style.display = '';
+}
+
+async function loadQuotaPreflight() {
+    try {
+        const d = await fetch('/api/quota-check').then(r => r.json());
+        renderQuotaPreflightBanner(d);
+    } catch {
+        // Backward-compatible fallback for older server routes.
+        fetch('/api/xfs-check')
+            .then(r => r.json())
+            .then(renderQuotaPreflightBanner)
+            .catch(() => renderQuotaPreflightBanner({ ok: false }));
+    }
+}
+
+loadQuotaPreflight();
 
 // ── Custom storage selector ──────────────────────────────────────────────────
 
@@ -176,9 +182,19 @@ function _storRenderPanel() {
     if (!panel) return;
     panel.innerHTML = _storMounts.map((m, i) => {
         const icon    = _storIconClass(m);
-        const badge   = m.is_default ? '' : (m.has_prjquota
-            ? `<span class="stor-opt-badge pq">prjquota</span>`
-            : `<span class="stor-opt-badge nq">no quota</span>`);
+        const badge = m.is_default
+            ? ''
+            : m.has_zfs
+            ? `<span class="stor-opt-badge zfs">zfs</span>`
+            : m.has_btrfs
+            ? `<span class="stor-opt-badge btrfs">btrfs</span>`
+            : m.has_ext4
+            ? (m.has_prjquota
+                ? `<span class="stor-opt-badge ext4">ext4+prjquota</span>`
+                : `<span class="stor-opt-badge nq">ext4 no quota</span>`)
+            : (m.has_prjquota
+                ? `<span class="stor-opt-badge pq">xfs+prjquota</span>`
+                : `<span class="stor-opt-badge nq">no quota</span>`);
         const row2    = m.path2 ? `<div class="stor-opt-row2">${esc(m.path2)}</div>` : '';
         const barFill = m.total > 0
             ? `<div class="stor-opt-usage">
@@ -206,10 +222,18 @@ function _storRenderNote(m) {
     const note = document.getElementById('storage-path-note');
     if (!note) return;
     if (!m || m.is_default) { note.innerHTML = ''; return; }
-    if (m.has_prjquota) {
+    if (m.has_zfs) {
+        note.innerHTML = `<span style="color:#60a5fa;"><i class="bi bi-check-circle"></i> ZFS dataset <code style="font-size:.78em;">${esc(m.device)}</code> supports native quotas — disk limits enforced.</span>`;
+    } else if (m.has_btrfs) {
+        note.innerHTML = `<span style="color:#fbbf24;"><i class="bi bi-check-circle"></i> Btrfs on <code style="font-size:.78em;">${esc(m.device)}</code> supports qgroup quotas — disk limits enforced.</span>`;
+    } else if (m.has_ext4 && m.has_prjquota) {
+        note.innerHTML = `<span style="color:#fb923c;"><i class="bi bi-check-circle"></i> ext4 prjquota active on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits enforced.</span>`;
+    } else if (m.has_prjquota) {
         note.innerHTML = `<span style="color:#34d399;"><i class="bi bi-check-circle"></i> XFS prjquota active on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits enforced.</span>`;
+    } else if (m.has_ext4) {
+        note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> ext4 without prjquota on <code style="font-size:.78em;">${esc(m.device)}</code> — add <strong>prjquota</strong> mount option and remount to enforce disk limits.</span>`;
     } else {
-        note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> No prjquota on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits will <strong>not</strong> be enforced.</span>`;
+        note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> Quotas are unavailable on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits will <strong>not</strong> be enforced.</span>`;
     }
 }
 
@@ -255,6 +279,7 @@ document.addEventListener('click', e => {
         _storMounts = [{
             device: 'Default', mount: '', sub: hint || 'volumes/ in panel directory',
             path2: '', value: '', is_default: true, has_prjquota: false,
+            has_zfs: false, has_btrfs: false, has_ext4: false,
             free: '--', total: 0, pct: 0,
         }];
         _storIdx = 0;
@@ -272,6 +297,7 @@ document.addEventListener('click', e => {
                 device: 'Default', mount: '',
                 sub: cp ? `panel default → ${cp}` : 'panel default  (volumes/)',
                 path2: '', value: '', is_default: true, has_prjquota: false,
+                has_zfs: false, has_btrfs: false, has_ext4: false,
                 free: '--', total: 0, pct: 0,
             }];
             (d.mounts || []).forEach(m => {
@@ -284,6 +310,9 @@ document.addEventListener('click', e => {
                     value:        sp,
                     is_default:   false,
                     has_prjquota: !!m.has_prjquota,
+                    has_zfs:      !!m.has_zfs,
+                    has_btrfs:    !!m.has_btrfs,
+                    has_ext4:     !!m.has_ext4,
                     free:         `${m.free_gib} GiB`,
                     total:        parseFloat(m.total_gib) || 0,
                     pct:          m.used_pct || 0,
@@ -409,15 +438,12 @@ function autoFillName() {
 const FORM_KEY = 'yunexal_new_server_draft';
 
 function saveFormState() {
-    const ports = [], envs = [], vols = [];
+    const ports = [], envs = [];
     document.querySelectorAll('#ports-container .entry-row').forEach(r => {
         ports.push({ h: r.querySelector('.host-input').value, c: r.querySelector('.container-input').value, p: r.querySelector('.proto-input').value });
     });
     document.querySelectorAll('#env-container .entry-row').forEach(r => {
         envs.push({ k: r.querySelector('.key-input').value, v: r.querySelector('.val-input').value });
-    });
-    document.querySelectorAll('#vol-container .entry-row').forEach(r => {
-        vols.push({ h: r.querySelector('.host-input').value, c: r.querySelector('.container-input').value });
     });
     const collapsed = {};
     document.querySelectorAll('.sec-card').forEach((card, i) => {
@@ -435,7 +461,7 @@ function saveFormState() {
         gui_disk_unit: document.getElementById('gui_disk_unit')?.value || 'gb',
         bandwidth_mbit:document.getElementById('bandwidth_mbit')?.value || '',
         gui_restart:   document.getElementById('gui_restart')?.value || 'unless-stopped',
-        ports, envs, vols, collapsed,
+        ports, envs, collapsed,
         srv_enabled:     document.getElementById('srv-enable-chk')?.checked || false,
         srv_service:     document.getElementById('srv-service')?.value || '',
         srv_a_subdomain: document.getElementById('srv-a-subdomain')?.value || '',
@@ -461,7 +487,6 @@ function restoreFormState() {
     sv('gui_restart', s.gui_restart);
     (s.ports || []).forEach(r => addPortRow(r.h, r.c, r.p));
     (s.envs  || []).forEach(r => addEnvRow(r.k, r.v));
-    (s.vols  || []).forEach(r => addVolRow(r.h, r.c));
     if (s.collapsed) {
         document.querySelectorAll('.sec-card').forEach((card, i) => {
             if (!(i in s.collapsed)) return;
@@ -634,26 +659,6 @@ function showCreateConfirm() {
             ).join('')}</div>`
             : _cfmEmpty('No environment variables');
         sections.push(_cfmSection('bi-code-square', `Environment${envs.length ? ' ('+envs.length+')' : ''}`, inner));
-    }
-
-    // ── Volumes ──
-    const vols = [];
-    document.querySelectorAll('#vol-container .entry-row').forEach(r => {
-        const h = r.querySelector('.host-input').value;
-        const c = r.querySelector('.container-input').value;
-        if (h && c) vols.push({ h, c });
-    });
-    {
-        const inner = vols.length
-            ? `<div style="display:flex;flex-direction:column;gap:.25rem;">${vols.map(({h,c}) =>
-                `<div style="display:flex;align-items:center;gap:.4rem;padding:.25rem .4rem;background:var(--surface3);border-radius:6px;font-family:monospace;font-size:.77rem;overflow:hidden;">
-                    <span style="color:var(--txt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${esc(h)}</span>
-                    <i class="bi bi-arrow-right" style="color:var(--muted);flex-shrink:0;font-size:.7rem;"></i>
-                    <span style="color:#a78bfa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${esc(c)}</span>
-                </div>`
-            ).join('')}</div>`
-            : _cfmEmpty('No volume mounts');
-        sections.push(_cfmSection('bi-hdd-fill', `Volume Mounts${vols.length ? ' ('+vols.length+')' : ''}`, inner));
     }
 
     // ── DNS / SRV ──
