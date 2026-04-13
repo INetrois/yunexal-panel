@@ -8,23 +8,145 @@ use axum::{
 use axum_extra::extract::cookie::PrivateCookieJar;
 use bollard::query_parameters::ListContainersOptions;
 use std::net::SocketAddr;
-use crate::{auth, db, docker, password};
+use crate::{auth, db, docker, host, password};
 use crate::state::AppState;
 use tracing::error;
 use super::CspNonce;
 use super::templates::{
     render, AdminEditTemplate, AdminSetPasswordForm, AdminTemplate,
-    ChangePwForm, ContainerEditInfo, CreateUserForm, EditContainerForm, UserInfo,
+    ChangePwForm, ContainerEditInfo, CreateRoleForm, CreateUserForm, EditContainerForm,
+    SetRolePermissionsForm, SetUserRoleForm, UserInfo,
 };
 
 // ── Admin page ───────────────────────────────────────────────────────────────
 
 const VALID_TABS: &[&str] = &[
     "overview", "containers", "users", "images",
-    "agents", "dns", "firewall", "backups",
+    "roles", "agents", "dns", "firewall", "backups",
     "insights", "audit", "settings", "tickets",
     "notifications", "themes", "apikeys", "nodes",
 ];
+
+const ROLE_GROUPS: &[(&str, &[&str])] = &[
+    (
+        "Admin Core",
+        &[
+            "admin.access",
+            "tab.overview",
+            "tab.containers",
+            "tab.images",
+            "tab.users",
+            "tab.roles",
+            "tab.dns",
+            "tab.audit",
+            "tab.settings",
+        ],
+    ),
+    (
+        "Server Control",
+        &[
+            "servers.create",
+            "servers.edit",
+            "servers.delete",
+            "servers.global_access",
+            "containers.manage",
+        ],
+    ),
+    (
+        "Platform Services",
+        &[
+            "images.manage",
+            "users.manage",
+            "roles.manage",
+            "dns.manage",
+            "audit.read",
+            "panel.update",
+            "panel.settings",
+            "storage.manage",
+            "security.manage",
+            "theme.manage",
+        ],
+    ),
+];
+
+fn default_policy_from_permissions(permissions: &[String]) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for def in db::permission_catalog() {
+        let mode = if permissions.iter().any(|p| p == def.key) {
+            "write"
+        } else {
+            "none"
+        };
+        map.insert(def.key.to_string(), mode.to_string());
+    }
+    map
+}
+
+fn default_role_color(role: &str) -> &'static str {
+    match role {
+        "root" => "#ef4444",
+        "admin" => "#a78bfa",
+        "user" => "#60a5fa",
+        _ => "#94a3b8",
+    }
+}
+
+const USER_UID_MIN_LEN: usize = 9;
+const USER_UID_MAX_LEN: usize = 16;
+
+fn normalize_user_uid(uid: &str) -> String {
+    uid.trim().to_string()
+}
+
+fn normalize_user_nickname(nickname: &str) -> String {
+    nickname.trim().to_string()
+}
+
+fn to_rgba(hex: &str, alpha: f32) -> String {
+    let normalized = db::normalize_role_color(hex).unwrap_or_else(|| "#94a3b8".to_string());
+    let h = normalized.trim_start_matches('#');
+    let expanded = if h.len() == 3 {
+        let mut out = String::with_capacity(6);
+        for ch in h.chars() {
+            out.push(ch);
+            out.push(ch);
+        }
+        out
+    } else {
+        h.to_string()
+    };
+
+    if expanded.len() != 6 || !expanded.chars().all(|c| c.is_ascii_hexdigit()) {
+        return "rgba(148,163,184,0.15)".to_string();
+    }
+
+    let r = u8::from_str_radix(&expanded[0..2], 16).unwrap_or(148);
+    let g = u8::from_str_radix(&expanded[2..4], 16).unwrap_or(163);
+    let b = u8::from_str_radix(&expanded[4..6], 16).unwrap_or(184);
+    format!("rgba({r},{g},{b},{alpha})")
+}
+
+async fn first_allowed_admin_tab(state: &AppState, role: &str) -> String {
+    let preferred = [
+        "overview",
+        "containers",
+        "users",
+        "roles",
+        "images",
+        "dns",
+        "audit",
+        "settings",
+    ];
+
+    for tab in preferred {
+        let permission = auth::permission_for_admin_tab(tab);
+        if auth::role_has_read_permission(state, role, permission).await {
+            return tab.to_string();
+        }
+    }
+
+    "overview".to_string()
+}
 
 async fn build_admin_template(state: &AppState, tab: String, username: String, nonce: String) -> AdminTemplate {
     let containers = match docker::list_containers(&state.docker).await {
@@ -82,6 +204,8 @@ async fn build_admin_template(state: &AppState, tab: String, username: String, n
             .into_iter()
             .map(|u| UserInfo {
                 id: u.id,
+                uid: u.uid,
+                nickname: u.nickname,
                 username: u.username,
                 role: u.role,
                 created_at: u.created_at,
@@ -112,6 +236,36 @@ async fn build_admin_template(state: &AppState, tab: String, username: String, n
         }
     }
 
+    let auth_role = db::find_user_by_username(&state.db, &username)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.role)
+        .unwrap_or_else(|| "user".to_string());
+
+    let mut role_colors = std::collections::HashMap::<String, String>::new();
+    match db::list_roles(&state.db).await {
+        Ok(rows) => {
+            for role in rows {
+                let color = db::normalize_role_color(&role.color)
+                    .unwrap_or_else(|| default_role_color(&role.name).to_string());
+                role_colors.insert(role.name, color);
+            }
+        }
+        Err(e) => {
+            error!("build_admin_template list_roles: {}", e);
+        }
+    }
+
+    let auth_role_color = role_colors
+        .get(&auth_role)
+        .cloned()
+        .unwrap_or_else(|| default_role_color(&auth_role).to_string());
+    let root_role_color = role_colors
+        .get("root")
+        .cloned()
+        .unwrap_or_else(|| default_role_color("root").to_string());
+
     AdminTemplate {
         containers,
         total_containers,
@@ -126,12 +280,11 @@ async fn build_admin_template(state: &AppState, tab: String, username: String, n
         docker_storage_driver,
         listen_addr: state.listen_addr.clone(),
         auth_username: username.clone(),
-        auth_role: db::find_user_by_username(&state.db, &username)
-            .await
-            .ok()
-            .flatten()
-            .map(|u| u.role)
-            .unwrap_or_else(|| "user".to_string()),
+        auth_role: auth_role.clone(),
+        auth_role_color: auth_role_color.clone(),
+        auth_role_badge_bg: to_rgba(&auth_role_color, 0.15),
+        auth_role_badge_border: to_rgba(&auth_role_color, 0.35),
+        root_role_color,
         panel_memory_mb,
         panel_version: env!("CARGO_PKG_VERSION").to_string(),
         users,
@@ -180,6 +333,7 @@ async fn build_admin_template(state: &AppState, tab: String, username: String, n
             if v.is_empty() { "15".into() } else { v }
         },
         container_storage_path: db::get_panel_setting(&state.db, "container_storage_path").await,
+        settings_storage_unsafe_override: db::get_panel_setting_bool(&state.db, "storage_unsafe_override").await,
         panel_accent: {
             let v = db::get_panel_setting(&state.db, "panel_accent").await;
             if v.is_empty() { "#7c3aed".into() } else { v }
@@ -325,8 +479,19 @@ async fn host_zram_info() -> ZramInfo {
     }
 }
 
-pub async fn admin_page() -> impl IntoResponse {
-    Redirect::permanent("/admin/overview")
+pub async fn admin_page(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+) -> impl IntoResponse {
+    let username = auth::session_username(&jar).unwrap_or_default();
+    let role = db::find_user_by_username(&state.db, &username)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.role)
+        .unwrap_or_else(|| "user".to_string());
+    let next_tab = first_allowed_admin_tab(&state, &role).await;
+    Redirect::permanent(&format!("/admin/{}", next_tab))
 }
 
 pub async fn admin_tab_page(
@@ -341,7 +506,20 @@ pub async fn admin_tab_page(
         "overview".to_string()
     };
     let username = auth::session_username(&jar).unwrap_or_default();
-    render(build_admin_template(&state, tab, username, nonce).await)
+    let role = db::find_user_by_username(&state.db, &username)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.role)
+        .unwrap_or_else(|| "user".to_string());
+
+    let required = auth::permission_for_admin_tab(&tab);
+    if !auth::role_has_read_permission(&state, &role, required).await {
+        let fallback = first_allowed_admin_tab(&state, &role).await;
+        return Redirect::to(&format!("/admin/{}", fallback)).into_response();
+    }
+
+    render(build_admin_template(&state, tab, username, nonce).await).into_response()
 }
 
 // ── Docker helpers ───────────────────────────────────────────────────────────
@@ -433,18 +611,74 @@ pub async fn admin_change_password(
 
 pub async fn api_create_user(
     State(state): State<AppState>,
+    jar: PrivateCookieJar,
     addr: ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<CreateUserForm>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if body.username.trim().is_empty() || body.password.trim().is_empty() {
+    let uid = normalize_user_uid(&body.uid);
+    let nickname = normalize_user_nickname(&body.nickname);
+    let username = body.username.trim();
+
+    if username.is_empty() || body.password.trim().is_empty() || uid.is_empty() || nickname.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Username and password are required"})),
+            Json(serde_json::json!({"error": "uid, nickname, username and password are required"})),
         );
     }
-    let role = if body.role == "admin" { "admin" } else { "user" };
+    if nickname.chars().count() > 24 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Nickname must be at most 24 characters"})),
+        );
+    }
+    let uid_len = uid.chars().count();
+    if uid_len < USER_UID_MIN_LEN || uid_len > USER_UID_MAX_LEN {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "UID must be between 9 and 16 characters"})),
+        );
+    }
+
+    let caller = auth::session_username(&jar).unwrap_or_default();
+    let caller_role = db::find_user_by_username(&state.db, &caller)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.role)
+        .unwrap_or_default();
+
+    let role = body.role.trim().to_lowercase();
+    if role.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Role is required"})),
+        );
+    }
+    match db::role_exists(&state.db, &role).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Selected role does not exist"})),
+            );
+        }
+        Err(e) => {
+            error!("api_create_user role check: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to validate role"})),
+            );
+        }
+    }
+    if matches!(role.as_str(), "root" | "admin") && caller_role != "root" {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "Only root can create admin/root accounts"})),
+        );
+    }
+
     let hash = match password::hash(&body.password) {
         Ok(h) => h,
         Err(e) => {
@@ -455,18 +689,33 @@ pub async fn api_create_user(
             );
         }
     };
-    match db::create_user(&state.db, body.username.trim(), &hash, role).await {
+    match db::create_user(&state.db, &uid, &nickname, username, &hash, &role).await {
         Ok(id) => {
-            let _ = db::audit_log(&state.db, "admin", "user.create", body.username.trim(), &format!("role={}", role), &ip, &auth::user_agent(&headers)).await;
+            let _ = db::audit_log(
+                &state.db,
+                &caller,
+                "user.create",
+                &format!("{} {}", nickname, uid),
+                &format!("username={} role={}", username, role),
+                &ip,
+                &auth::user_agent(&headers),
+            )
+            .await;
             (
                 StatusCode::OK,
                 Json(serde_json::json!({"ok": true, "id": id})),
             )
         }
         Err(e) => {
-            let msg = e.to_string();
-            let user_msg = if msg.contains("UNIQUE") {
+            let msg = e.to_string().to_lowercase();
+            let user_msg = if msg.contains("users.username") || msg.contains("idx_users_username") {
                 "Username already exists"
+            } else if msg.contains("users.uid") || msg.contains("idx_users_uid") {
+                "UID already exists"
+            } else if msg.contains("uid must be 9-16") {
+                "UID must be between 9 and 16 characters"
+            } else if msg.contains("nickname") {
+                "Invalid nickname value"
             } else {
                 "Failed to create user"
             };
@@ -520,7 +769,7 @@ pub async fn api_delete_user(
     }
     match db::delete_user(&state.db, id).await {
         Ok(_) => {
-            let _ = db::audit_log(&state.db, "admin", "user.delete", &format!("uid:{}", id), "", &ip, &auth::user_agent(&headers)).await;
+            let _ = db::audit_log(&state.db, &caller, "user.delete", &format!("uid:{}", id), "", &ip, &auth::user_agent(&headers)).await;
             (StatusCode::OK, Json(serde_json::json!({"ok": true})))
         }
         Err(e) => {
@@ -535,12 +784,14 @@ pub async fn api_delete_user(
 
 pub async fn api_set_user_password(
     State(state): State<AppState>,
+    jar: PrivateCookieJar,
     addr: ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(id): Path<i64>,
     Json(body): Json<AdminSetPasswordForm>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
+    let caller = auth::session_username(&jar).unwrap_or_default();
     if body.new_password.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -559,7 +810,7 @@ pub async fn api_set_user_password(
     };
     match db::update_user_password(&state.db, id, &hash).await {
         Ok(_) => {
-            let _ = db::audit_log(&state.db, "admin", "user.set_password", &format!("uid:{}", id), "", &ip, &auth::user_agent(&headers)).await;
+            let _ = db::audit_log(&state.db, &caller, "user.set_password", &format!("uid:{}", id), "", &ip, &auth::user_agent(&headers)).await;
             (StatusCode::OK, Json(serde_json::json!({"ok": true})))
         },
         Err(e) => {
@@ -568,6 +819,543 @@ pub async fn api_set_user_password(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Failed to update password"})),
             )
+        }
+    }
+}
+
+pub async fn api_set_user_role(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    addr: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<SetUserRoleForm>,
+) -> impl IntoResponse {
+    let ip = auth::client_ip(&headers, addr);
+    let caller = auth::session_username(&jar).unwrap_or_default();
+    let caller_role = db::find_user_by_username(&state.db, &caller)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.role)
+        .unwrap_or_default();
+
+    let next_role = body.role.trim().to_lowercase();
+    if next_role.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Role is required"})),
+        );
+    }
+    match db::role_exists(&state.db, &next_role).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Selected role does not exist"})),
+            );
+        }
+        Err(e) => {
+            error!("api_set_user_role role check: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to validate role"})),
+            );
+        }
+    }
+
+    let target = match db::find_user_by_id(&state.db, id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "User not found"})),
+            );
+        }
+        Err(e) => {
+            error!("api_set_user_role target lookup: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            );
+        }
+    };
+
+    if target.role == "root" {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "Cannot change root role"})),
+        );
+    }
+    if target.role == "admin" && caller_role != "root" {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "Only root can modify admin accounts"})),
+        );
+    }
+    if matches!(next_role.as_str(), "admin" | "root") && caller_role != "root" {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "Only root can assign admin/root roles"})),
+        );
+    }
+    if target.role == next_role {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"ok": true, "role": next_role})),
+        );
+    }
+
+    match db::update_user_role(&state.db, id, &next_role).await {
+        Ok(_) => {
+            let _ = db::audit_log(
+                &state.db,
+                &caller,
+                "user.set_role",
+                &format!("{} {}", target.nickname, target.uid),
+                &format!("{} -> {}", target.role, next_role),
+                &ip,
+                &auth::user_agent(&headers),
+            )
+            .await;
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"ok": true, "role": next_role})),
+            )
+        }
+        Err(e) => {
+            error!("api_set_user_role: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to update user role"})),
+            )
+        }
+    }
+}
+
+pub async fn api_list_roles(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let roles = match db::list_roles(&state.db).await {
+        Ok(v) => v,
+        Err(e) => {
+            error!("api_list_roles: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to load roles"})),
+            )
+                .into_response();
+        }
+    };
+
+    let all_permissions = db::list_all_role_permissions(&state.db)
+        .await
+        .unwrap_or_default();
+    let all_policy = db::list_all_role_permission_policy(&state.db)
+        .await
+        .unwrap_or_default();
+
+    let mut role_rows = Vec::with_capacity(roles.len());
+    for role in roles {
+        let users_count = db::count_users_with_role(&state.db, &role.name)
+            .await
+            .unwrap_or(0);
+        let permissions = all_permissions
+            .get(&role.name)
+            .cloned()
+            .unwrap_or_default();
+        let policy = all_policy
+            .get(&role.name)
+            .cloned()
+            .unwrap_or_else(|| default_policy_from_permissions(&permissions));
+        role_rows.push(serde_json::json!({
+            "name": role.name,
+            "description": role.description,
+            "color": role.color,
+            "is_system": role.is_system != 0,
+            "users_count": users_count,
+            "permissions": permissions,
+            "policy": policy,
+        }));
+    }
+
+    let catalog: Vec<serde_json::Value> = db::permission_catalog()
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "key": p.key,
+                "label": p.label,
+                "description": p.description,
+            })
+        })
+        .collect();
+
+    let groups: Vec<serde_json::Value> = ROLE_GROUPS
+        .iter()
+        .map(|(name, keys)| {
+            serde_json::json!({
+                "name": name,
+                "permissions": keys,
+            })
+        })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true,
+            "roles": role_rows,
+            "permissions": catalog,
+            "permission_groups": groups,
+        })),
+    )
+        .into_response()
+}
+
+pub async fn role_permissions_page(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    Path(role_name): Path<String>,
+) -> impl IntoResponse {
+    let username = auth::session_username(&jar).unwrap_or_default();
+    let role_name = role_name.trim().to_lowercase();
+    if role_name.is_empty() || role_name == "root" {
+        return Redirect::to("/admin/roles").into_response();
+    }
+
+    let role = match db::find_user_by_username(&state.db, &username).await {
+        Ok(Some(u)) => u.role,
+        _ => return Redirect::to("/admin/roles").into_response(),
+    };
+
+    if !auth::role_has_read_permission(&state, &role, "roles.manage").await {
+        return Redirect::to("/admin").into_response();
+    }
+
+    let target = match db::role_exists(&state.db, &role_name).await {
+        Ok(true) => role_name,
+        _ => return Redirect::to("/admin/roles").into_response(),
+    };
+
+    Redirect::to(&format!("/admin/roles#edit:{}", target)).into_response()
+}
+
+pub async fn api_create_role(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    addr: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<CreateRoleForm>,
+) -> impl IntoResponse {
+    let ip = auth::client_ip(&headers, addr);
+    let caller = auth::session_username(&jar).unwrap_or_default();
+
+    let role_name = body.name.trim().to_lowercase();
+    if !db::is_valid_role_name(&role_name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Role name must be 2-32 chars and use a-z, 0-9, '_' or '-'"
+            })),
+        )
+            .into_response();
+    }
+    if matches!(role_name.as_str(), "root" | "admin" | "user") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "System role names cannot be reused"})),
+        )
+            .into_response();
+    }
+
+    let description = {
+        let raw = body.description.trim();
+        if raw.chars().count() > 120 {
+            raw.chars().take(120).collect::<String>()
+        } else {
+            raw.to_string()
+        }
+    };
+
+    let initial_color = if body.color.trim().is_empty() {
+        None
+    } else {
+        match db::normalize_role_color(&body.color) {
+            Some(c) => Some(c),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "Role color must be a valid hex color (#rgb or #rrggbb)"})),
+                )
+                    .into_response();
+            }
+        }
+    };
+
+    match db::create_role(&state.db, &role_name, &description).await {
+        Ok(_) => {
+            if let Some(color) = initial_color {
+                if let Err(e) = db::update_role_color(&state.db, &role_name, &color).await {
+                    error!("api_create_role color update: {}", e);
+                }
+            }
+            let _ = db::audit_log(
+                &state.db,
+                &caller,
+                "role.create",
+                &role_name,
+                &description,
+                &ip,
+                &auth::user_agent(&headers),
+            )
+            .await;
+            (StatusCode::OK, Json(serde_json::json!({"ok": true, "role": role_name}))).into_response()
+        }
+        Err(e) => {
+            let msg = if e.to_string().contains("UNIQUE") {
+                "Role already exists"
+            } else {
+                "Failed to create role"
+            };
+            error!("api_create_role: {}", e);
+            (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response()
+        }
+    }
+}
+
+pub async fn api_set_role_permissions(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    addr: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(role_name): Path<String>,
+    Json(body): Json<SetRolePermissionsForm>,
+) -> impl IntoResponse {
+    let ip = auth::client_ip(&headers, addr);
+    let caller = auth::session_username(&jar).unwrap_or_default();
+    let caller_role = db::find_user_by_username(&state.db, &caller)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.role)
+        .unwrap_or_default();
+
+    let role_name = role_name.trim().to_lowercase();
+    if role_name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Role is required"})),
+        )
+            .into_response();
+    }
+
+    let exists = match db::role_exists(&state.db, &role_name).await {
+        Ok(v) => v,
+        Err(e) => {
+            error!("api_set_role_permissions role check: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to validate role"})),
+            )
+                .into_response();
+        }
+    };
+    if !exists {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Role not found"})),
+        )
+            .into_response();
+    }
+
+    if role_name == "root" {
+        if caller_role != "root" {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": "Only root can update root color"})),
+            )
+                .into_response();
+        }
+
+        let root_color = match db::normalize_role_color(&body.color) {
+            Some(c) => c,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "Root role color must be a valid hex color (#rgb or #rrggbb)"})),
+                )
+                    .into_response();
+            }
+        };
+
+        match db::update_role_color(&state.db, "root", &root_color).await {
+            Ok(_) => {
+                let _ = db::audit_log(
+                    &state.db,
+                    &caller,
+                    "role.color",
+                    "root",
+                    &format!("root color set to {}", root_color),
+                    &ip,
+                    &auth::user_agent(&headers),
+                )
+                .await;
+                return (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response();
+            }
+            Err(e) => {
+                error!("api_set_role_permissions root color update: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "Failed to update root role color"})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let is_system = db::is_system_role(&state.db, &role_name).await.unwrap_or(false);
+    if is_system && caller_role != "root" {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "Only root can modify system roles"})),
+        )
+            .into_response();
+    }
+
+    let mut policy = std::collections::HashMap::<String, String>::new();
+    for def in db::permission_catalog() {
+        let mode = body
+            .permissions
+            .get(def.key)
+            .map(|v| v.as_str())
+            .unwrap_or("none");
+        let normalized = match mode {
+            "read" => "read",
+            "write" => "write",
+            _ => "none",
+        };
+        policy.insert(def.key.to_string(), normalized.to_string());
+    }
+
+    if policy.values().any(|m| m != "none") {
+        if !matches!(policy.get("admin.access").map(|s| s.as_str()), Some("read" | "write")) {
+            policy.insert("admin.access".to_string(), "read".to_string());
+        }
+        let has_tab = policy
+            .iter()
+            .any(|(k, v)| k.starts_with("tab.") && (v == "read" || v == "write"));
+        if !has_tab {
+            policy.insert("tab.overview".to_string(), "read".to_string());
+        }
+    }
+
+    let color_update = if body.color.trim().is_empty() {
+        None
+    } else {
+        match db::normalize_role_color(&body.color) {
+            Some(c) => Some(c),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "Role color must be a valid hex color (#rgb or #rrggbb)"})),
+                )
+                    .into_response();
+            }
+        }
+    };
+
+    match db::replace_role_permission_policy(&state.db, &role_name, &policy).await {
+        Ok(_) => {
+            if let Some(color) = color_update {
+                if let Err(e) = db::update_role_color(&state.db, &role_name, &color).await {
+                    error!("api_set_role_permissions color update: {}", e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "Failed to update role color"})),
+                    )
+                        .into_response();
+                }
+            }
+            let _ = db::audit_log(
+                &state.db,
+                &caller,
+                "role.permissions",
+                &role_name,
+                "tri-state policy updated",
+                &ip,
+                &auth::user_agent(&headers),
+            )
+            .await;
+            (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
+        }
+        Err(e) => {
+            error!("api_set_role_permissions: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to update role permissions"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn api_delete_role(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    addr: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(role_name): Path<String>,
+) -> impl IntoResponse {
+    let ip = auth::client_ip(&headers, addr);
+    let caller = auth::session_username(&jar).unwrap_or_default();
+
+    let role_name = role_name.trim().to_lowercase();
+    if role_name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Role is required"})),
+        )
+            .into_response();
+    }
+
+    if db::is_system_role(&state.db, &role_name).await.unwrap_or(false) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "System roles cannot be deleted"})),
+        )
+            .into_response();
+    }
+
+    let linked_users = db::count_users_with_role(&state.db, &role_name).await.unwrap_or(0);
+    if linked_users > 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Reassign users from this role before deleting it"})),
+        )
+            .into_response();
+    }
+
+    match db::delete_role(&state.db, &role_name).await {
+        Ok(_) => {
+            let _ = db::audit_log(
+                &state.db,
+                &caller,
+                "role.delete",
+                &role_name,
+                "",
+                &ip,
+                &auth::user_agent(&headers),
+            )
+            .await;
+            (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
+        }
+        Err(e) => {
+            error!("api_delete_role: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to delete role"})),
+            )
+                .into_response()
         }
     }
 }
@@ -642,7 +1430,14 @@ pub async fn admin_edit_page(
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|u| UserInfo { id: u.id, username: u.username, role: u.role, created_at: u.created_at })
+        .map(|u| UserInfo {
+            id: u.id,
+            uid: u.uid,
+            nickname: u.nickname,
+            username: u.username,
+            role: u.role,
+            created_at: u.created_at,
+        })
         .collect();
 
     render(AdminEditTemplate {
@@ -1601,6 +2396,7 @@ pub async fn api_admin_set_setting(
     const BOOL_KEYS: &[&str] = &[
         "ufw_enabled", "bandwidth_enabled",
         "cf_uam_enabled", "cf_l7_enabled",
+        "storage_unsafe_override",
     ];
     const STR_KEYS: &[&str] = &[
         "cf_zone_id", "cf_api_token",
@@ -1608,6 +2404,7 @@ pub async fn api_admin_set_setting(
         "cf_l7_threshold", "cf_l7_ips_min",
         "docker_default_quota",
         "container_storage_path",
+        "service_api_key",
         "panel_accent",
         "panel_name",
     ];
@@ -1620,6 +2417,31 @@ pub async fn api_admin_set_setting(
     if is_bool && body.value != "0" && body.value != "1" {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Value must be '0' or '1'"}))).into_response();
     }
+
+    let storage_unsafe_override = db::get_panel_setting_bool(&state.db, "storage_unsafe_override").await;
+
+    if body.key == "container_storage_path" && !storage_unsafe_override {
+        let raw = body.value.trim();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let candidate = if raw.is_empty() {
+            cwd.join("volumes")
+        } else {
+            let p = std::path::PathBuf::from(raw);
+            if p.is_absolute() { p } else { cwd.join(p) }
+        };
+        if let Err(reason) = validate_storage_base_path(&candidate).await {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "error": reason,
+                    "path": candidate,
+                })),
+            )
+                .into_response();
+        }
+    }
+
     match db::set_panel_setting(&state.db, &body.key, &body.value).await {
         Ok(_) => {
             let ip = auth::client_ip(&headers, addr);
@@ -1747,10 +2569,11 @@ pub async fn api_admin_docker_daemon(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("JSON error: {e}")}))).into_response(),
     };
 
-    // Write via `sudo tee` so the panel process doesn't need to own /etc/docker/daemon.json
+    // Write through a privileged tee command so direct-root mode also works on custom ISO.
     let write_ok = {
-        let spawn_result = tokio::process::Command::new("sudo")
-            .args(["-n", "tee", daemon_path])
+        let tee_cmd = host::resolve_admin_tool("tee");
+        let spawn_result = host::privileged_command(&tee_cmd)
+            .arg(daemon_path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
@@ -1773,14 +2596,24 @@ pub async fn api_admin_docker_daemon(
 
     if !write_ok {
         let user = std::env::var("USER").unwrap_or_else(|_| "yunexal".into());
-        let fix = format!("echo '{user} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/docker/daemon.json, /usr/bin/systemctl restart docker' | sudo tee /etc/sudoers.d/yunexal-docker && sudo chmod 440 /etc/sudoers.d/yunexal-docker");
+        let tee_entry = format!(
+            "{} {}",
+            host::resolve_command_path("tee", &["/usr/bin/tee", "/bin/tee"]),
+            daemon_path
+        );
+        let fix = host::sudoers_fix_command(
+            &user,
+            "/etc/sudoers.d/yunexal-docker",
+            &[tee_entry, host::docker_restart_sudoers_entry()],
+        );
         return Json(serde_json::json!({"ok": false, "needs_permission": true, "fix_command": fix, "message": "Need sudo permission to write daemon.json"})).into_response();
     }
 
     let _ = db::set_panel_setting(&state.db, "docker_default_quota", &quota_gb.to_string()).await;
 
-    let restart_out = tokio::process::Command::new("sudo")
-        .args(["-n", "systemctl", "restart", "docker"])
+    let (restart_program, restart_args) = host::docker_restart_command_parts();
+    let restart_out = host::privileged_command(&restart_program)
+        .args(&restart_args)
         .output()
         .await;
 
@@ -1795,14 +2628,24 @@ pub async fn api_admin_docker_daemon(
             let stderr = String::from_utf8_lossy(&out.stderr);
             if stderr.contains("password is required") || stderr.contains("not allowed") {
                 let user = std::env::var("USER").unwrap_or_else(|_| "yunexal".into());
-                let fix = format!("echo '{user} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart docker' | sudo tee /etc/sudoers.d/yunexal-docker && sudo chmod 440 /etc/sudoers.d/yunexal-docker");
+                let fix = host::sudoers_fix_command(
+                    &user,
+                    "/etc/sudoers.d/yunexal-docker",
+                    &[host::docker_restart_sudoers_entry()],
+                );
                 Json(serde_json::json!({"ok": false, "needs_permission": true, "fix_command": fix, "message": "daemon.json updated but Docker needs sudo permission to restart"})).into_response()
             } else {
                 Json(serde_json::json!({"ok": false, "error": format!("Restart failed: {}", stderr.trim())})).into_response()
             }
         }
         Err(e) => {
-            Json(serde_json::json!({"ok": false, "error": format!("Cannot run systemctl: {e}. daemon.json was updated.")})).into_response()
+            Json(serde_json::json!({
+                "ok": false,
+                "error": format!(
+                    "Cannot run '{}': {e}. daemon.json was updated.",
+                    host::docker_restart_display_command()
+                )
+            })).into_response()
         }
     }
 }
@@ -1811,8 +2654,10 @@ pub async fn api_admin_docker_daemon(
 
 fn ufw_fix_command() -> String {
     let user = std::env::var("USER").unwrap_or_else(|_| "yunexal".into());
-    format!(
-        "echo '{user} ALL=(ALL) NOPASSWD: /usr/sbin/ufw' | sudo tee /etc/sudoers.d/yunexal-ufw && sudo chmod 440 /etc/sudoers.d/yunexal-ufw"
+    host::sudoers_fix_command(
+        &user,
+        "/etc/sudoers.d/yunexal-ufw",
+        &[host::ufw_sudoers_entry()],
     )
 }
 
@@ -1824,7 +2669,8 @@ pub async fn api_ufw_status(
     if !auth::is_root_session(&state, &jar).await {
         return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Root access required"}))).into_response();
     }
-    match tokio::process::Command::new("sudo").args(["-n", "ufw", "status"]).output().await {
+    let ufw_cmd = host::resolve_admin_tool("ufw");
+    match host::privileged_command(&ufw_cmd).arg("status").output().await {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let active = stdout.contains("Status: active");
@@ -1860,8 +2706,9 @@ pub async fn api_ufw_toggle(
     if !auth::is_root_session(&state, &jar).await {
         return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Root access required"}))).into_response();
     }
-    let args: Vec<&str> = if body.enable { vec!["-n", "ufw", "--force", "enable"] } else { vec!["-n", "ufw", "disable"] };
-    match tokio::process::Command::new("sudo").args(&args).output().await {
+    let ufw_cmd = host::resolve_admin_tool("ufw");
+    let args: Vec<&str> = if body.enable { vec!["--force", "enable"] } else { vec!["disable"] };
+    match host::privileged_command(&ufw_cmd).args(&args).output().await {
         Ok(out) if out.status.success() => {
             let ip = auth::client_ip(&headers, addr);
             let actor = auth::session_username(&jar).unwrap_or_default();
@@ -2004,9 +2851,20 @@ struct DiskCandidate {
 
 fn storage_sudo_fix_command() -> String {
     let user = std::env::var("USER").unwrap_or_else(|_| "yunexal".into());
-    format!(
-        "echo '{user} ALL=(ALL) NOPASSWD: /usr/bin/umount, /usr/bin/mount, /usr/bin/rsync, /usr/bin/cp, /usr/bin/mkdir, /usr/sbin/mkfs.ext4, /usr/sbin/mkfs.xfs, /usr/sbin/mkfs.btrfs, /usr/sbin/zfs, /usr/bin/btrfs' | sudo tee /etc/sudoers.d/yunexal-storage && sudo chmod 440 /etc/sudoers.d/yunexal-storage"
-    )
+    let entries = vec![
+        host::resolve_command_path("umount", &["/usr/bin/umount", "/bin/umount"]),
+        host::resolve_command_path("mount", &["/usr/bin/mount", "/bin/mount"]),
+        host::resolve_command_path("rsync", &["/usr/bin/rsync", "/bin/rsync"]),
+        host::resolve_command_path("cp", &["/usr/bin/cp", "/bin/cp"]),
+        host::resolve_command_path("mkdir", &["/usr/bin/mkdir", "/bin/mkdir"]),
+        host::resolve_command_path("mkfs.ext4", &["/usr/sbin/mkfs.ext4", "/sbin/mkfs.ext4"]),
+        host::resolve_command_path("mkfs.xfs", &["/usr/sbin/mkfs.xfs", "/sbin/mkfs.xfs"]),
+        host::resolve_command_path("mkfs.btrfs", &["/usr/sbin/mkfs.btrfs", "/sbin/mkfs.btrfs"]),
+        host::resolve_command_path("zfs", &["/usr/sbin/zfs", "/sbin/zfs", "/usr/bin/zfs"]),
+        host::resolve_command_path("zpool", &["/usr/sbin/zpool", "/sbin/zpool", "/usr/bin/zpool"]),
+        host::resolve_command_path("btrfs", &["/usr/bin/btrfs", "/sbin/btrfs"]),
+    ];
+    host::sudoers_fix_command(&user, "/etc/sudoers.d/yunexal-storage", &entries)
 }
 
 fn looks_like_permission_issue(stderr: &str) -> bool {
@@ -2015,21 +2873,22 @@ fn looks_like_permission_issue(stderr: &str) -> bool {
         || stderr.contains("not allowed")
 }
 
-async fn root_disk_info() -> (String, String) {
-    let root_source = tokio::process::Command::new("findmnt")
-        .args(["-n", "-o", "SOURCE", "/"])
-        .output()
-        .await
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
+fn is_critical_system_mount(mount: &str) -> bool {
+    if mount == "/" {
+        return true;
+    }
+    ["/boot", "/efi", "/usr", "/var", "/etc", "/bin", "/sbin", "/lib", "/lib64"]
+        .iter()
+        .any(|p| mount == *p || mount.starts_with(&format!("{}/", p.trim_end_matches('/'))))
+}
 
-    if root_source.is_empty() {
-        return (String::new(), String::new());
+async fn device_top_parent_kname(device: &str) -> String {
+    if !device.starts_with("/dev/") {
+        return String::new();
     }
 
-    let mut current = root_source.clone();
-    let mut top_kname = std::path::Path::new(&root_source)
+    let mut current = device.to_string();
+    let mut top = std::path::Path::new(device)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("")
@@ -2046,11 +2905,110 @@ async fn root_disk_info() -> (String, String) {
         if parent.is_empty() {
             break;
         }
-        top_kname = parent.clone();
+        top = parent.clone();
         current = format!("/dev/{}", parent);
     }
 
+    top
+}
+
+async fn root_disk_info() -> (String, String) {
+    let root_source = tokio::process::Command::new("findmnt")
+        .args(["-n", "-o", "SOURCE", "/"])
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    if root_source.is_empty() {
+        return (String::new(), String::new());
+    }
+
+    let top_kname = device_top_parent_kname(&root_source).await;
+
     (root_source, top_kname)
+}
+
+async fn validate_storage_base_path(path: &std::path::Path) -> Result<(), String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(path)
+    };
+
+    let probe = if absolute.exists() {
+        absolute.clone()
+    } else {
+        absolute
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("/"))
+    };
+
+    let out = tokio::process::Command::new("findmnt")
+        .args(["-n", "-T", &probe.to_string_lossy(), "-o", "SOURCE,FSTYPE,OPTIONS,TARGET"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to inspect storage mount: {}", e))?;
+
+    if !out.status.success() {
+        return Err(format!(
+            "Cannot validate storage path '{}': {}",
+            absolute.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 4 {
+        return Err(format!("Cannot parse mount info for '{}'", absolute.display()));
+    }
+    let source = parts[0].to_string();
+    let fs_type = parts[1].to_string();
+    let opts = parts[2].to_string();
+    let mount_point = parts[3].to_string();
+
+    if is_critical_system_mount(&mount_point) {
+        return Err(format!(
+            "Storage path '{}' is on critical system mount '{}' and is forbidden",
+            absolute.display(),
+            mount_point
+        ));
+    }
+
+    if fs_type == "ext4" && !(opts.contains("prjquota") || opts.contains("prjjquota")) {
+        return Err(format!(
+            "ext4 without prjquota is forbidden for container storage (mount: '{}')",
+            mount_point
+        ));
+    }
+
+    let (root_source, root_disk_kname) = root_disk_info().await;
+    if !root_source.is_empty() {
+        if source == root_source {
+            return Err(format!(
+                "Storage path '{}' is on the system disk ('{}') and is forbidden",
+                absolute.display(),
+                root_source
+            ));
+        }
+        if source.starts_with("/dev/") && !root_disk_kname.is_empty() {
+            let src_top = device_top_parent_kname(&source).await;
+            if !src_top.is_empty() && src_top == root_disk_kname {
+                return Err(format!(
+                    "Storage path '{}' is on system root disk '{}' and is forbidden",
+                    absolute.display(),
+                    root_disk_kname
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn collect_partitions(nodes: &[LsblkNode], out: &mut Vec<DiskCandidate>) {
@@ -2127,8 +3085,11 @@ pub async fn api_admin_storage_mounts(
         Some((free as f64 / 1_073_741_824.0, total as f64 / 1_073_741_824.0, pct))
     }
 
+    let unsafe_override = db::get_panel_setting_bool(&state.db, "storage_unsafe_override").await;
+
     let mounts_raw = tokio::fs::read_to_string("/proc/mounts").await.unwrap_or_default();
     let mut mounts: Vec<serde_json::Value> = Vec::new();
+    let (root_source, root_disk_kname) = root_disk_info().await;
 
     // Deduplicate by mount point (proc/mounts can have multiple entries)
     let mut seen: std::collections::HashSet<String> = Default::default();
@@ -2146,7 +3107,8 @@ pub async fn api_admin_storage_mounts(
         let is_zfs   = fs_type == "zfs";
         let is_btrfs = fs_type == "btrfs" && device_path.starts_with("/dev/");
         let is_ext4  = fs_type == "ext4"  && device_path.starts_with("/dev/");
-        if !is_xfs && !is_zfs && !is_btrfs && !is_ext4 { continue; }
+        let is_supported = is_xfs || is_zfs || is_btrfs || is_ext4;
+        if !is_supported { continue; }
         if !seen.insert(mount_point.to_string()) { continue; }
 
         let device = if is_zfs {
@@ -2162,6 +3124,29 @@ pub async fn api_admin_storage_mounts(
 
         let has_prjquota = (is_xfs && (opts.contains("prjquota") || opts.contains("pquota")))
             || (is_ext4 && (opts.contains("prjquota") || opts.contains("prjjquota")));
+
+        if !unsafe_override && is_critical_system_mount(mount_point) {
+            continue;
+        }
+
+        // Hard policy: ext4 without project quota is not allowed for container storage.
+        if !unsafe_override && is_ext4 && !has_prjquota {
+            continue;
+        }
+
+        // Do not offer mount points on the same disk as system root.
+        if !unsafe_override && !root_source.is_empty() {
+            if device_path == root_source {
+                continue;
+            }
+            if device_path.starts_with("/dev/") && !root_disk_kname.is_empty() {
+                let top = device_top_parent_kname(device_path).await;
+                if !top.is_empty() && top == root_disk_kname {
+                    continue;
+                }
+            }
+        }
+
         let (free_gib, total_gib, used_pct) = df_stats(mount_point).await.unwrap_or((0.0, 0.0, 0));
 
         let suggested_path = if is_zfs {
@@ -2170,7 +3155,7 @@ pub async fn api_admin_storage_mounts(
         } else if mount_point == "/var/lib/docker" {
             "/var/lib/docker/yunexal-volumes".to_string()
         } else if mount_point == "/" {
-            String::new()
+            "/var/lib/docker/yunexal-volumes".to_string()
         } else {
             format!("{}/yunexal-volumes", mount_point)
         };
@@ -2187,19 +3172,33 @@ pub async fn api_admin_storage_mounts(
             "total_gib":      format!("{:.1}", total_gib),
             "used_pct":       used_pct,
             "suggested_path": suggested_path,
-            "prjquota_hint": if is_ext4 && !has_prjquota {
-                format!("sudo mount -o remount,prjquota {}", mount_point)
-            } else {
-                String::new()
-            },
+            "prjquota_hint": String::new(),
         }));
     }
 
     let current_path = db::get_panel_setting(&state.db, "container_storage_path").await;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let default_base_raw = if current_path.trim().is_empty() {
+        cwd.join("volumes")
+    } else {
+        let p = std::path::PathBuf::from(current_path.trim());
+        if p.is_absolute() { p } else { cwd.join(p) }
+    };
+    let (default_allowed, default_reason) = if unsafe_override {
+        (true, String::new())
+    } else {
+        let default_validation = validate_storage_base_path(&default_base_raw).await;
+        (default_validation.is_ok(), default_validation.err().unwrap_or_default())
+    };
+
     Json(serde_json::json!({
         "ok": true,
         "mounts": mounts,
         "current_path": current_path,
+        "default_allowed": default_allowed,
+        "default_reason": default_reason,
+        "default_path": default_base_raw.to_string_lossy(),
+        "unsafe_override": unsafe_override,
     })).into_response()
 }
 
@@ -2217,12 +3216,18 @@ pub struct StorageMigrateBody {
 }
 
 async fn run_sudo_command(args: Vec<String>) -> Result<std::process::Output, String> {
-    tokio::process::Command::new("sudo")
-        .arg("-n")
-        .args(args)
+    let program = args
+        .first()
+        .cloned()
+        .ok_or_else(|| "failed to run privileged command: empty args".to_string())?;
+    let program = host::resolve_admin_tool(&program);
+    let rest: Vec<String> = args.into_iter().skip(1).collect();
+
+    host::privileged_command(&program)
+        .args(&rest)
         .output()
         .await
-        .map_err(|e| format!("failed to run sudo command: {}", e))
+        .map_err(|e| format!("failed to run privileged command: {}", e))
 }
 
 /// GET /api/admin/storage/disks
@@ -2234,6 +3239,8 @@ pub async fn api_admin_storage_disks(
     if !auth::is_root_session(&state, &jar).await {
         return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Root access required"}))).into_response();
     }
+
+    let unsafe_override = db::get_panel_setting_bool(&state.db, "storage_unsafe_override").await;
 
     match list_non_system_disk_candidates().await {
         Ok(disks) => {
@@ -2254,6 +3261,7 @@ pub async fn api_admin_storage_disks(
             Json(serde_json::json!({
                 "ok": true,
                 "disks": list,
+                "unsafe_override": unsafe_override,
             }))
             .into_response()
         }
@@ -2262,7 +3270,7 @@ pub async fn api_admin_storage_disks(
 }
 
 /// POST /api/admin/storage/change-fs
-/// Reformats a non-system partition to ext4/xfs/btrfs.
+/// Reformats a non-system partition to ext4/xfs/btrfs, or creates a ZFS pool.
 pub async fn api_admin_storage_change_fs(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
@@ -2275,14 +3283,31 @@ pub async fn api_admin_storage_change_fs(
     }
 
     let fs_type = body.fs_type.trim().to_lowercase();
-    let (mkfs_tool, mkfs_force_arg) = match fs_type.as_str() {
-        "ext4" => ("mkfs.ext4", "-F"),
-        "xfs" => ("mkfs.xfs", "-f"),
-        "btrfs" => ("mkfs.btrfs", "-f"),
+    enum FsAction {
+        Mkfs {
+            tool: &'static str,
+            force_arg: &'static str,
+        },
+        ZfsPool,
+    }
+    let action = match fs_type.as_str() {
+        "ext4" => FsAction::Mkfs {
+            tool: "mkfs.ext4",
+            force_arg: "-F",
+        },
+        "xfs" => FsAction::Mkfs {
+            tool: "mkfs.xfs",
+            force_arg: "-f",
+        },
+        "btrfs" => FsAction::Mkfs {
+            tool: "mkfs.btrfs",
+            force_arg: "-f",
+        },
+        "zfs" => FsAction::ZfsPool,
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Unsupported filesystem. Use ext4, xfs, or btrfs."})),
+                Json(serde_json::json!({"error": "Unsupported filesystem. Use ext4, xfs, btrfs, or zfs."})),
             )
                 .into_response();
         }
@@ -2302,7 +3327,7 @@ pub async fn api_admin_storage_change_fs(
     let Some(disk) = disks.iter().find(|d| d.device == body.device) else {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Device is not eligible. System/root disk cannot be modified."})),
+            Json(serde_json::json!({"error": "Device is not eligible for filesystem change."})),
         )
             .into_response();
     };
@@ -2356,22 +3381,81 @@ pub async fn api_admin_storage_change_fs(
         }
     }
 
-    let mkfs = run_sudo_command(vec![
-        mkfs_tool.to_string(),
-        mkfs_force_arg.to_string(),
-        disk.device.clone(),
-    ])
-    .await;
-    match mkfs {
+    let mut zfs_pool_name = String::new();
+    let mut zfs_mountpoint = String::new();
+    let format_result = match action {
+        FsAction::Mkfs { tool, force_arg } => {
+            run_sudo_command(vec![
+                tool.to_string(),
+                force_arg.to_string(),
+                disk.device.clone(),
+            ])
+            .await
+        }
+        FsAction::ZfsPool => {
+            let kname_part: String = disk
+                .kname
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect();
+            let kname_part = if kname_part.trim_matches('-').is_empty() {
+                "disk".to_string()
+            } else {
+                kname_part.trim_matches('-').to_string()
+            };
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            zfs_pool_name = format!("yunexal-{}-{}", kname_part, ts);
+            zfs_mountpoint = format!("/{}", zfs_pool_name);
+
+            let _ = run_sudo_command(vec![
+                "zpool".to_string(),
+                "labelclear".to_string(),
+                "-f".to_string(),
+                disk.device.clone(),
+            ])
+            .await;
+
+            run_sudo_command(vec![
+                "zpool".to_string(),
+                "create".to_string(),
+                "-f".to_string(),
+                "-O".to_string(),
+                "compression=lz4".to_string(),
+                "-O".to_string(),
+                "atime=off".to_string(),
+                "-O".to_string(),
+                format!("mountpoint={}", zfs_mountpoint),
+                zfs_pool_name.clone(),
+                disk.device.clone(),
+            ])
+            .await
+        }
+    };
+
+    match format_result {
         Ok(out) if out.status.success() => {
             let ip = auth::client_ip(&headers, addr);
             let actor = auth::session_username(&jar).unwrap_or_else(|| "admin".to_string());
+            let detail = if fs_type == "zfs" {
+                format!(
+                    "{} -> {} (pool: {}, mount: {})",
+                    disk.fs_type,
+                    fs_type,
+                    zfs_pool_name,
+                    zfs_mountpoint
+                )
+            } else {
+                format!("{} -> {}", disk.fs_type, fs_type)
+            };
             let _ = db::audit_log(
                 &state.db,
                 &actor,
                 "storage.change_fs",
                 &disk.device,
-                &format!("{} -> {}", disk.fs_type, fs_type),
+                &detail,
                 &ip,
                 &auth::user_agent(&headers),
             )
@@ -2388,11 +3472,22 @@ pub async fn api_admin_storage_change_fs(
                 String::new()
             };
 
+            let msg = if fs_type == "zfs" {
+                format!(
+                    "{} converted to ZFS pool '{}' mounted at {}",
+                    disk.device, zfs_pool_name, zfs_mountpoint
+                )
+            } else {
+                format!("{} formatted as {}", disk.device, fs_type)
+            };
+
             Json(serde_json::json!({
                 "ok": true,
-                "message": format!("{} formatted as {}", disk.device, fs_type),
+                "message": msg,
                 "ext4_prjquota_hint": ext4_hint,
                 "ext4_prjquota_command": ext4_cmd,
+                "zfs_pool": zfs_pool_name,
+                "zfs_mountpoint": zfs_mountpoint,
             }))
             .into_response()
         }
@@ -2458,6 +3553,34 @@ pub async fn api_admin_storage_migrate(
             Json(serde_json::json!({"error": "target_base_path must be an absolute path"})),
         )
             .into_response();
+    }
+
+    let unsafe_override = db::get_panel_setting_bool(&state.db, "storage_unsafe_override").await;
+
+    if !unsafe_override {
+        if let Err(reason) = validate_storage_base_path(&target_base).await {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "error": reason,
+                    "path": target_base,
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    if unsafe_override {
+        let _ = db::audit_log(
+            &state.db,
+            &auth::session_username(&jar).unwrap_or_else(|| "admin".to_string()),
+            "storage.unsafe_migrate",
+            &body.server_id.to_string(),
+            &format!("target_base_path={}", target_base.display()),
+            &auth::client_ip(&headers, addr),
+            &auth::user_agent(&headers),
+        ).await;
     }
 
     let (old_container_id, display_name) = match db::get_server_info_by_db_id(&state.db, body.server_id).await {

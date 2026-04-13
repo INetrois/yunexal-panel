@@ -1,6 +1,6 @@
 use axum::{
     extract::{ConnectInfo, Request, State},
-    http::HeaderMap,
+    http::{HeaderMap, Method},
     middleware::Next,
     response::{IntoResponse, Redirect},
 };
@@ -9,6 +9,100 @@ use crate::{db, state::AppState};
 use std::net::SocketAddr;
 
 pub const SESSION_COOKIE: &str = "session";
+
+/// Maps admin tab names to permission keys.
+pub fn permission_for_admin_tab(tab: &str) -> &'static str {
+    match tab {
+        "overview" => "tab.overview",
+        "containers" => "tab.containers",
+        "images" => "tab.images",
+        "users" => "tab.users",
+        "roles" => "tab.roles",
+        "dns" => "tab.dns",
+        "audit" => "tab.audit",
+        "settings" => "tab.settings",
+        _ => "admin.access",
+    }
+}
+
+fn required_admin_permission_for_path(path: &str, method: &Method) -> &'static str {
+    if path == "/admin" {
+        return "admin.access";
+    }
+    if let Some(tab) = path.strip_prefix("/admin/") {
+        // Keep /admin/servers/{id}/edit separate from regular tabs.
+        if tab.starts_with("servers/") {
+            return "servers.edit";
+        }
+        let base = tab.split('/').next().unwrap_or(tab);
+        return permission_for_admin_tab(base);
+    }
+
+    if path == "/servers/new" || path == "/api/quota-check" || path == "/api/xfs-check" {
+        return "servers.create";
+    }
+    if path.starts_with("/api/image/") {
+        return "servers.create";
+    }
+    if path == "/api/admin/users" || path.starts_with("/api/admin/users/") {
+        return "users.manage";
+    }
+    if path == "/api/admin/roles" && *method == Method::GET {
+        return "users.manage";
+    }
+    if path == "/api/admin/roles" || path.starts_with("/api/admin/roles/") {
+        return "roles.manage";
+    }
+    if path == "/api/admin/images" || path.starts_with("/api/admin/images/") {
+        return "images.manage";
+    }
+    if path == "/api/admin/dns" || path.starts_with("/api/admin/dns/") {
+        return "dns.manage";
+    }
+    if path == "/api/admin/audit" {
+        return "audit.read";
+    }
+    if path.starts_with("/api/admin/updates/") {
+        return "panel.update";
+    }
+    if path == "/api/admin/settings" || path == "/api/admin/db-integrity" {
+        return "panel.settings";
+    }
+    if path.starts_with("/api/admin/storage/") {
+        return "storage.manage";
+    }
+    if path.starts_with("/api/admin/ufw/") || path.starts_with("/api/admin/cf/") {
+        return "security.manage";
+    }
+    if path == "/api/admin/theme/favicon" {
+        return "theme.manage";
+    }
+    if path == "/api/admin/overview" || path == "/api/admin/containers" || path == "/api/admin/stop-all" {
+        return "containers.manage";
+    }
+    if path.starts_with("/api/admin/servers/") {
+        return "servers.edit";
+    }
+    if path.starts_with("/api/servers/") && path.ends_with("/delete") {
+        return "servers.delete";
+    }
+
+    "admin.access"
+}
+
+pub async fn role_has_permission(state: &AppState, role: &str, permission: &str) -> bool {
+    match db::role_has_write_permission(&state.db, role, permission).await {
+        Ok(v) => v,
+        Err(_) => false,
+    }
+}
+
+pub async fn role_has_read_permission(state: &AppState, role: &str, permission: &str) -> bool {
+    match db::role_has_read_permission(&state.db, role, permission).await {
+        Ok(v) => v,
+        Err(_) => false,
+    }
+}
 
 /// Extract client IP from X-Forwarded-For / X-Real-IP headers, falling back to socket address.
 pub fn client_ip(headers: &HeaderMap, addr: ConnectInfo<SocketAddr>) -> String {
@@ -38,6 +132,51 @@ pub fn user_agent(headers: &HeaderMap) -> String {
         .to_string()
 }
 
+/// Extract service API key from Authorization: Bearer <token> or X-API-Key header.
+pub fn service_api_key_from_headers(headers: &HeaderMap) -> Option<String> {
+    if let Some(authz) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
+        let s = authz.trim();
+        if let Some(rest) = s.strip_prefix("Bearer ") {
+            let token = rest.trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+    if let Some(v) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
+        let token = v.trim();
+        if !token.is_empty() {
+            return Some(token.to_string());
+        }
+    }
+    None
+}
+
+/// Returns true when request provides a valid service API key.
+///
+/// Key sources (priority):
+/// 1. panel setting `service_api_key`
+/// 2. env `YUNEXAL_API_KEY`
+/// 3. env `PANEL_API_KEY`
+pub async fn is_service_api_request_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    let provided = match service_api_key_from_headers(headers) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    let configured_db = db::get_panel_setting(&state.db, "service_api_key").await;
+    let configured = if !configured_db.trim().is_empty() {
+        configured_db
+    } else {
+        std::env::var("YUNEXAL_API_KEY")
+            .ok()
+            .or_else(|| std::env::var("PANEL_API_KEY").ok())
+            .unwrap_or_default()
+    };
+
+    !configured.trim().is_empty() && provided == configured.trim()
+}
+
 /// Returns the username stored in the session cookie, if any.
 pub fn session_username(jar: &PrivateCookieJar) -> Option<String> {
     jar.get(SESSION_COOKIE)
@@ -61,10 +200,11 @@ pub async fn is_admin_session(state: &AppState, jar: &PrivateCookieJar) -> bool 
         Some(u) => u,
         None => return false,
     };
-    matches!(
-        db::find_user_by_username(&state.db, &username).await,
-        Ok(Some(u)) if db::is_admin_role(&u.role)
-    )
+    let user = match db::find_user_by_username(&state.db, &username).await {
+        Ok(Some(u)) => u,
+        _ => return false,
+    };
+    role_has_permission(state, &user.role, "admin.access").await
 }
 
 /// Returns true if the current session belongs to the root user.
@@ -99,17 +239,70 @@ pub async fn require_auth(
 
 /// Returns true if the session user is admin or owns the server with the given db_id.
 pub async fn can_access_server(state: &AppState, jar: &PrivateCookieJar, db_id: i64) -> bool {
-    if is_admin_session(state, jar).await {
-        return true;
-    }
-    let uid = match session_user_id(state, jar).await {
-        Some(id) => id,
+    let username = match session_username(jar) {
+        Some(u) => u,
         None => return false,
     };
-    matches!(
+    let user = match db::find_user_by_username(&state.db, &username).await {
+        Ok(Some(u)) => u,
+        _ => return false,
+    };
+
+    if role_has_permission(state, &user.role, "servers.global_access").await {
+        return true;
+    }
+
+    if matches!(
         db::get_server_owner_by_db_id(&state.db, db_id).await,
-        Ok(Some(owner_id)) if owner_id == uid
-    )
+        Ok(Some(owner_id)) if owner_id == user.id
+    ) {
+        return true;
+    }
+
+    db::server_user_has_any_access(&state.db, db_id, user.id)
+        .await
+        .unwrap_or(false)
+}
+
+/// Checks access to a specific server capability for the current session user.
+///
+/// Owners and users with global server access bypass member-level capability checks.
+pub async fn can_access_server_permission(
+    state: &AppState,
+    jar: &PrivateCookieJar,
+    db_id: i64,
+    permission: &str,
+    require_write: bool,
+) -> bool {
+    let username = match session_username(jar) {
+        Some(u) => u,
+        None => return false,
+    };
+    let user = match db::find_user_by_username(&state.db, &username).await {
+        Ok(Some(u)) => u,
+        _ => return false,
+    };
+
+    if role_has_permission(state, &user.role, "servers.global_access").await {
+        return true;
+    }
+
+    if matches!(
+        db::get_server_owner_by_db_id(&state.db, db_id).await,
+        Ok(Some(owner_id)) if owner_id == user.id
+    ) {
+        return true;
+    }
+
+    if require_write {
+        db::server_user_has_write_permission(&state.db, db_id, user.id, permission)
+            .await
+            .unwrap_or(false)
+    } else {
+        db::server_user_has_read_permission(&state.db, db_id, user.id, permission)
+            .await
+            .unwrap_or(false)
+    }
 }
 
 /// Middleware: redirects to / if not admin, or /login if user was deleted.
@@ -124,8 +317,19 @@ pub async fn require_admin(
         None => return Redirect::to("/login").into_response(),
     };
     match db::find_user_by_username(&state.db, &username).await {
-        Ok(Some(u)) if db::is_admin_role(&u.role) => next.run(request).await.into_response(),
-        Ok(Some(_)) => Redirect::to("/").into_response(),   // logged in but not admin
+        Ok(Some(u)) => {
+            if !role_has_permission(&state, &u.role, "admin.access").await {
+                return Redirect::to("/").into_response();
+            }
+
+            let req_perm = required_admin_permission_for_path(request.uri().path(), request.method());
+            let can_read = role_has_read_permission(&state, &u.role, req_perm).await;
+            if req_perm != "admin.access" && !can_read {
+                return Redirect::to("/admin").into_response();
+            }
+
+            next.run(request).await.into_response()
+        }
         _ => Redirect::to("/login").into_response(),        // user deleted or DB error
     }
 }

@@ -206,9 +206,17 @@ function updateControls(state) {
         btnStop.disabled = true; btnKill.disabled = true;
         badge.className = 'sb-status sb-stopped';
     }
+
+    if (!window.YU_CAN_POWER) {
+        btnStart.disabled = true;
+        btnRestart.disabled = true;
+        btnStop.disabled = true;
+        btnKill.disabled = true;
+    }
 }
 
 function sendAction(action) {
+    if (!window.YU_CAN_POWER) return;
     fetch(`/api/servers/${YU_SERVER_ID}/${action}`, { method: 'POST' })
         .then(r => console.log(action, r.status))
         .catch(e => console.error(e));
@@ -216,6 +224,7 @@ function sendAction(action) {
 }
 
 function confirmKill() {
+    if (!window.YU_CAN_POWER) return;
     new bootstrap.Modal(document.getElementById('killModal')).show();
 }
 

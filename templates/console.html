@@ -8,7 +8,7 @@
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js" integrity="sha384-dpjGwSSISUTz2taP54Bor7qkyMR20sSO9oe11UVYnGs2/YdUBf7HW30XKQx9PCzn" crossorigin="anonymous" nonce="{{nonce}}"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js" integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous" nonce="{{nonce}}"></script>
     <link href="/static/css/base.css?v=2" rel="stylesheet">
-    <link href="/static/css/console.css?v=4" rel="stylesheet">
+    <link href="/static/css/console.css?v=5" rel="stylesheet">
 </head>
 <body>
     <div class="yu-layout">
@@ -23,10 +23,10 @@
                         <span class="con-srv-name">{{ container.name }}</span>
                     </div>
                     <div class="con-topbar-actions">
-                        <button id="btn-start"   class="con-btn con-btn-start"   onclick="sendAction('start')"  ><i class="bi bi-play-fill"></i><span>Start</span></button>
-                        <button id="btn-restart" class="con-btn con-btn-restart" onclick="sendAction('restart')"><i class="bi bi-arrow-repeat"></i><span>Restart</span></button>
-                        <button id="btn-stop"    class="con-btn con-btn-stop"    onclick="sendAction('stop')"   ><i class="bi bi-stop-fill"></i><span>Stop</span></button>
-                        <button id="btn-kill"    class="con-btn con-btn-kill"    onclick="confirmKill()"        ><i class="bi bi-lightning-fill"></i><span>Kill</span></button>
+                        <button id="btn-start"   class="con-btn con-btn-start"   onclick="sendAction('start')" {% if !can_power %}disabled{% endif %}><i class="bi bi-play-fill"></i><span>Start</span></button>
+                        <button id="btn-restart" class="con-btn con-btn-restart" onclick="sendAction('restart')" {% if !can_power %}disabled{% endif %}><i class="bi bi-arrow-repeat"></i><span>Restart</span></button>
+                        <button id="btn-stop"    class="con-btn con-btn-stop"    onclick="sendAction('stop')" {% if !can_power %}disabled{% endif %}><i class="bi bi-stop-fill"></i><span>Stop</span></button>
+                        <button id="btn-kill"    class="con-btn con-btn-kill"    onclick="confirmKill()" {% if !can_power %}disabled{% endif %}><i class="bi bi-lightning-fill"></i><span>Kill</span></button>
                     </div>
                 </div>
 
@@ -98,7 +98,10 @@
     </div>
 
     {% include "_scripts_server.html" %}
-    <script nonce="{{nonce}}">window.YU_SERVER_ID = '{{id}}';</script>
+    <script nonce="{{nonce}}">
+        window.YU_SERVER_ID = '{{id}}';
+        window.YU_CAN_POWER = {% if can_power %}true{% else %}false{% endif %};
+    </script>
     <script src="/static/js/console.js" nonce="{{nonce}}"></script>
     {% include "_script_footer.html" %}
 </body>

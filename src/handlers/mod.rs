@@ -193,7 +193,8 @@ async fn fallback() -> impl IntoResponse {
 
 use admin::{
     admin_change_password, admin_edit_page, admin_page, admin_tab_page, admin_stop_all,
-    api_admin_edit_container, api_create_user, api_delete_user, api_set_user_password,
+    api_admin_edit_container, api_create_role, api_create_user, api_delete_role, api_delete_user,
+    api_list_roles, api_set_role_permissions, api_set_user_password, api_set_user_role,
     api_list_images, api_delete_image,
     api_get_image_env, api_set_image_env, api_duplicate_image, api_pull_image,
     api_admin_containers, api_admin_overview,
@@ -207,6 +208,7 @@ use admin::{
     api_admin_storage_change_fs, api_admin_storage_migrate,
     api_admin_db_integrity,
     api_admin_theme_favicon,
+    role_permissions_page,
 };
 use dns::{
     api_dns_list_providers, api_dns_add_provider, api_dns_update_provider, api_dns_delete_provider,
@@ -216,20 +218,24 @@ use dns::{
     api_dns_container_records,
     api_server_dns_list, api_server_dns_add, api_server_dns_delete,
 };
-use auth::{login_page, login_submit, logout};
-use create::{api_image_env, api_image_env_overrides, api_local_images, api_quota_check, api_xfs_check, create_server};
+use auth::{api_service_login, login_page, login_submit, logout};
+use create::{api_build_image_from_dockerfile, api_image_env, api_image_env_overrides, api_local_images, api_quota_check, api_xfs_check, create_server};
 use dashboard::{api_dashboard_json, dashboard, new_server_page, server_list_fragment};
 use files::{bulk_delete, copy_file, create_archive, create_new_file, delete_file, edit_file_page, extract_archive, finalize_file_upload, list_files_api, list_files_json, move_file, rename_file, save_file_content, upload_file_chunk, upload_files};
 use network::{api_add_port, api_get_bandwidth, api_remove_port, api_set_bandwidth, api_tag_port, api_toggle_port, api_toggle_port_ufw, api_server_disk, networking_page};
 use servers::{
+    api_server_member_add, api_server_member_remove, api_server_member_set_permission,
+    api_server_members_list,
     console_page, delete_server, files_page, get_server_stats, kill_server, rename_server,
-    restart_server, settings_page, start_server, stop_server, api_update_env, api_factory_reset,
+    restart_server, server_audit_page, settings_page, start_server, stop_server, api_update_env,
+    api_factory_reset, api_server_audit_download, api_server_audit_list, server_users_page,
 };
 use ws::{console_ws, stats_ws};
 
 pub fn create_router(state: AppState) -> Router {
     let public = Router::new()
         .route("/login", get(login_page).post(login_submit))
+        .route("/api/auth/service-login", post(api_service_login))
         .route("/logout", post(logout))
         .route("/favicon.ico", get(serve_favicon))
         .route("/api/theme/css", get(serve_theme_css));
@@ -243,14 +249,22 @@ pub fn create_router(state: AppState) -> Router {
         // Server pages
         .route("/servers/{id}/console", get(console_page))
         .route("/servers/{id}/files", get(files_page))
+        .route("/servers/{id}/audit", get(server_audit_page))
         .route("/servers/{id}/settings", get(settings_page))
         .route("/servers/{id}/networking", get(networking_page))
+        .route("/servers/{id}/users", get(server_users_page))
         // Server actions
         .route("/api/servers/{id}/start", post(start_server))
         .route("/api/servers/{id}/stop", post(stop_server))
         .route("/api/servers/{id}/restart", post(restart_server))
         .route("/api/servers/{id}/kill", post(kill_server))
         .route("/api/servers/{id}/stats", get(get_server_stats))
+        .route("/api/servers/{id}/audit", get(api_server_audit_list))
+        .route("/api/servers/{id}/audit/download", get(api_server_audit_download))
+        .route("/api/servers/{id}/members", get(api_server_members_list))
+        .route("/api/servers/{id}/members/add", post(api_server_member_add))
+        .route("/api/servers/{id}/members/{user_id}/permissions", post(api_server_member_set_permission))
+        .route("/api/servers/{id}/members/{user_id}/remove", post(api_server_member_remove))
         .route("/api/servers/{id}/rename", post(rename_server))
         // Networking
         .route("/api/servers/{id}/bandwidth", get(api_get_bandwidth).post(api_set_bandwidth))
@@ -306,16 +320,23 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/image/env", get(api_image_env))
         .route("/api/image/env-overrides", get(api_image_env_overrides))
         .route("/api/image/local", get(api_local_images))
+        .route("/api/image/build-dockerfile", post(api_build_image_from_dockerfile)
+            .layer(axum::extract::DefaultBodyLimit::disable()))
         .route("/api/quota-check", get(api_quota_check))
         .route("/api/xfs-check", get(api_xfs_check))
         .route("/admin", get(admin_page))
         .route("/admin/{tab}", get(admin_tab_page))
+        .route("/admin/roles/{name}/edit", get(role_permissions_page))
         .route("/admin/servers/{id}/edit", get(admin_edit_page))
         .route("/api/admin/stop-all", post(admin_stop_all))
         .route("/api/admin/change-password", post(admin_change_password))
         .route("/api/admin/users", post(api_create_user))
         .route("/api/admin/users/{id}/delete", post(api_delete_user))
         .route("/api/admin/users/{id}/set-password", post(api_set_user_password))
+        .route("/api/admin/users/{id}/set-role", post(api_set_user_role))
+        .route("/api/admin/roles", get(api_list_roles).post(api_create_role))
+        .route("/api/admin/roles/{name}/permissions", post(api_set_role_permissions))
+        .route("/api/admin/roles/{name}/delete", post(api_delete_role))
         .route("/api/admin/servers/{id}/edit", post(api_admin_edit_container))
         .route("/api/admin/images", get(api_list_images))
         .route("/api/admin/images/{ref}/delete", post(api_delete_image))

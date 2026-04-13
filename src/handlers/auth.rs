@@ -2,6 +2,7 @@ use axum::{
     extract::{ConnectInfo, Form, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect},
+    Json,
 };
 use axum_extra::extract::cookie::{Cookie, PrivateCookieJar, SameSite};
 use time::Duration as TimeDuration;
@@ -35,16 +36,24 @@ pub async fn login_submit(
         .into_response();
     }
 
-    // Look up user in DB and verify hashed password
-    let ok = match db::find_user_by_username(&state.db, &form.username).await {
-        Ok(Some(user)) => password::verify(&form.password, &user.password_hash),
-        _ => false,
-    };
+    // Look up by username or uid and verify hashed password.
+    let found_user = db::find_user_by_username_or_uid(&state.db, form.username.trim())
+        .await
+        .ok()
+        .flatten();
+    let ok = found_user
+        .as_ref()
+        .map(|user| password::verify(&form.password, &user.password_hash))
+        .unwrap_or(false);
 
     if ok {
+        let session_username = found_user
+            .as_ref()
+            .map(|u| u.username.clone())
+            .unwrap_or_else(|| form.username.trim().to_string());
         state.clear_login_attempts(&ip);
-        let _ = db::audit_log(&state.db, &form.username, "auth.login", "", "", &ip, &auth::user_agent(&headers)).await;
-        let mut cookie = Cookie::new(auth::SESSION_COOKIE, form.username.clone());
+        let _ = db::audit_log(&state.db, &session_username, "auth.login", "", "", &ip, &auth::user_agent(&headers)).await;
+        let mut cookie = Cookie::new(auth::SESSION_COOKIE, session_username);
         cookie.set_http_only(true);
         cookie.set_same_site(SameSite::Strict);
         cookie.set_secure(true);
@@ -156,4 +165,81 @@ pub async fn logout(
     let _ = db::audit_log(&state.db, &actor, "auth.logout", "", "", &ip, &auth::user_agent(&headers)).await;
     let updated_jar = jar.remove(Cookie::from(auth::SESSION_COOKIE));
     (updated_jar, Redirect::to("/login")).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct ServiceLoginBody {
+    pub username: Option<String>,
+}
+
+/// POST /api/auth/service-login
+///
+/// Issues a regular panel session cookie for service clients authenticated
+/// with API key headers:
+/// - Authorization: Bearer <token>
+/// - X-API-Key: <token>
+pub async fn api_service_login(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    addr: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<ServiceLoginBody>,
+) -> impl IntoResponse {
+    let ip = auth::client_ip(&headers, addr);
+
+    if !auth::is_service_api_request_authorized(&state, &headers).await {
+        let _ = db::audit_log(&state.db, "service", "auth.service_login_denied", "", "invalid_api_key", &ip, &auth::user_agent(&headers)).await;
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid API key"})),
+        )
+            .into_response();
+    }
+
+    let username = body
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("root")
+        .to_string();
+
+    let user = match db::find_user_by_username_or_uid(&state.db, &username).await {
+        Ok(Some(u)) => u,
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "User not found"})),
+            )
+                .into_response();
+        }
+    };
+
+    if !auth::role_has_permission(&state, &user.role, "admin.access").await {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "User has no API access"})),
+        )
+            .into_response();
+    }
+
+    let mut cookie = Cookie::new(auth::SESSION_COOKIE, username.clone());
+    cookie.set_http_only(true);
+    cookie.set_same_site(SameSite::Strict);
+    cookie.set_secure(true);
+    cookie.set_path("/");
+    cookie.set_max_age(TimeDuration::days(7));
+
+    let updated_jar = jar.add(cookie);
+    let _ = db::audit_log(&state.db, &username, "auth.service_login", "", "third_party_api", &ip, &auth::user_agent(&headers)).await;
+
+    (
+        updated_jar,
+        Json(serde_json::json!({
+            "ok": true,
+            "username": username,
+            "expires_days": 7,
+        })),
+    )
+        .into_response()
 }

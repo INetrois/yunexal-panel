@@ -1,5 +1,6 @@
 mod audit;
 mod users;
+mod roles;
 mod servers;
 mod ports;
 mod dns;
@@ -8,6 +9,7 @@ mod settings;
 
 pub use audit::*;
 pub use users::*;
+pub use roles::*;
 pub use servers::*;
 pub use ports::*;
 pub use dns::*;
@@ -24,6 +26,8 @@ use tracing::info;
 #[derive(Debug, Clone, FromRow)]
 pub struct User {
     pub id: i64,
+    pub uid: String,
+    pub nickname: String,
     pub username: String,
     pub password_hash: String,
     pub role: String,
@@ -67,6 +71,8 @@ pub async fn init_db() -> Result<Pool<Sqlite>> {
         r#"
         CREATE TABLE IF NOT EXISTS users (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            uid         TEXT    NOT NULL UNIQUE CHECK(length(trim(uid)) BETWEEN 9 AND 16),
+            nickname    TEXT    NOT NULL CHECK(length(nickname) BETWEEN 1 AND 24),
             username    TEXT    NOT NULL UNIQUE,
             password_hash TEXT  NOT NULL,
             role        TEXT    NOT NULL DEFAULT 'user',
@@ -77,6 +83,92 @@ pub async fn init_db() -> Result<Pool<Sqlite>> {
     .execute(&pool)
     .await
     .context("Failed to create users table")?;
+
+    // Migration: add uid/nickname columns for legacy databases.
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN nickname TEXT NOT NULL DEFAULT ''")
+        .execute(&pool)
+        .await;
+
+    // Backfill legacy rows.
+    let _ = sqlx::query(
+        "UPDATE users SET nickname = substr(trim(username), 1, 24) WHERE nickname IS NULL OR trim(nickname) = ''",
+    )
+    .execute(&pool)
+    .await;
+    let _ = sqlx::query(
+        "UPDATE users SET uid = '#u' || printf('%014d', id) WHERE uid IS NULL OR trim(uid) = '' OR length(trim(uid)) < 9 OR length(trim(uid)) > 16",
+    )
+    .execute(&pool)
+    .await;
+
+    // Unique uid index for migrated tables where the original table definition lacked it.
+    let _ = sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_uid ON users(uid)")
+        .execute(&pool)
+        .await;
+
+    // Validation triggers keep legacy schemas aligned with new constraints.
+    let _ = sqlx::query(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_users_validate_insert
+        BEFORE INSERT ON users
+        FOR EACH ROW
+        BEGIN
+            SELECT CASE
+                WHEN NEW.uid IS NULL OR trim(NEW.uid) = '' THEN RAISE(ABORT, 'uid is required')
+                WHEN length(trim(NEW.uid)) < 9 OR length(trim(NEW.uid)) > 16 THEN RAISE(ABORT, 'uid must be 9-16 characters')
+                WHEN NEW.nickname IS NULL OR trim(NEW.nickname) = '' THEN RAISE(ABORT, 'nickname is required')
+                WHEN length(NEW.nickname) > 24 THEN RAISE(ABORT, 'nickname too long')
+            END;
+        END;
+        "#,
+    )
+    .execute(&pool)
+    .await;
+    let _ = sqlx::query(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_users_validate_update
+        BEFORE UPDATE ON users
+        FOR EACH ROW
+        BEGIN
+            SELECT CASE
+                WHEN NEW.uid IS NULL OR trim(NEW.uid) = '' THEN RAISE(ABORT, 'uid is required')
+                WHEN length(trim(NEW.uid)) < 9 OR length(trim(NEW.uid)) > 16 THEN RAISE(ABORT, 'uid must be 9-16 characters')
+                WHEN NEW.nickname IS NULL OR trim(NEW.nickname) = '' THEN RAISE(ABORT, 'nickname is required')
+                WHEN length(NEW.nickname) > 24 THEN RAISE(ABORT, 'nickname too long')
+            END;
+        END;
+        "#,
+    )
+    .execute(&pool)
+    .await;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS server_user_permissions (
+            server_id   INTEGER NOT NULL,
+            user_id     INTEGER NOT NULL,
+            permission  TEXT    NOT NULL,
+            mode        TEXT    NOT NULL DEFAULT 'none' CHECK(mode IN ('none','read','write')),
+            PRIMARY KEY(server_id, user_id, permission)
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .context("Failed to create server_user_permissions table")?;
+
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_server_user_permissions_user_server ON server_user_permissions (user_id, server_id)",
+    )
+    .execute(&pool)
+    .await;
+
+    roles::ensure_role_schema(&pool)
+        .await
+        .context("Failed to initialize roles schema")?;
 
     sqlx::query(
         r#"
@@ -288,15 +380,42 @@ pub async fn seed_root_user(
     password_hash: &str,
     role: &str,
 ) -> Result<()> {
+    let username_trimmed = username.trim();
+    let default_uid = {
+        let candidate = format!("#{}", username_trimmed);
+        let candidate_len = candidate.chars().count();
+        if (9..=16).contains(&candidate_len) {
+            candidate
+        } else if candidate_len < 9 {
+            format!("{candidate}{:0<width$}", "", width = 9 - candidate_len)
+        } else {
+            candidate.chars().take(16).collect()
+        }
+    };
+    let default_nickname = {
+        let nick: String = username_trimmed.chars().take(24).collect();
+        if nick.is_empty() { "root".to_string() } else { nick }
+    };
+
     // Try inserting; on conflict update the hash + role.
     sqlx::query(
-        r#"INSERT INTO users (username, password_hash, role)
-           VALUES (?, ?, ?)
+        r#"INSERT INTO users (uid, nickname, username, password_hash, role)
+           VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(username) DO UPDATE SET
                password_hash = excluded.password_hash,
-               role = excluded.role"#,
+               role = excluded.role,
+               uid = CASE
+                    WHEN users.uid IS NULL OR trim(users.uid) = '' THEN excluded.uid
+                    ELSE users.uid
+               END,
+               nickname = CASE
+                    WHEN users.nickname IS NULL OR trim(users.nickname) = '' THEN excluded.nickname
+                    ELSE users.nickname
+               END"#,
     )
-    .bind(username)
+    .bind(default_uid)
+    .bind(default_nickname)
+    .bind(username_trimmed)
     .bind(password_hash)
     .bind(role)
     .execute(pool)

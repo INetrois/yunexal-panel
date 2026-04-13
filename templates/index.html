@@ -109,13 +109,20 @@
         } else show(data.error || 'Failed to update password.', false);
     }
 
-    const _dashUser = '{{ auth_username }}';
-    let _dashMyOnly = true;
+    const _dashUser = '{{ auth_owner_label }}';
+    const _dashOwnerFilterBtn = document.getElementById('dash-my-only-btn');
+    let _dashMyOnly = !!_dashOwnerFilterBtn;
 
     function dashFilterOwner() {
-        const btn  = document.getElementById('dash-my-only-btn');
+        const btn  = _dashOwnerFilterBtn;
         const icon = document.getElementById('dash-my-only-icon');
         const lbl  = document.getElementById('dash-my-only-lbl');
+        if (!btn) {
+            document.querySelectorAll('#server-list > [data-owner]').forEach(el => {
+                el.style.display = '';
+            });
+            return;
+        }
         if (btn) {
             if (_dashMyOnly) {
                 btn.style.background = 'rgba(124,58,237,.15)';
@@ -135,6 +142,7 @@
     }
 
     function dashToggleOwner() {
+        if (!_dashOwnerFilterBtn) return;
         _dashMyOnly = !_dashMyOnly;
         dashFilterOwner();
     }

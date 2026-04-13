@@ -1,6 +1,42 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
+
+pub const SERVER_MEMBER_PERMISSIONS: &[&str] = &[
+    "console",
+    "files",
+    "networking",
+    "audit",
+    "settings",
+    "power",
+    "members",
+];
+
+#[derive(Debug, Clone)]
+pub struct ServerMemberPermissionEntry {
+    pub user_id: i64,
+    pub username: String,
+    pub uid: String,
+    pub nickname: String,
+    pub permission: String,
+    pub mode: String,
+}
+
+fn is_valid_member_permission(permission: &str) -> bool {
+    SERVER_MEMBER_PERMISSIONS.iter().any(|p| *p == permission)
+}
+
+fn is_valid_policy_mode(mode: &str) -> bool {
+    matches!(mode, "none" | "read" | "write")
+}
+
+fn default_member_mode(permission: &str) -> &'static str {
+    match permission {
+        "audit" => "read",
+        "members" => "none",
+        _ => "write",
+    }
+}
 
 /// Returns true if a server with the given name already exists.
 /// Optionally excludes `exclude_container_id` (pass the current container's ID
@@ -71,6 +107,198 @@ pub async fn list_owned_container_ids(
     Ok(rows)
 }
 
+/// Returns container_ids the user can access either as owner or explicit member.
+pub async fn list_accessible_container_ids(
+    pool: &Pool<Sqlite>,
+    user_id: i64,
+) -> Result<Vec<String>> {
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT s.container_id \
+         FROM servers s \
+         LEFT JOIN server_user_permissions sup \
+            ON sup.server_id = s.id \
+           AND sup.user_id = ? \
+         WHERE s.owner_id = ? OR sup.server_id IS NOT NULL",
+    )
+    .bind(user_id)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .context("Failed to list accessible containers")?;
+    Ok(rows)
+}
+
+pub async fn add_server_member_with_defaults(
+    pool: &Pool<Sqlite>,
+    server_id: i64,
+    user_id: i64,
+) -> Result<()> {
+    for permission in SERVER_MEMBER_PERMISSIONS {
+        sqlx::query(
+            "INSERT OR IGNORE INTO server_user_permissions (server_id, user_id, permission, mode) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(server_id)
+        .bind(user_id)
+        .bind(*permission)
+        .bind(default_member_mode(permission))
+        .execute(pool)
+        .await
+        .context("add_server_member_with_defaults")?;
+    }
+    Ok(())
+}
+
+pub async fn remove_server_member(
+    pool: &Pool<Sqlite>,
+    server_id: i64,
+    user_id: i64,
+) -> Result<()> {
+    sqlx::query("DELETE FROM server_user_permissions WHERE server_id = ? AND user_id = ?")
+        .bind(server_id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .context("remove_server_member")?;
+    Ok(())
+}
+
+pub async fn server_member_exists(
+    pool: &Pool<Sqlite>,
+    server_id: i64,
+    user_id: i64,
+) -> Result<bool> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM server_user_permissions WHERE server_id = ? AND user_id = ?",
+    )
+    .bind(server_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .context("server_member_exists")?;
+    Ok(count > 0)
+}
+
+pub async fn set_server_member_permission_policy(
+    pool: &Pool<Sqlite>,
+    server_id: i64,
+    user_id: i64,
+    permission: &str,
+    mode: &str,
+) -> Result<()> {
+    if !is_valid_member_permission(permission) {
+        return Err(anyhow!("invalid permission"));
+    }
+    if !is_valid_policy_mode(mode) {
+        return Err(anyhow!("invalid mode"));
+    }
+    sqlx::query(
+        "INSERT INTO server_user_permissions (server_id, user_id, permission, mode) \
+         VALUES (?, ?, ?, ?) \
+         ON CONFLICT(server_id, user_id, permission) DO UPDATE SET mode = excluded.mode",
+    )
+    .bind(server_id)
+    .bind(user_id)
+    .bind(permission)
+    .bind(mode)
+    .execute(pool)
+    .await
+    .context("set_server_member_permission_policy")?;
+    Ok(())
+}
+
+pub async fn server_user_has_read_permission(
+    pool: &Pool<Sqlite>,
+    server_id: i64,
+    user_id: i64,
+    permission: &str,
+) -> Result<bool> {
+    if !is_valid_member_permission(permission) {
+        return Ok(false);
+    }
+    let mode = sqlx::query_scalar::<_, String>(
+        "SELECT mode FROM server_user_permissions WHERE server_id = ? AND user_id = ? AND permission = ?",
+    )
+    .bind(server_id)
+    .bind(user_id)
+    .bind(permission)
+    .fetch_optional(pool)
+    .await
+    .context("server_user_has_read_permission")?;
+    Ok(matches!(mode.as_deref(), Some("read") | Some("write")))
+}
+
+pub async fn server_user_has_write_permission(
+    pool: &Pool<Sqlite>,
+    server_id: i64,
+    user_id: i64,
+    permission: &str,
+) -> Result<bool> {
+    if !is_valid_member_permission(permission) {
+        return Ok(false);
+    }
+    let mode = sqlx::query_scalar::<_, String>(
+        "SELECT mode FROM server_user_permissions WHERE server_id = ? AND user_id = ? AND permission = ?",
+    )
+    .bind(server_id)
+    .bind(user_id)
+    .bind(permission)
+    .fetch_optional(pool)
+    .await
+    .context("server_user_has_write_permission")?;
+    Ok(matches!(mode.as_deref(), Some("write")))
+}
+
+pub async fn server_user_has_any_access(
+    pool: &Pool<Sqlite>,
+    server_id: i64,
+    user_id: i64,
+) -> Result<bool> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) \
+         FROM server_user_permissions \
+         WHERE server_id = ? \
+           AND user_id = ? \
+           AND permission IN ('console','files','networking','audit','settings') \
+           AND mode IN ('read','write')",
+    )
+    .bind(server_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .context("server_user_has_any_access")?;
+    Ok(count > 0)
+}
+
+pub async fn list_server_member_permissions(
+    pool: &Pool<Sqlite>,
+    server_id: i64,
+) -> Result<Vec<ServerMemberPermissionEntry>> {
+    let rows = sqlx::query_as::<_, (i64, String, String, String, String, String)>(
+        "SELECT sup.user_id, u.username, COALESCE(u.uid, ''), COALESCE(u.nickname, ''), sup.permission, sup.mode \
+         FROM server_user_permissions sup \
+         JOIN users u ON u.id = sup.user_id \
+         WHERE sup.server_id = ? \
+         ORDER BY COALESCE(NULLIF(u.nickname, ''), u.username) ASC, sup.permission ASC",
+    )
+    .bind(server_id)
+    .fetch_all(pool)
+    .await
+    .context("list_server_member_permissions")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(user_id, username, uid, nickname, permission, mode)| ServerMemberPermissionEntry {
+            user_id,
+            username,
+            uid,
+            nickname,
+            permission,
+            mode,
+        })
+        .collect())
+}
+
 /// Returns the Docker container_id for a given SQLite server id.
 pub async fn get_container_id_by_server_id(
     pool: &Pool<Sqlite>,
@@ -104,7 +332,7 @@ pub async fn get_server_info_by_db_id(
 /// Returns a map of Docker container_id → (SQLite server id, display name, owner username) for ALL servers.
 pub async fn get_server_info_map(pool: &Pool<Sqlite>) -> Result<HashMap<String, (i64, String, String)>> {
     let rows = sqlx::query_as::<_, (String, i64, String, String)>(
-        "SELECT s.container_id, s.id, s.name, COALESCE(u.username, '') \
+        "SELECT s.container_id, s.id, s.name, COALESCE(NULLIF(u.nickname, ''), u.username, '') \
          FROM servers s LEFT JOIN users u ON u.id = s.owner_id",
     )
     .fetch_all(pool)
@@ -118,6 +346,14 @@ pub async fn delete_server_by_container_id(
     pool: &Pool<Sqlite>,
     container_id: &str,
 ) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM server_user_permissions WHERE server_id IN (SELECT id FROM servers WHERE container_id = ?)",
+    )
+    .bind(container_id)
+    .execute(pool)
+    .await
+    .context("delete server member permissions by container_id")?;
+
     sqlx::query("DELETE FROM servers WHERE container_id = ?")
         .bind(container_id)
         .execute(pool)
@@ -208,7 +444,7 @@ pub async fn update_server_name_only(
 /// Returns basic info for every server: (id, display_name, owner_username).
 pub async fn list_servers_basic_info(pool: &Pool<Sqlite>) -> Result<Vec<(i64, String, String)>> {
     let rows = sqlx::query_as::<_, (i64, String, String)>(
-        r#"SELECT s.id, s.name, COALESCE(u.username, '') as owner
+        r#"SELECT s.id, s.name, COALESCE(NULLIF(u.nickname, ''), u.username, '') as owner
            FROM servers s
            LEFT JOIN users u ON s.owner_id = u.id
            ORDER BY s.name"#,

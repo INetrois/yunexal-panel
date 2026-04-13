@@ -116,6 +116,14 @@
 .fb-row.fb-row-dir:hover { background: rgba(251, 191, 36, .06); border-color: rgba(251,191,36,.1); }
 .fb-row.fb-row-back { margin-bottom: .25rem; }
 .fb-row.fb-row-back:hover { background: rgba(255, 255, 255, .035); }
+.fb-row.fb-row-noedit { cursor: default; }
+.fb-row.fb-row-noedit .fb-name::after {
+    content: ' read-only';
+    font-size: .68rem;
+    color: var(--muted);
+    margin-left: .38rem;
+    font-weight: 400;
+}
 
 /* Icon box */
 .fb-icon {

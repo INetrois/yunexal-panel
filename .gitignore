@@ -24,9 +24,16 @@ Thumbs.db
 # ── Release output directory ──────────────────────────────────────────────────
 /yunex-release/
 
-# ── Changelog (kept local only) ───────────────────────────────────────────────
-CHANGELOG.md
+# ── Changelogs (kept local only) ───────────────────────────────────────────────
+/CHANGELOGS/
 
 # ── Logs ─────────────────────────────────────────────────────────────────────
 *.log
 /target/flycheck0/
+
+# ── ISO build artefacts ──────────────────────────────────────────────────────
+/.build/
+/out/
+
+# ── build artefacts ─────────────────────────────────────────────────────────────
+.build/

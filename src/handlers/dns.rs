@@ -643,7 +643,7 @@ pub async fn api_server_dns_list(
     jar: PrivateCookieJar,
     Path(server_id): Path<i64>,
 ) -> Json<Value> {
-    if !auth::can_access_server(&state, &jar, server_id).await {
+    if !auth::can_access_server_permission(&state, &jar, server_id, "networking", false).await {
         return Json(json!({ "ok": false, "error": "Access denied" }));
     }
     match db::dns_list_records_by_server_id(&state.db, server_id).await {
@@ -694,7 +694,7 @@ pub async fn api_server_dns_add(
     Json(body): Json<AddServerDnsBody>,
 ) -> Json<Value> {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, server_id).await {
+    if !auth::can_access_server_permission(&state, &jar, server_id, "networking", true).await {
         return Json(json!({ "ok": false, "error": "Access denied" }));
     }
     let provider = match db::dns_get_provider(&state.db, body.provider_id).await {
@@ -746,7 +746,7 @@ pub async fn api_server_dns_delete(
     Path((server_id, record_id)): Path<(i64, i64)>,
 ) -> Json<Value> {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, server_id).await {
+    if !auth::can_access_server_permission(&state, &jar, server_id, "networking", true).await {
         return Json(json!({ "ok": false, "error": "Access denied" }));
     }
     // Load record and verify it belongs to this server

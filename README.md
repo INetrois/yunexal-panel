@@ -12,6 +12,7 @@ Templates and static assets are compiled into a single binary — no external ru
 - [Roadmap](#roadmap)
 - [Features](#features)
 - [Installation](#installation)
+- [Alpine Installer ISO](#alpine-installer-iso)
 - [Reverse Proxy (nginx)](#reverse-proxy-nginx)
 - [Requirements](#requirements)
 - [Configuration](#configuration)
@@ -202,7 +203,7 @@ tar -xzf yunexal-panel-linux-x86_64.tar.gz
 cd yunex-release
 
 # 2. Run the setup wizard
-#    Installs Docker if needed, creates .env, creates root user, optionally sets up systemd service
+#    Alpine-only flow: uses apk + OpenRC (no systemd/glibc path)
 sudo ./yunexal-setup
 
 # 3. Run
@@ -210,6 +211,33 @@ sudo ./yunexal-setup
 ```
 
 The SQLite database (`panel.db`) and `volumes/` directory are created automatically on first run.
+
+---
+
+## Alpine Installer ISO
+
+Build a custom Alpine installer image with Yunexal integrated:
+
+```bash
+./scripts/iso/build-installer.sh
+```
+
+Outputs:
+
+- `x86_64` installer ISO with Yunexal profile (`scripts/iso/mkimg.yunexal.sh`)
+- Experimental ARM images (`aarch64`, `armv7`) via upstream profile
+
+Inside the live installer shell, use safe partition workflow:
+
+```bash
+yunexal-install prepare --disk /dev/sdX --mode safe --root-size-gib 40
+# then run setup-alpine targeting partition 2
+yunexal-install finalize --disk /dev/sdX --target-root /mnt
+```
+
+This enforces a separate persistent data partition (`/var/lib/yunexal/volumes`) with `prjquota` mount options in installed `fstab`.
+
+Detailed knobs and environment variables are in [scripts/iso/README.md](scripts/iso/README.md).
 
 ---
 
@@ -225,7 +253,7 @@ The panel itself speaks plain HTTP. For production use with a domain and HTTPS (
 
 The setup wizard (`yunexal-setup`) detects nginx and can generate this config automatically (Step 7). If you prefer to configure it manually:
 
-**`/etc/nginx/sites-available/yunexal-panel`**
+**`/etc/nginx/http.d/yunexal-panel.conf`**
 
 ```nginx
 # HTTP → HTTPS redirect
@@ -264,14 +292,13 @@ server {
 Enable the site and reload nginx:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/yunexal-panel /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
+sudo nginx -t && sudo rc-service nginx reload
 ```
 
 To add SSL via Let's Encrypt:
 
 ```bash
-sudo apt install certbot python3-certbot-nginx -y
+sudo apk add --no-cache certbot certbot-nginx
 sudo certbot --nginx -d panel.example.com
 ```
 
@@ -281,7 +308,7 @@ sudo certbot --nginx -d panel.example.com
 
 | Requirement | Notes | Minimum | Recommended |
 |---|---|---|---|
-| **OS** | Distribution for the panel | Ubuntu 20.04+ | Ubuntu 24.04+ LTS |
+| **OS** | Distribution for the panel | Alpine 3.20+ | Alpine latest stable |
 | **Docker Engine** | Must be running; socket at `/var/run/docker.sock` | 24.0 | 29.0 + |
 | **Docker image `alpine`** | Pulled automatically by `yunexal-setup` | latest | latest |
 | **RAM** | For the panel process | 64 MB if using minimal features with containers | 2 GB if using full features with containers |
@@ -336,7 +363,10 @@ git clone https://github.com/nestorchurin/yunexal-panel.git
 cd yunexal-panel
 cargo build --release
 
-# Interactive setup (Docker, .env, root user, optional systemd unit)
+# Musl-only release artifacts (no glibc loader)
+./scripts/release/build-musl.sh
+
+# Interactive setup (Docker, .env, root user, optional OpenRC service)
 sudo ./target/release/yunexal-setup
 
 ./target/release/yunexal-panel

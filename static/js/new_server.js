@@ -99,34 +99,195 @@ function copyYaml(btn) {
     });
 }
 
-// ── Image datalist ───────────────────────────────────────────────────────────
+// ── Local image picker (dropdown inside input) ───────────────────────────────
 
-fetch('/api/image/local').then(r => r.json()).then(d => {
+const _localImageTags = new Set();
+
+function _sortedLocalImageTags() {
+    return Array.from(_localImageTags).sort((a, b) => a.localeCompare(b));
+}
+
+function _addLocalImageTag(tag) {
+    const t = String(tag || '').trim();
+    if (!t || _localImageTags.has(t)) return;
+    _localImageTags.add(t);
+
     const dl = document.getElementById('local-images-list');
-    (d.tags || []).forEach(t => {
+    if (dl) {
         const opt = document.createElement('option');
         opt.value = t;
         dl.appendChild(opt);
+    }
+}
+
+function renderImageDropdown() {
+    const box = document.getElementById('image-dropdown');
+    const imageEl = document.getElementById('image');
+    if (!box || !imageEl) return;
+
+    const q = imageEl.value.trim().toLowerCase();
+    const tags = _sortedLocalImageTags()
+        .filter(t => !q || t.toLowerCase().includes(q))
+        .slice(0, 80);
+
+    box.innerHTML = '';
+    if (!tags.length) {
+        const empty = document.createElement('div');
+        empty.className = 'image-dropdown-empty';
+        empty.textContent = 'No local images found';
+        box.appendChild(empty);
+        return;
+    }
+
+    tags.forEach(t => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'image-dropdown-item';
+        item.textContent = t;
+        item.dataset.value = t;
+        box.appendChild(item);
     });
-}).catch(() => {});
+}
+
+function openImageDropdown() {
+    const box = document.getElementById('image-dropdown');
+    if (!box) return;
+    renderImageDropdown();
+    box.classList.add('open');
+}
+
+function closeImageDropdown() {
+    const box = document.getElementById('image-dropdown');
+    if (box) box.classList.remove('open');
+}
+
+function toggleImageDropdown(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const box = document.getElementById('image-dropdown');
+    if (!box) return;
+    if (box.classList.contains('open')) {
+        closeImageDropdown();
+    } else {
+        openImageDropdown();
+        document.getElementById('image')?.focus();
+    }
+}
+
+function pickLocalImage(value) {
+    if (!value) return;
+    const imageEl = document.getElementById('image');
+    if (imageEl) imageEl.value = value;
+    closeImageDropdown();
+    updateYaml();
+    saveFormState();
+}
+
+function onImageInputChanged() {
+    const box = document.getElementById('image-dropdown');
+    if (box?.classList.contains('open')) renderImageDropdown();
+    updateYaml();
+}
+
+function onImageInputKeydown(e) {
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        openImageDropdown();
+        return;
+    }
+    if (e.key === 'Escape') {
+        closeImageDropdown();
+    }
+}
+
+function loadLocalImages() {
+    fetch('/api/image/local')
+        .then(r => r.json())
+        .then(d => {
+            const tags = Array.from(new Set(d.tags || []))
+                .map(v => String(v || '').trim())
+                .filter(Boolean)
+                .sort((a, b) => a.localeCompare(b));
+            tags.forEach(_addLocalImageTag);
+            renderImageDropdown();
+        })
+        .catch(() => {});
+}
+
+document.addEventListener('click', e => {
+    const wrap = document.querySelector('.image-combo-wrap');
+    if (wrap && !wrap.contains(e.target)) closeImageDropdown();
+});
+
+document.getElementById('image-dropdown')?.addEventListener('click', e => {
+    const item = e.target.closest('.image-dropdown-item');
+    if (!item) return;
+    pickLocalImage(item.dataset.value || '');
+});
+
+loadLocalImages();
 
 // ── Filesystem quota preflight ───────────────────────────────────────────────
+
+let _quotaCreationBlocked = false;
+let _quotaCreationReason = '';
+
+function _setCreateButtonsBlocked(blocked) {
+    const openBtn = document.getElementById('create-server-open-btn');
+    const confirmBtn = document.getElementById('create-server-confirm-btn');
+    [openBtn, confirmBtn].forEach((btn) => {
+        if (!btn) return;
+        btn.disabled = blocked;
+        btn.style.opacity = blocked ? '.55' : '';
+        btn.style.cursor = blocked ? 'not-allowed' : '';
+        if (blocked) {
+            btn.setAttribute('title', _quotaCreationReason || 'Quota must be configured before server creation');
+        } else {
+            btn.removeAttribute('title');
+        }
+    });
+}
+
+function _guardQuotaBeforeCreate() {
+    if (!_quotaCreationBlocked) return true;
+    const banner = document.getElementById('xfs-warn-banner');
+    if (banner) {
+        banner.style.display = '';
+        banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    return false;
+}
 
 function renderQuotaPreflightBanner(d) {
     const banner = document.getElementById('xfs-warn-banner');
     const text = document.getElementById('quota-warn-text');
     if (!banner || !text) return;
 
+    if (d && d.unsafe_override) {
+        _quotaCreationBlocked = false;
+        _quotaCreationReason = '';
+        _setCreateButtonsBlocked(false);
+        text.textContent = 'Unsafe storage override is enabled in Admin Settings. Quota/safety checks are bypassed at your own risk.';
+        banner.style.display = '';
+        return;
+    }
+
     if (d && d.ok) {
+        _quotaCreationBlocked = false;
+        _quotaCreationReason = '';
+        _setCreateButtonsBlocked(false);
         banner.style.display = 'none';
         return;
     }
 
-    let msg = 'No quota-capable filesystem detected (XFS/ext4 with prjquota, ZFS, or Btrfs). disk_limit may not be enforced.';
+    let msg = 'No quota-capable filesystem detected (XFS/ext4 with prjquota, ZFS, or Btrfs). Server creation is blocked until quota support is configured.';
     if (d && d.ext4_without_prjquota) {
-        msg = 'ext4 detected without prjquota/prjjquota. disk_limit will not be enforced. Enable prjquota in your mount options and remount to enforce per-container disk limits.';
+        msg = 'ext4 detected without prjquota/prjjquota. Server creation is blocked. Enable prjquota in mount options and remount before creating containers.';
     }
 
+    _quotaCreationBlocked = true;
+    _quotaCreationReason = msg;
+    _setCreateButtonsBlocked(true);
     text.textContent = msg;
     banner.style.display = '';
 }
@@ -150,6 +311,71 @@ loadQuotaPreflight();
 
 let _storMounts = []; // populated after fetch
 let _storIdx    = 0;  // currently selected index
+let _storUnsafeOverride = false;
+let _storPosListenersAttached = false;
+let _storPosRaf = null;
+
+function _storPositionPanel() {
+    const el = document.getElementById('stor-sel');
+    const panel = document.getElementById('stor-sel-panel');
+    if (!el || !panel || !el.classList.contains('open')) return;
+
+    const rect = el.getBoundingClientRect();
+    const gap = 5;
+    const pad = 8;
+    const width = Math.max(240, Math.round(rect.width));
+    panel.style.width = `${width}px`;
+
+    const panelHeight = panel.offsetHeight || 280;
+    const spaceBelow = window.innerHeight - rect.bottom - pad;
+    const spaceAbove = rect.top - pad;
+    const placeAbove = spaceBelow < Math.min(220, panelHeight) && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(140, placeAbove ? spaceAbove : spaceBelow);
+
+    let top = placeAbove ? (rect.top - panelHeight - gap) : (rect.bottom + gap);
+    top = Math.max(pad, Math.min(top, window.innerHeight - Math.min(panelHeight, maxHeight) - pad));
+
+    let left = rect.left;
+    left = Math.max(pad, Math.min(left, window.innerWidth - width - pad));
+
+    panel.style.maxHeight = `${Math.round(maxHeight)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.left = `${Math.round(left)}px`;
+}
+
+function _storSchedulePosition() {
+    if (_storPosRaf) cancelAnimationFrame(_storPosRaf);
+    _storPosRaf = requestAnimationFrame(() => {
+        _storPosRaf = null;
+        _storPositionPanel();
+    });
+}
+
+function _storAttachPositionListeners() {
+    if (_storPosListenersAttached) return;
+    window.addEventListener('scroll', _storSchedulePosition, true);
+    window.addEventListener('resize', _storSchedulePosition);
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('scroll', _storSchedulePosition);
+        window.visualViewport.addEventListener('resize', _storSchedulePosition);
+    }
+    _storPosListenersAttached = true;
+}
+
+function _storDetachPositionListeners() {
+    if (!_storPosListenersAttached) return;
+    window.removeEventListener('scroll', _storSchedulePosition, true);
+    window.removeEventListener('resize', _storSchedulePosition);
+    if (window.visualViewport) {
+        window.visualViewport.removeEventListener('scroll', _storSchedulePosition);
+        window.visualViewport.removeEventListener('resize', _storSchedulePosition);
+    }
+    if (_storPosRaf) {
+        cancelAnimationFrame(_storPosRaf);
+        _storPosRaf = null;
+    }
+    _storPosListenersAttached = false;
+}
 
 function _storIconClass(m) {
     if (m.is_default) return 'bi-folder2';
@@ -231,9 +457,17 @@ function _storRenderNote(m) {
     } else if (m.has_prjquota) {
         note.innerHTML = `<span style="color:#34d399;"><i class="bi bi-check-circle"></i> XFS prjquota active on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits enforced.</span>`;
     } else if (m.has_ext4) {
-        note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> ext4 without prjquota on <code style="font-size:.78em;">${esc(m.device)}</code> — add <strong>prjquota</strong> mount option and remount to enforce disk limits.</span>`;
+        if (_storUnsafeOverride) {
+            note.innerHTML = `<span style="color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> ext4 without prjquota on <code style="font-size:.78em;">${esc(m.device)}</code> — allowed only because unsafe override is enabled.</span>`;
+        } else {
+            note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> ext4 without prjquota on <code style="font-size:.78em;">${esc(m.device)}</code> — creation is blocked until <strong>prjquota</strong> is enabled and remounted.</span>`;
+        }
     } else {
-        note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> Quotas are unavailable on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits will <strong>not</strong> be enforced.</span>`;
+        if (_storUnsafeOverride) {
+            note.innerHTML = `<span style="color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> Quotas are unavailable on <code style="font-size:.78em;">${esc(m.device)}</code> — allowed via unsafe override (at your own risk).</span>`;
+        } else {
+            note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> Quotas are unavailable on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits will <strong>not</strong> be enforced.</span>`;
+        }
     }
 }
 
@@ -244,20 +478,19 @@ function storSelToggle(e) {
     if (!el || !panel) return;
     if (el.classList.contains('open')) {
         el.classList.remove('open');
+        _storDetachPositionListeners();
     } else {
         _storRenderPanel(); // refresh marks
-        // Position the fixed panel under the trigger
-        const rect = el.getBoundingClientRect();
-        panel.style.top   = (rect.bottom + 5) + 'px';
-        panel.style.left  = rect.left + 'px';
-        panel.style.width = rect.width + 'px';
         el.classList.add('open');
+        _storPositionPanel();
+        _storAttachPositionListeners();
     }
 }
 
 function storSelClose() {
     const el = document.getElementById('stor-sel');
     if (el) el.classList.remove('open');
+    _storDetachPositionListeners();
 }
 
 function storSelPick(idx) {
@@ -276,6 +509,7 @@ document.addEventListener('click', e => {
 (function loadStorMounts() {
     // Default-only fallback
     function initDefault(hint) {
+        _storUnsafeOverride = false;
         _storMounts = [{
             device: 'Default', mount: '', sub: hint || 'volumes/ in panel directory',
             path2: '', value: '', is_default: true, has_prjquota: false,
@@ -292,6 +526,7 @@ document.addEventListener('click', e => {
         .then(r => r.ok ? r.json() : null)
         .then(d => {
             if (!d || !d.ok) { initDefault(); return; }
+            _storUnsafeOverride = !!d.unsafe_override;
             const cp = d.current_path || '';
             _storMounts = [{
                 device: 'Default', mount: '',
@@ -378,6 +613,80 @@ async function fetchImageEnv() {
     }
 }
 
+async function buildImageFromDockerfile() {
+    const imageEl = document.getElementById('image');
+    const customTagEl = document.getElementById('dockerfile-image-tag');
+    const fileEl = document.getElementById('dockerfile-upload');
+    const btn = document.getElementById('build-dockerfile-btn');
+    const status = document.getElementById('dockerfile-build-status');
+
+    const customTag = (customTagEl?.value || '').trim();
+    const image = customTag || (imageEl?.value || '').trim();
+    const file = fileEl?.files?.[0];
+
+    if (!image) {
+        if (status) {
+            status.style.color = 'var(--danger)';
+            status.textContent = '✗ Enter a Docker image tag first (e.g. my-custom:latest).';
+        }
+        imageEl?.focus();
+        return;
+    }
+    if (!file) {
+        if (status) {
+            status.style.color = 'var(--danger)';
+            status.textContent = '✗ Choose a Dockerfile to upload.';
+        }
+        return;
+    }
+
+    const form = new FormData();
+    form.append('image', image);
+    form.append('dockerfile', file, file.name || 'Dockerfile');
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" style="width:.8rem;height:.8rem;"></span> Building…';
+    if (status) {
+        status.style.color = '';
+        status.textContent = '';
+    }
+
+    try {
+        const resp = await fetch('/api/image/build-dockerfile', {
+            method: 'POST',
+            credentials: 'same-origin',
+            body: form,
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.ok) {
+            throw new Error(data.error || 'Build failed');
+        }
+
+        // Ensure the freshly-built image appears in local autocomplete + dropdown immediately.
+        _addLocalImageTag(image);
+
+        if (status) {
+            status.style.color = 'var(--success)';
+            status.textContent = `✓ Built local image ${image}`;
+        }
+        if (imageEl && imageEl.value.trim() !== image) {
+            imageEl.value = image;
+        }
+        renderImageDropdown();
+        if (fileEl) fileEl.value = '';
+        updateYaml();
+        saveFormState();
+    } catch (e) {
+        if (status) {
+            status.style.color = 'var(--danger)';
+            status.textContent = `✗ ${e.message || 'Build failed'}`;
+        }
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-hammer"></i> Build Local Image';
+    }
+}
+
 // ── Monaco init ──────────────────────────────────────────────────────────────
 
 if (!window.__monacoEditorReady) {
@@ -454,6 +763,7 @@ function saveFormState() {
         name:          document.getElementById('name')?.value || '',
         owner_id:      document.getElementById('owner_id')?.value || '0',
         image:         document.getElementById('image')?.value || '',
+        dockerfile_image_tag: document.getElementById('dockerfile-image-tag')?.value || '',
         gui_cpus:      document.getElementById('gui_cpus')?.value || '',
         gui_mem_val:   document.getElementById('gui_mem_val')?.value || '',
         gui_mem_unit:  document.getElementById('gui_mem_unit')?.value || 'mb',
@@ -478,6 +788,8 @@ function restoreFormState() {
     sv('name', s.name);
     sv('owner_id', s.owner_id);
     sv('image', s.image);
+    renderImageDropdown();
+    sv('dockerfile-image-tag', s.dockerfile_image_tag);
     sv('gui_cpus', s.gui_cpus);
     sv('gui_mem_val', s.gui_mem_val);
     sv('gui_mem_unit', s.gui_mem_unit);
@@ -560,6 +872,8 @@ function _cfmEmpty(msg) {
 }
 
 function showCreateConfirm() {
+    if (!_guardQuotaBeforeCreate()) return;
+
     // Auto-fill name if empty
     const nameEl = document.getElementById('name');
     if (!nameEl.value.trim()) nameEl.value = randomServerName();
@@ -693,9 +1007,16 @@ function hideCreateConfirm() {
 }
 
 function submitCreateForm() {
+    if (!_guardQuotaBeforeCreate()) return;
     clearFormState();
     document.getElementById('createServerForm').submit();
 }
+
+document.getElementById('createServerForm')?.addEventListener('submit', (e) => {
+    if (!_guardQuotaBeforeCreate()) {
+        e.preventDefault();
+    }
+});
 
 // ── DNS / SRV ──────────────────────────────────────────────────────────────────
 // ── DNS / SRV ─────────────────────────────────────────────────────────────────

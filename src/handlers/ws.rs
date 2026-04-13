@@ -22,7 +22,7 @@ pub async fn console_ws(
     ws: WebSocketUpgrade,
     Path(db_id): Path<i64>,
 ) -> impl IntoResponse {
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !auth::can_access_server_permission(&state, &jar, db_id, "console", false).await {
         return axum::http::StatusCode::FORBIDDEN.into_response();
     }
     let actor = auth::session_username(&jar).unwrap_or_default();
@@ -182,8 +182,8 @@ async fn collect_batch_stats(state: &AppState, is_admin: bool, uid: Option<i64>)
     }
     if !is_admin {
         if let Some(uid) = uid {
-            let owned = crate::db::list_owned_container_ids(&state.db, uid).await.unwrap_or_default();
-            containers.retain(|c| owned.iter().any(|oid| oid.starts_with(&c.id) || c.id.starts_with(oid.as_str())));
+            let allowed = crate::db::list_accessible_container_ids(&state.db, uid).await.unwrap_or_default();
+            containers.retain(|c| allowed.iter().any(|oid| oid.starts_with(&c.id) || c.id.starts_with(oid.as_str())));
         } else {
             containers.clear();
         }

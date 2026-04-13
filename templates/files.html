@@ -3,9 +3,9 @@
 <head>
     {% include "_head_common.html" %}
     <title>{{ container.name }} - Files</title>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10" integrity="sha384-D1Kt99CQMDuVetoL1lrYwg5t+9QdHe7NLX/SoJYkXDFfX37iInKRy5xLSi8nO7UC" crossorigin="anonymous" nonce="{{nonce}}"></script>
     <link href="/static/css/base.css?v=2" rel="stylesheet">
-    <link href="/static/css/files.css" rel="stylesheet">
+    <link href="/static/css/files.css?v=2" rel="stylesheet">
 </head>
 <body>
     <div class="yu-layout">
@@ -124,7 +124,8 @@
     </div>
 
     {% include "_scripts_server.html" %}
+    <script nonce="{{nonce}}">window.YU_SERVER_ID = '{{id}}';</script>
     {% include "_script_footer.html" %}
-    <script nonce="{{nonce}}" src="/static/js/files.js"></script>
+    <script nonce="{{nonce}}" src="/static/js/files.js?v=3"></script>
 </body>
 </html>

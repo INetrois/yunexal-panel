@@ -1,6 +1,7 @@
 pub mod state;
 pub mod db;
 pub mod docker;
+pub mod host;
 pub mod dns;
 pub mod compose;
 pub mod auth;

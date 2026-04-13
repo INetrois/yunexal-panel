@@ -26,7 +26,8 @@ function buildCard(c) {
     wrap.innerHTML = `<div class="col-md-6 col-xl-4"
         id="container-${c.db_id}"
         data-dash-id="${c.db_id}"
-        data-state="${esc(c.state)}">
+        data-state="${esc(c.state)}"
+        data-owner="${esc(c.owner || '')}">
   <div class="yu-card h-100">
     <div class="card-stripe ${_stripeClass(c.state)}" data-el="stripe"></div>
     <div class="p-3">
@@ -68,6 +69,7 @@ function buildCard(c) {
 function updateCardInPlace(card, c) {
     const running = c.state === 'running';
     card.dataset.state = c.state;
+    card.dataset.owner = c.owner || '';
 
     const stripe = card.querySelector('[data-el="stripe"]');
     if (stripe) {
@@ -112,7 +114,11 @@ function loadServers() {
     if (document.querySelector('.modal.show')) return;
     fetch('/api/dashboard', { credentials: 'same-origin' })
         .then(r => {
-            if (r.status === 401 || r.redirected) { window.location.href = '/login'; return null; }
+            if (r.status === 401 || r.redirected) {
+                if (typeof window.yuGo === 'function') window.yuGo('/login');
+                else window.location.href = '/login';
+                return null;
+            }
             return r.json();
         })
         .then(data => {
@@ -151,6 +157,10 @@ function loadServers() {
   <p style="font-size:.825rem;color:var(--muted);max-width:300px;margin-bottom:1.5rem;">Create your first server to get started.</p>
   ${newBtn}</div>`;
                 list.appendChild(el);
+            }
+
+            if (typeof window.dashFilterOwner === 'function') {
+                window.dashFilterOwner();
             }
         })
         .catch(() => {});

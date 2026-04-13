@@ -74,6 +74,97 @@ function closeSidebar() {
     document.getElementById('sbOverlay').classList.remove('open');
 }
 
+const SETTINGS_CATEGORY_META = {
+    storage: {
+        kicker: 'Storage',
+        title: 'Storage & Docker Core',
+        text: 'Manage where containers live, enforce safe quota defaults, and prepare supported filesystems for new workloads.',
+    },
+    security: {
+        kicker: 'Security',
+        title: 'Host Security Layers',
+        text: 'Control UFW host firewall behavior and Cloudflare Under Attack automation from one place.',
+    },
+    operations: {
+        kicker: 'Operations',
+        title: 'Maintenance & Updates',
+        text: 'Run database cleanup routines and handle panel release channel updates with clear operational controls.',
+    },
+    interface: {
+        kicker: 'Interface',
+        title: 'User Experience Controls',
+        text: 'Adjust what panel users can see and whether bandwidth controls are available in networking tools.',
+    },
+};
+
+function _settingsGetStoredCategory() {
+    try {
+        return sessionStorage.getItem('yu.admin.settings.category') || '';
+    } catch (e) {
+        return '';
+    }
+}
+
+function _settingsStoreCategory(category) {
+    try {
+        sessionStorage.setItem('yu.admin.settings.category', category);
+    } catch (e) {}
+}
+
+function settingsSwitchCategory(category, opts = {}) {
+    const tab = document.getElementById('tab-settings');
+    if (!tab) return;
+
+    const navButtons = Array.from(tab.querySelectorAll('.settings-nav-btn[data-settings-nav]'));
+    const cards = Array.from(tab.querySelectorAll('.settings-cat-item[data-settings-cat]'));
+    if (!navButtons.length || !cards.length) return;
+
+    const available = navButtons.map(btn => btn.dataset.settingsNav).filter(Boolean);
+    const next = available.includes(category) ? category : (available[0] || 'storage');
+
+    tab.classList.add('settings-categorized');
+    tab.dataset.settingsCategory = next;
+
+    navButtons.forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.settingsNav === next);
+    });
+    cards.forEach(card => {
+        card.classList.toggle('settings-cat-active', card.dataset.settingsCat === next);
+    });
+
+    const meta = SETTINGS_CATEGORY_META[next] || SETTINGS_CATEGORY_META.storage;
+    const kickerEl = document.getElementById('settings-category-kicker');
+    const titleEl = document.getElementById('settings-category-title');
+    const textEl = document.getElementById('settings-category-text');
+    if (kickerEl) kickerEl.textContent = meta.kicker;
+    if (titleEl) titleEl.textContent = meta.title;
+    if (textEl) textEl.textContent = meta.text;
+
+    if (!opts.skipPersist) {
+        _settingsStoreCategory(next);
+    }
+
+    if (!opts.skipRefresh) {
+        if (next === 'storage' && typeof loadStorageStats === 'function') {
+            loadStorageStats();
+        }
+        if (next === 'security') {
+            if (typeof ufwCheckStatus === 'function') ufwCheckStatus();
+            if (typeof cfCheckStatus === 'function') cfCheckStatus();
+        }
+    }
+}
+
+function initSettingsCategories() {
+    const tab = document.getElementById('tab-settings');
+    if (!tab) return;
+    const firstButton = tab.querySelector('.settings-nav-btn[data-settings-nav]');
+    if (!firstButton) return;
+
+    const initial = tab.dataset.settingsCategory || _settingsGetStoredCategory() || firstButton.dataset.settingsNav || 'storage';
+    settingsSwitchCategory(initial, { skipPersist: true, skipRefresh: true });
+}
+
 function switchTab(name, btn) {
     document.querySelectorAll('.yu-tab-panel').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.yu-nav-item').forEach(b => b.classList.remove('active'));
@@ -94,9 +185,16 @@ function switchTab(name, btn) {
     history.pushState({ tab: name }, '', '/admin/' + name);
     closeSidebar();
     if (name === 'images') loadImages();
+    if (name === 'users' || name === 'roles') rolesLoad();
+    if (name === 'users') ensureCreateUserUid();
     if (name === 'audit') auditLoad();
     if (name === 'dns') { dnsLoadProviders(); dnsGetPublicIp(); }
-    if (name === 'settings') loadStorageStats();
+    if (name === 'settings') {
+        initSettingsCategories();
+        const settingsTab = document.getElementById('tab-settings');
+        const activeCat = settingsTab ? settingsTab.dataset.settingsCategory : '';
+        if (!activeCat || activeCat === 'storage') loadStorageStats();
+    }
 }
 
 // Handle browser back/forward
@@ -110,9 +208,16 @@ window.addEventListener('popstate', (e) => {
         if ((b.getAttribute('onclick') || '').includes("'" + tab + "'")) b.classList.add('active');
     });
     if (tab === 'images') loadImages();
+    if (tab === 'users' || tab === 'roles') rolesLoad();
+    if (tab === 'users') ensureCreateUserUid();
     if (tab === 'audit') auditLoad();
     if (tab === 'dns') { dnsLoadProviders(); dnsGetPublicIp(); }
-    if (tab === 'settings') loadStorageStats();
+    if (tab === 'settings') {
+        initSettingsCategories();
+        const settingsTab = document.getElementById('tab-settings');
+        const activeCat = settingsTab ? settingsTab.dataset.settingsCategory : '';
+        if (!activeCat || activeCat === 'storage') loadStorageStats();
+    }
 });
 
 
@@ -174,7 +279,42 @@ function adminModalChangePw() {
 
 // ── User Management ───────────────────────────────────────────────────────────
 
+const USER_UID_MIN_LEN = 9;
+const USER_UID_MAX_LEN = 16;
+const USER_UID_RANDOM_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+function _secureRandomInt(maxExclusive) {
+    if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+        const arr = new Uint32Array(1);
+        window.crypto.getRandomValues(arr);
+        return arr[0] % maxExclusive;
+    }
+    return Math.floor(Math.random() * maxExclusive);
+}
+
+function generateRandomUserUid() {
+    const totalLen = USER_UID_MIN_LEN + _secureRandomInt(USER_UID_MAX_LEN - USER_UID_MIN_LEN + 1);
+    const bodyLen = Math.max(1, totalLen - 1);
+    let out = '#';
+    for (let i = 0; i < bodyLen; i++) {
+        const idx = _secureRandomInt(USER_UID_RANDOM_CHARS.length);
+        out += USER_UID_RANDOM_CHARS[idx];
+    }
+    return out;
+}
+
+function ensureCreateUserUid(force = false) {
+    const uidEl = document.getElementById('cu-uid');
+    if (!uidEl) return;
+    if (force || !uidEl.value.trim()) {
+        uidEl.value = generateRandomUserUid();
+    }
+}
+
 function createUser() {
+    ensureCreateUserUid();
+    const uid = document.getElementById('cu-uid').value.trim();
+    const nickname = document.getElementById('cu-nickname').value.trim();
     const username = document.getElementById('cu-username').value.trim();
     const password = document.getElementById('cu-password').value;
     const role     = document.getElementById('cu-role').value;
@@ -186,21 +326,28 @@ function createUser() {
         alertEl.style.display = 'flex';
     };
 
-    if (!username || !password) return show(false, 'Username and password are required.');
+    if (!uid || !nickname || !username || !password) return show(false, 'uid, nickname, username and password are required.');
+    if ([...uid].length < USER_UID_MIN_LEN || [...uid].length > USER_UID_MAX_LEN) {
+        return show(false, 'UID must be between 9 and 16 characters.');
+    }
+    if (nickname.length > 24) return show(false, 'Nickname must be at most 24 characters.');
     if (password.length < 8) return show(false, 'Password must be at least 8 characters.');
 
     fetch('/api/admin/users', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, role })
+        body: JSON.stringify({ uid, nickname, username, password, role })
     }).then(async r => {
         const data = await r.json().catch(() => ({}));
         if (r.ok && data.ok) {
-            show(true, `User "${username}" created.`);
+            show(true, `User "${nickname} ${uid}" created.`);
+            document.getElementById('cu-uid').value = '';
+            document.getElementById('cu-nickname').value = '';
             document.getElementById('cu-username').value = '';
             document.getElementById('cu-password').value = '';
-            document.getElementById('cu-role').value = 'user';
+            const roleSel = document.getElementById('cu-role');
+            if (roleSel && roleSel.options.length) roleSel.value = roleSel.options[0].value;
             // Reload to show the new user in the table
             setTimeout(() => location.reload(), 800);
         } else {
@@ -209,14 +356,15 @@ function createUser() {
     }).catch(() => show(false, 'Network error.'));
 }
 
-async function deleteUser(id, username, btn) {
-    if (!await yuConfirm(`Delete user "${username}"?`)) return;
+async function deleteUser(id, btn) {
+    const row = document.getElementById('user-row-' + id);
+    const displayName = row?.dataset?.userDisplay || `#${id}`;
+    if (!await yuConfirm(`Delete user "${displayName}"?`)) return;
     btn.disabled = true;
     fetch(`/api/admin/users/${id}/delete`, { method: 'POST', credentials: 'same-origin' })
         .then(async r => {
             const data = await r.json().catch(() => ({}));
             if (r.ok && data.ok) {
-                const row = document.getElementById('user-row-' + id);
                 if (row) row.remove();
                 // Update the count label
                 const tbody = document.getElementById('users-tbody');
@@ -234,9 +382,11 @@ async function deleteUser(id, username, btn) {
 
 let _setPwUserId = null;
 
-function openSetPwModal(id, username) {
+function openSetPwModal(id) {
     _setPwUserId = id;
-    document.getElementById('spw-user-lbl').textContent = `User: ${username}`;
+    const row = document.getElementById('user-row-' + id);
+    const displayName = row?.dataset?.userDisplay || `#${id}`;
+    document.getElementById('spw-user-lbl').textContent = `User: ${displayName}`;
     document.getElementById('spw-new').value = '';
     const a = document.getElementById('spw-alert');
     a.style.display = 'none';
@@ -274,6 +424,591 @@ function submitSetPw() {
             show(false, data.error || 'Failed to update password.');
         }
     }).catch(() => show(false, 'Network error.'));
+}
+
+let _rolesCatalog = [];
+let _rolesRows = [];
+let _rolesLoading = false;
+let _roleGroups = [];
+let _activeRoleName = '';
+
+function _authRole() {
+    return document.body?.dataset?.authRole || '';
+}
+
+function _roleDomId(roleName) {
+    return String(roleName || '').replace(/[^a-zA-Z0-9_-]/g, '-');
+}
+
+function _canAssignRole(roleName) {
+    const authRole = _authRole();
+    if (roleName === 'root') return false;
+    if (authRole === 'root') return true;
+    return roleName !== 'admin';
+}
+
+function _buildRoleOptions(currentRole) {
+    const rows = Array.isArray(_rolesRows) ? _rolesRows : [];
+    const out = rows
+        .filter(r => _canAssignRole(r.name) || r.name === currentRole)
+        .map(r => `<option value="${escAttr(r.name)}">${escHtml(r.name)}</option>`)
+        .join('');
+    if (out) return out;
+    return `<option value="${escAttr(currentRole || 'user')}">${escHtml(currentRole || 'user')}</option>`;
+}
+
+function syncCreateUserRoleSelect() {
+    const sel = document.getElementById('cu-role');
+    if (!sel) return;
+    const prev = sel.value || 'user';
+    sel.innerHTML = _buildRoleOptions(prev);
+    sel.value = sel.querySelector(`option[value="${CSS.escape(prev)}"]`) ? prev : (sel.options[0]?.value || 'user');
+
+    const hint = document.getElementById('cu-role-hint');
+    if (hint && _rolesRows.length) {
+        hint.textContent = `${_rolesRows.length} role(s) available.`;
+    }
+}
+
+function syncUserRoleSelects() {
+    document.querySelectorAll('.yu-user-role-select').forEach(sel => {
+        const current = sel.dataset.currentRole || sel.value || 'user';
+        sel.innerHTML = _buildRoleOptions(current);
+        sel.value = sel.querySelector(`option[value="${CSS.escape(current)}"]`) ? current : (sel.options[0]?.value || current);
+    });
+}
+
+async function setUserRole(sel) {
+    const userId = sel.dataset.userId;
+    const userDisplay = sel.dataset.userDisplay || `#${userId}`;
+    const previous = sel.dataset.currentRole || sel.value;
+    const next = sel.value;
+    if (!userId || !next || next === previous) return;
+
+    const ok = await yuConfirm(`Change role for "${userDisplay}" from "${previous}" to "${next}"?`, {
+        icon: 'bi-person-gear',
+        iconColor: '#a78bfa',
+        subtitle: 'Permission changes apply immediately to this account.',
+        okLabel: 'Apply',
+        okColor: 'rgba(124,58,237,.15)',
+        okBorder: 'rgba(124,58,237,.35)',
+        okText: '#c4b5fd',
+        okHover: 'rgba(124,58,237,.28)',
+    });
+    if (!ok) {
+        sel.value = previous;
+        return;
+    }
+
+    sel.disabled = true;
+    try {
+        const r = await fetch(`/api/admin/users/${userId}/set-role`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role: next }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            throw new Error(d.error || 'Failed to update role');
+        }
+        sel.dataset.currentRole = next;
+        showToast('success', `Role updated: ${userDisplay} → ${next}`);
+        await rolesLoad();
+    } catch (e) {
+        sel.value = previous;
+        showToast('danger', e.message || 'Failed to update role');
+    } finally {
+        sel.disabled = false;
+    }
+}
+
+function _normalizeRoleColorInput(raw) {
+    const v = String(raw || '').trim().toLowerCase();
+    if (!v.startsWith('#')) return null;
+    const hex = v.slice(1);
+    if (!((hex.length === 3 || hex.length === 6) && /^[0-9a-f]+$/i.test(hex))) return null;
+    return v;
+}
+
+function _hexToRgba(hex, alpha) {
+    const normalized = _normalizeRoleColorInput(hex) || '#94a3b8';
+    let h = normalized.slice(1);
+    if (h.length === 3) {
+        h = h.split('').map(ch => ch + ch).join('');
+    }
+    const num = parseInt(h, 16);
+    const r = (num >> 16) & 255;
+    const g = (num >> 8) & 255;
+    const b = num & 255;
+    return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function _roleColor(role) {
+    return _normalizeRoleColorInput(role && role.color) || '#94a3b8';
+}
+
+function _applyTopbarRoleBadgeColor(roleName, color) {
+    const authRole = _authRole();
+    if (!roleName || authRole !== roleName) return;
+
+    const normalized = _normalizeRoleColorInput(color);
+    if (!normalized) return;
+
+    const bg = _hexToRgba(normalized, 0.15);
+    const border = _hexToRgba(normalized, 0.35);
+
+    const topbarBadge = document.getElementById('topbar-role-badge');
+    if (topbarBadge) {
+        topbarBadge.style.background = bg;
+        topbarBadge.style.color = normalized;
+        topbarBadge.style.borderColor = border;
+    }
+
+    const dropdownBadge = document.getElementById('topbar-role-dropdown-badge');
+    if (dropdownBadge) {
+        dropdownBadge.style.background = bg;
+        dropdownBadge.style.color = normalized;
+        dropdownBadge.style.borderColor = border;
+    }
+
+    if (document.body && document.body.dataset) {
+        document.body.dataset.authRoleColor = normalized;
+    }
+}
+
+function _roleFromEditHash() {
+    if (!location.hash || !location.hash.startsWith('#edit:')) return '';
+    let target = '';
+    try {
+        target = decodeURIComponent(location.hash.slice(6));
+    } catch (e) {
+        target = location.hash.slice(6);
+    }
+    return target === 'root' ? '' : target;
+}
+
+function _visibleRoles() {
+    return _rolesRows.filter(r => r.name !== 'root');
+}
+
+function _renderRolesNavList(roles, activeName) {
+    const host = document.getElementById('roles-nav-list');
+    if (!host) return;
+    const badge = document.getElementById('roles-count-badge');
+
+    if (!roles.length) {
+        host.innerHTML = '<div style="text-align:center;color:var(--muted);padding:1rem 0;">No editable roles found.</div>';
+        if (badge) badge.textContent = '0 roles';
+        return;
+    }
+
+    host.innerHTML = roles.map(r => {
+        const active = r.name === activeName;
+        const color = _roleColor(r);
+        return `<button type="button" class="roles-nav-item ${active ? 'active' : ''}" onclick="goRoleEdit('${escAttr(r.name)}')">
+            <span class="roles-nav-main">
+                <span class="roles-nav-dot" style="background:${color};box-shadow:0 0 0 3px ${_hexToRgba(color, .18)};"></span>
+                <span class="roles-nav-name">${escHtml(r.name)}</span>
+            </span>
+            <span class="roles-nav-meta">${Number(r.users_count || 0)} users</span>
+        </button>`;
+    }).join('');
+
+    if (badge) {
+        badge.textContent = `${roles.length} role${roles.length === 1 ? '' : 's'}`;
+    }
+}
+
+function _setRolesEditorSubtitle(role) {
+    const subtitle = document.getElementById('roles-editor-subtitle');
+    if (!subtitle) return;
+    if (!role) {
+        subtitle.textContent = 'Select a role to edit permissions and color.';
+        return;
+    }
+    subtitle.textContent = `${role.name}: permissions, color and access profile.`;
+}
+
+function selectRoleForEdit(roleName, opts = {}) {
+    const roles = _visibleRoles();
+    if (!roles.length) return;
+
+    let target = String(roleName || '').trim();
+    if (target === 'root') target = '';
+    if (!target || !roles.some(r => r.name === target)) {
+        target = roles[0].name;
+    }
+
+    _activeRoleName = target;
+
+    if (opts.syncHash !== false) {
+        const nextHash = `#edit:${encodeURIComponent(target)}`;
+        const nextUrl = `/admin/roles${nextHash}`;
+        if (opts.pushState) {
+            history.pushState({ tab: 'roles' }, '', nextUrl);
+        } else {
+            history.replaceState(history.state, '', nextUrl);
+        }
+    }
+
+    renderRolesList();
+}
+
+function _roleCardHtml(role) {
+    const authRole = _authRole();
+    const isSystem = !!role.is_system;
+    const canEdit = role.name !== 'root' && (!isSystem || authRole === 'root');
+    const canDelete = !isSystem && Number(role.users_count || 0) === 0;
+    const roleId = _roleDomId(role.name);
+    const policy = role.policy || {};
+    const roleColor = _roleColor(role);
+
+    function modeSelect(roleName, permissionKey, activeMode, disabled) {
+        const border = activeMode === 'write'
+            ? 'rgba(16,185,129,.35)'
+            : activeMode === 'read'
+                ? 'rgba(59,130,246,.35)'
+                : 'rgba(107,114,128,.35)';
+        const bg = activeMode === 'write'
+            ? 'rgba(16,185,129,.12)'
+            : activeMode === 'read'
+                ? 'rgba(59,130,246,.12)'
+                : 'rgba(107,114,128,.12)';
+        return `<select class="yu-input role-mode-select"
+            data-role="${escAttr(roleName)}"
+            data-perm="${escAttr(permissionKey)}"
+            onchange="setRolePermissionModeSelect(this)"
+            ${disabled ? 'disabled' : ''}
+            style="min-width:98px;padding:.22rem .42rem;font-size:.72rem;line-height:1.2;border:1px solid ${disabled ? 'rgba(255,255,255,.1)' : border};background:${disabled ? 'rgba(255,255,255,.03)' : bg};color:var(--txt);cursor:${disabled ? 'not-allowed' : 'pointer'};opacity:${disabled ? '.55' : '1'};">
+            <option value="read" ${activeMode === 'read' ? 'selected' : ''}>read</option>
+            <option value="none" ${activeMode === 'none' ? 'selected' : ''}>none</option>
+            <option value="write" ${activeMode === 'write' ? 'selected' : ''}>write</option>
+        </select>`;
+    }
+
+    function renderPermissionRow(p) {
+        const activeMode = ['write', 'read', 'none'].includes(policy[p.key]) ? policy[p.key] : 'none';
+        return `<div style="display:flex;justify-content:space-between;gap:.6rem;align-items:flex-start;font-size:.78rem;padding:.42rem .2rem;border-bottom:1px dashed rgba(255,255,255,.05);">
+            <span style="min-width:0;">
+                <strong style="display:block;color:var(--txt);font-size:.78rem;">${escHtml(p.label)}</strong>
+                <small style="color:var(--muted);font-size:.7rem;line-height:1.35;">${escHtml(p.description)} <code>${escHtml(p.key)}</code></small>
+            </span>
+            <span style="display:flex;gap:.25rem;align-items:center;flex-shrink:0;">
+                ${modeSelect(role.name, p.key, activeMode, !canEdit)}
+            </span>
+        </div>`;
+    }
+
+    let permissionRows = '';
+    if (Array.isArray(_roleGroups) && _roleGroups.length) {
+        permissionRows = _roleGroups.map(group => {
+            const items = (group.permissions || [])
+                .map(key => _rolesCatalog.find(p => p.key === key))
+                .filter(Boolean)
+                .map(renderPermissionRow)
+                .join('');
+            if (!items) return '';
+            return `<div style="margin-bottom:.7rem;">
+                <div style="font-size:.69rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin:.15rem 0 .2rem;">${escHtml(group.name || 'Group')}</div>
+                ${items}
+            </div>`;
+        }).join('');
+    }
+    if (!permissionRows) {
+        permissionRows = _rolesCatalog.map(renderPermissionRow).join('');
+    }
+
+    return `<div id="role-card-${roleId}" class="yu-card" style="margin-bottom:.85rem;">
+        <div class="yu-card-hd" style="display:flex;align-items:center;justify-content:space-between;gap:.65rem;flex-wrap:wrap;">
+            <div style="display:flex;align-items:center;gap:.55rem;flex-wrap:wrap;">
+                <span class="pill role-color-pill" data-role="${escAttr(role.name)}" style="background:${_hexToRgba(roleColor, .14)};color:${roleColor};border:1px solid ${_hexToRgba(roleColor, .35)};">
+                    <span class="pill-dot"></span>${escHtml(role.name)}
+                </span>
+                <span style="font-size:.72rem;color:var(--muted);">${Number(role.users_count || 0)} user(s)</span>
+            </div>
+            <div style="display:flex;gap:.4rem;align-items:center;">
+                <label style="display:flex;align-items:center;gap:.35rem;font-size:.72rem;color:var(--muted);">
+                    <span>Color</span>
+                    <input type="color" value="${escAttr(roleColor)}" data-role="${escAttr(role.name)}" onchange="setRoleColor(this)" ${canEdit ? '' : 'disabled'} style="width:28px;height:22px;padding:0;border:none;background:transparent;cursor:${canEdit ? 'pointer' : 'not-allowed'};opacity:${canEdit ? '1' : '.55'};">
+                </label>
+                <button class="btn-yu btn-primary-yu btn-sm-yu" onclick="saveRolePermissions('${escAttr(role.name)}')" ${canEdit ? '' : 'disabled style="opacity:.55;cursor:not-allowed;"'}>
+                    <i class="bi bi-save"></i> Save
+                </button>
+                <button class="btn-yu btn-danger-yu btn-sm-yu" onclick="deleteRole('${escAttr(role.name)}', ${Number(role.users_count || 0)})" ${canDelete ? '' : 'disabled style="opacity:.45;cursor:not-allowed;"'}>
+                    <i class="bi bi-trash"></i>
+                </button>
+            </div>
+        </div>
+        <div class="yu-card-bd">
+            <div style="font-size:.76rem;color:var(--muted);margin-bottom:.55rem;">${escHtml(role.description || 'No description')}</div>
+            <div style="display:grid;grid-template-columns:1fr;gap:.15rem;">${permissionRows}</div>
+        </div>
+    </div>`;
+}
+
+function renderRolesList() {
+    const list = document.getElementById('roles-list');
+    if (!list) return;
+
+    const visibleRoles = _visibleRoles();
+
+    if (!visibleRoles.length) {
+        list.innerHTML = '<div style="text-align:center;color:var(--muted);padding:1rem 0;">No editable roles found.</div>';
+        _renderRolesNavList([], '');
+        _setRolesEditorSubtitle(null);
+        return;
+    }
+
+    const hashTarget = _roleFromEditHash();
+    let target = _activeRoleName || hashTarget;
+    if (!target || !visibleRoles.some(r => r.name === target)) {
+        target = visibleRoles[0].name;
+    }
+    _activeRoleName = target;
+
+    _renderRolesNavList(visibleRoles, target);
+
+    const selectedRole = visibleRoles.find(r => r.name === target) || visibleRoles[0];
+    list.innerHTML = selectedRole ? _roleCardHtml(selectedRole) : '';
+    _setRolesEditorSubtitle(selectedRole);
+
+    const el = document.getElementById(`role-card-${_roleDomId(target)}`);
+    if (el && hashTarget && hashTarget === target) {
+        el.style.boxShadow = '0 0 0 2px rgba(96,165,250,.35)';
+        setTimeout(() => { el.style.boxShadow = ''; }, 1200);
+    }
+}
+
+function goRoleEdit(roleName) {
+    const role = String(roleName || '').trim();
+    if (!role) return;
+    if (role === 'root') return;
+    selectRoleForEdit(role, { syncHash: true, pushState: true });
+}
+
+function setRoleColor(input) {
+    if (!input || input.disabled) return;
+    const role = String(input.dataset.role || '').trim();
+    if (!role || role === 'root') return;
+
+    const color = _normalizeRoleColorInput(input.value) || '#94a3b8';
+    input.value = color;
+
+    const row = _rolesRows.find(r => r.name === role);
+    if (row) row.color = color;
+    renderRolesList();
+}
+
+function setRolePermissionModeSelect(sel) {
+    if (!sel || sel.disabled) return;
+    const role = sel.dataset.role;
+    const perm = sel.dataset.perm;
+    const rawMode = sel.value;
+    const mode = rawMode === 'read' || rawMode === 'write' ? rawMode : 'none';
+    if (mode !== rawMode) sel.value = mode;
+    if (!role || !perm || !mode) return;
+
+    const row = _rolesRows.find(r => r.name === role);
+    if (!row) return;
+    if (!row.policy || typeof row.policy !== 'object') row.policy = {};
+    row.policy[perm] = mode;
+
+    const border = mode === 'write'
+        ? 'rgba(16,185,129,.35)'
+        : mode === 'read'
+            ? 'rgba(59,130,246,.35)'
+            : 'rgba(107,114,128,.35)';
+    const bg = mode === 'write'
+        ? 'rgba(16,185,129,.12)'
+        : mode === 'read'
+            ? 'rgba(59,130,246,.12)'
+            : 'rgba(107,114,128,.12)';
+    sel.style.borderColor = border;
+    sel.style.background = bg;
+}
+
+async function rolesLoad() {
+    if (_rolesLoading) return;
+    _rolesLoading = true;
+    try {
+        const r = await fetch('/api/admin/roles', { credentials: 'same-origin' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            throw new Error(d.error || 'Failed to load roles');
+        }
+        _rolesRows = Array.isArray(d.roles) ? d.roles : [];
+        _rolesCatalog = Array.isArray(d.permissions) ? d.permissions : [];
+        _roleGroups = Array.isArray(d.permission_groups) ? d.permission_groups : [];
+
+        const currentRole = _rolesRows.find(r => r.name === _authRole());
+        if (currentRole) {
+            _applyTopbarRoleBadgeColor(currentRole.name, _roleColor(currentRole));
+        }
+
+        const rootColorInput = document.getElementById('root-role-color');
+        if (rootColorInput) {
+            const rootRole = _rolesRows.find(r => r.name === 'root');
+            if (rootRole) {
+                rootColorInput.value = _roleColor(rootRole);
+            }
+        }
+
+        const hashRole = _roleFromEditHash();
+        if (hashRole) _activeRoleName = hashRole;
+        syncCreateUserRoleSelect();
+        syncUserRoleSelects();
+        renderRolesList();
+    } catch (e) {
+        const list = document.getElementById('roles-list');
+        if (list) {
+            list.innerHTML = `<div style="text-align:center;color:#ef4444;padding:1rem 0;"><i class="bi bi-x-circle"></i> ${escHtml(e.message || 'Failed to load roles')}</div>`;
+        }
+    } finally {
+        _rolesLoading = false;
+    }
+}
+
+window.addEventListener('hashchange', () => {
+    const role = _roleFromEditHash();
+    if (!role) return;
+    _activeRoleName = role;
+    if (document.getElementById('tab-roles')?.classList.contains('active')) {
+        renderRolesList();
+    }
+});
+
+async function createRole() {
+    const nameEl = document.getElementById('role-create-name');
+    const descEl = document.getElementById('role-create-description');
+    const alertEl = document.getElementById('role-create-alert');
+    if (!nameEl || !descEl || !alertEl) return;
+
+    const name = nameEl.value.trim().toLowerCase();
+    const description = descEl.value.trim();
+
+    const show = (ok, msg) => {
+        alertEl.className = 'yu-alert ' + (ok ? 'yu-alert-success' : 'yu-alert-error');
+        alertEl.innerHTML = `<i class="bi bi-${ok ? 'check-circle' : 'x-circle'}"></i> ${escHtml(msg)}`;
+        alertEl.style.display = 'flex';
+    };
+
+    if (!name) return show(false, 'Role name is required.');
+
+    try {
+        const r = await fetch('/api/admin/roles', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, description }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            throw new Error(d.error || 'Failed to create role');
+        }
+        show(true, `Role "${name}" created.`);
+        nameEl.value = '';
+        descEl.value = '';
+        await rolesLoad();
+    } catch (e) {
+        show(false, e.message || 'Failed to create role');
+    }
+}
+
+async function saveRolePermissions(roleName) {
+    const role = String(roleName || '').trim();
+    if (!role) return;
+    const roleRow = _rolesRows.find(r => r.name === role);
+    if (!roleRow) return;
+    const policy = roleRow.policy && typeof roleRow.policy === 'object' ? roleRow.policy : {};
+    const color = _normalizeRoleColorInput(roleRow.color) || '#94a3b8';
+
+    try {
+        const r = await fetch(`/api/admin/roles/${encodeURIComponent(role)}/permissions`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ permissions: policy, color }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            throw new Error(d.error || 'Failed to save permissions');
+        }
+        _applyTopbarRoleBadgeColor(role, color);
+        showToast('success', `Permissions updated for ${role}`);
+        await rolesLoad();
+    } catch (e) {
+        showToast('danger', e.message || 'Failed to save permissions');
+    }
+}
+
+async function saveRootRoleColor() {
+    const input = document.getElementById('root-role-color');
+    if (!input) return;
+
+    const color = _normalizeRoleColorInput(input.value);
+    if (!color) {
+        showToast('danger', 'Root role color must be a valid hex color.');
+        return;
+    }
+
+    input.disabled = true;
+    try {
+        const r = await fetch('/api/admin/roles/root/permissions', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ permissions: {}, color }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            throw new Error(d.error || 'Failed to update root role color');
+        }
+
+        input.value = color;
+        const rootRole = _rolesRows.find(rw => rw.name === 'root');
+        if (rootRole) {
+            rootRole.color = color;
+        }
+        _applyTopbarRoleBadgeColor('root', color);
+        showToast('success', 'Root role color updated');
+        await rolesLoad();
+    } catch (e) {
+        showToast('danger', e.message || 'Failed to update root role color');
+    } finally {
+        input.disabled = false;
+    }
+}
+
+async function deleteRole(roleName, usersCount) {
+    const role = String(roleName || '').trim();
+    if (!role) return;
+    if (Number(usersCount || 0) > 0) {
+        showToast('warning', 'Reassign users from this role before deleting it.');
+        return;
+    }
+
+    if (!await yuConfirm(`Delete role "${role}"?`, {
+        icon: 'bi-trash3-fill',
+        iconColor: '#f87171',
+        subtitle: 'This action cannot be undone.',
+        okLabel: 'Delete',
+    })) return;
+
+    try {
+        const r = await fetch(`/api/admin/roles/${encodeURIComponent(role)}/delete`, {
+            method: 'POST',
+            credentials: 'same-origin',
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            throw new Error(d.error || 'Failed to delete role');
+        }
+        showToast('success', `Role ${role} deleted`);
+        await rolesLoad();
+    } catch (e) {
+        showToast('danger', e.message || 'Failed to delete role');
+    }
 }
 
 // ── Image management ─────────────────────────────────────────────────────────
@@ -1485,9 +2220,22 @@ function escAttr(s) {
 if (document.getElementById('tab-images') && document.getElementById('tab-images').classList.contains('active')) {
     loadImages();
 }
+// Auto-load roles for Users/Roles tabs on direct URL refresh.
+if (
+    (document.getElementById('tab-users') && document.getElementById('tab-users').classList.contains('active'))
+    || (document.getElementById('tab-roles') && document.getElementById('tab-roles').classList.contains('active'))
+) {
+    rolesLoad();
+}
+if (document.getElementById('tab-users') && document.getElementById('tab-users').classList.contains('active')) {
+    ensureCreateUserUid();
+}
 // Auto-load storage stats if already on settings tab
 if (document.getElementById('tab-settings') && document.getElementById('tab-settings').classList.contains('active')) {
-    loadStorageStats();
+    initSettingsCategories();
+    const settingsTab = document.getElementById('tab-settings');
+    const activeCat = settingsTab ? settingsTab.dataset.settingsCategory : '';
+    if (!activeCat || activeCat === 'storage') loadStorageStats();
 }
 
 // ── Containers: render helpers ──────────────────────────────────────────────────
@@ -2045,7 +2793,13 @@ async function loadStorageMountsHint() {
             return;
         }
         // Initialise the admin disk picker — this clears the loading state
-        await initAdminStorSel(d.mounts, d.current_path);
+        await initAdminStorSel(
+            d.mounts,
+            d.current_path,
+            d.default_allowed,
+            d.default_reason,
+            d.default_path,
+        );
     } catch {
         _adminStorLoading = false;
         _adminStorRenderTrigger();
@@ -2060,7 +2814,9 @@ async function loadStorageDiskCandidates() {
         const r = await fetch('/api/admin/storage/disks', { credentials: 'same-origin' });
         const d = await r.json();
         if (!d.ok || !Array.isArray(d.disks) || d.disks.length === 0) {
-            sel.innerHTML = '<option value="">No eligible non-system partitions found</option>';
+            sel.innerHTML = d.unsafe_override
+                ? '<option value="">No partitions found</option>'
+                : '<option value="">No eligible non-system partitions found</option>';
             return;
         }
         const opts = ['<option value="">Select partition…</option>'];
@@ -2124,7 +2880,14 @@ async function changeDiskFilesystem() {
                     <code style="display:block;background:rgba(0,0,0,.35);padding:.38rem .6rem;border-radius:5px;color:#a5f3fc;word-break:break-all;">${escHtml(d.ext4_prjquota_command || '')}</code>
                 </div>`;
             }
-            res.innerHTML = `<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> ${escHtml(d.message || 'Filesystem updated.')}</span>${hintHtml}`;
+            let zfsInfo = '';
+            if (d.zfs_pool) {
+                zfsInfo = `<div style="margin-top:.4rem;padding:.55rem .7rem;border:1px solid rgba(96,165,250,.35);border-radius:8px;background:rgba(96,165,250,.08);color:#60a5fa;">
+                    <div style="font-weight:600;margin-bottom:.25rem;"><i class="bi bi-layers"></i> ZFS pool created</div>
+                    <div style="color:var(--muted);margin-bottom:.35rem;">Pool <code>${escHtml(d.zfs_pool)}</code> mounted at <code>${escHtml(d.zfs_mountpoint || '')}</code>.</div>
+                </div>`;
+            }
+            res.innerHTML = `<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> ${escHtml(d.message || 'Filesystem updated.')}</span>${zfsInfo}${hintHtml}`;
             confirmInp.value = '';
             loadStorageDiskCandidates();
             loadStorageStats();
@@ -2411,8 +3174,74 @@ async function uploadFavicon() {
 let _adminStorMounts = [];
 let _adminStorIdx = -1;  // -1 = "default (blank)"
 let _adminStorLoading = true;
+let _adminStorDefaultAllowed = true;
+let _adminStorDefaultReason = '';
+let _adminStorDefaultPath = '';
 // Detached panel element portalled to <body> so no ancestor stacking context clips it
 let _adminStorPanelEl = null;
+let _adminStorPositionListenersAttached = false;
+let _adminStorPosRaf = null;
+
+function _adminStorPositionPanel() {
+    const sel = document.getElementById('admin-stor-sel');
+    if (!sel || !_adminStorPanelEl || _adminStorPanelEl.parentNode !== document.body) return;
+
+    const rect = sel.getBoundingClientRect();
+    const gap = 4;
+    const pad = 8;
+    const width = Math.max(240, Math.round(rect.width));
+    _adminStorPanelEl.style.width = `${width}px`;
+
+    const panelHeight = _adminStorPanelEl.offsetHeight || 280;
+    const spaceBelow = window.innerHeight - rect.bottom - pad;
+    const spaceAbove = rect.top - pad;
+    const placeAbove = spaceBelow < Math.min(220, panelHeight) && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(140, placeAbove ? spaceAbove : spaceBelow);
+
+    let top = placeAbove ? (rect.top - panelHeight - gap) : (rect.bottom + gap);
+    top = Math.max(pad, Math.min(top, window.innerHeight - Math.min(panelHeight, maxHeight) - pad));
+
+    let left = rect.left;
+    left = Math.max(pad, Math.min(left, window.innerWidth - width - pad));
+
+    _adminStorPanelEl.style.maxHeight = `${Math.round(maxHeight)}px`;
+    _adminStorPanelEl.style.top = `${Math.round(top)}px`;
+    _adminStorPanelEl.style.left = `${Math.round(left)}px`;
+}
+
+function _adminStorSchedulePosition() {
+    if (_adminStorPosRaf) cancelAnimationFrame(_adminStorPosRaf);
+    _adminStorPosRaf = requestAnimationFrame(() => {
+        _adminStorPosRaf = null;
+        _adminStorPositionPanel();
+    });
+}
+
+function _adminStorAttachPositionListeners() {
+    if (_adminStorPositionListenersAttached) return;
+    window.addEventListener('scroll', _adminStorSchedulePosition, true);
+    window.addEventListener('resize', _adminStorSchedulePosition);
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('scroll', _adminStorSchedulePosition);
+        window.visualViewport.addEventListener('resize', _adminStorSchedulePosition);
+    }
+    _adminStorPositionListenersAttached = true;
+}
+
+function _adminStorDetachPositionListeners() {
+    if (!_adminStorPositionListenersAttached) return;
+    window.removeEventListener('scroll', _adminStorSchedulePosition, true);
+    window.removeEventListener('resize', _adminStorSchedulePosition);
+    if (window.visualViewport) {
+        window.visualViewport.removeEventListener('scroll', _adminStorSchedulePosition);
+        window.visualViewport.removeEventListener('resize', _adminStorSchedulePosition);
+    }
+    if (_adminStorPosRaf) {
+        cancelAnimationFrame(_adminStorPosRaf);
+        _adminStorPosRaf = null;
+    }
+    _adminStorPositionListenersAttached = false;
+}
 
 function _adminStorBarFill(pct) {
     const h = pct > 80 ? '#f87171' : pct > 55 ? '#fbbf24' : '#34d399';
@@ -2431,8 +3260,13 @@ function _adminStorRenderTrigger() {
     }
     document.getElementById('admin-stor-sel')?.removeAttribute('disabled-sel');
     if (_adminStorIdx < 0 || !_adminStorMounts[_adminStorIdx]) {
-        dev.textContent = 'Default (panel working dir)';
-        sub.textContent = 'volumes/ relative to panel binary';
+        if (_adminStorDefaultAllowed) {
+            dev.textContent = 'Default (panel working dir)';
+            sub.textContent = _adminStorDefaultPath || 'volumes/ relative to panel binary';
+        } else {
+            dev.textContent = 'Default path is blocked';
+            sub.textContent = _adminStorDefaultReason || 'Select a non-system mounted disk path';
+        }
     } else {
         const m = _adminStorMounts[_adminStorIdx];
         dev.textContent = m.device;
@@ -2442,13 +3276,22 @@ function _adminStorRenderTrigger() {
 
 function _adminStorRenderPanel() {
     if (!_adminStorPanelEl) return;
-    let html = `<div class="stor-opt${_adminStorIdx < 0 ? ' active' : ''}" onclick="adminStorSelPick(-1)">
+    const defaultActive = _adminStorIdx < 0 && _adminStorDefaultAllowed;
+    const defaultDisabledClass = _adminStorDefaultAllowed ? '' : ' stor-opt-disabled';
+    const defaultOnClick = _adminStorDefaultAllowed ? 'onclick="adminStorSelPick(-1)"' : '';
+    const defaultSub = _adminStorDefaultAllowed
+        ? (_adminStorDefaultPath || 'volumes/ relative to panel working directory')
+        : (_adminStorDefaultReason || 'Default path is not allowed by storage policy');
+    let html = `<div class="stor-opt${defaultActive ? ' active' : ''}${defaultDisabledClass}" ${defaultOnClick}>
         <div class="stor-opt-icon"><i class="bi bi-folder2"></i></div>
         <div class="stor-opt-body">
-            <div class="stor-opt-row1"><span class="stor-opt-device">Default</span></div>
-            <div class="stor-opt-row2">volumes/ relative to panel working directory</div>
+            <div class="stor-opt-row1">
+                <span class="stor-opt-device">Default</span>
+                ${_adminStorDefaultAllowed ? '' : '<span class="stor-opt-badge nq">blocked</span>'}
+            </div>
+            <div class="stor-opt-row2">${escHtml(defaultSub)}</div>
         </div>
-        <div class="stor-opt-check">${_adminStorIdx < 0 ? '<i class="bi bi-check-lg"></i>' : ''}</div>
+        <div class="stor-opt-check">${defaultActive ? '<i class="bi bi-check-lg"></i>' : ''}</div>
     </div>`;
     _adminStorMounts.forEach((m, i) => {
         const isActive = i === _adminStorIdx;
@@ -2499,10 +3342,8 @@ function adminStorSelToggle() {
     _adminStorRenderPanel();
 
     sel.classList.add('open');
-    const rect = sel.getBoundingClientRect();
-    _adminStorPanelEl.style.top   = (rect.bottom + window.scrollY + 4) + 'px';
-    _adminStorPanelEl.style.left  = (rect.left + window.scrollX) + 'px';
-    _adminStorPanelEl.style.width = rect.width + 'px';
+    _adminStorPositionPanel();
+    _adminStorAttachPositionListeners();
 
     setTimeout(() => document.addEventListener('click', _adminStorOutsideClick, { once: true, capture: true }), 0);
 }
@@ -2521,12 +3362,20 @@ function _adminStorOutsideClick(e) {
 function _adminStorClose() {
     const sel = document.getElementById('admin-stor-sel');
     if (sel) sel.classList.remove('open');
+    _adminStorDetachPositionListeners();
     if (_adminStorPanelEl && _adminStorPanelEl.parentNode === document.body) {
         document.body.removeChild(_adminStorPanelEl);
     }
 }
 
 async function adminStorSelPick(idx) {
+    if (idx < 0 && !_adminStorDefaultAllowed) {
+        const res = document.getElementById('storage-path-result');
+        if (res) {
+            res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(_adminStorDefaultReason || 'Default storage path is blocked by policy.')}</span>`;
+        }
+        return;
+    }
     _adminStorIdx = idx;
     _adminStorClose();
     _adminStorRenderTrigger();
@@ -2566,15 +3415,18 @@ function toggleAdminStorAdvanced() {
     if (chev) chev.style.transform = visible ? '' : 'rotate(90deg)';
 }
 
-async function initAdminStorSel(mounts, currentPath) {
+async function initAdminStorSel(mounts, currentPath, defaultAllowed = true, defaultReason = '', defaultPath = '') {
     _adminStorMounts = mounts || [];
+    _adminStorDefaultAllowed = !!defaultAllowed;
+    _adminStorDefaultReason = typeof defaultReason === 'string' ? defaultReason : '';
+    _adminStorDefaultPath = typeof defaultPath === 'string' ? defaultPath : '';
     _adminStorLoading = false;
     _adminStorIdx = -1;
     if (currentPath) {
         const idx = _adminStorMounts.findIndex(m =>
             _storageMountSuggestedPath(m) === currentPath || m.mount === currentPath
         );
-        _adminStorIdx = idx;
+        if (idx >= 0) _adminStorIdx = idx;
     }
     _adminStorRenderTrigger();
 }

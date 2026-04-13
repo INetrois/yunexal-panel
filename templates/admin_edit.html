@@ -121,7 +121,7 @@
                             <select class="form-select" id="ae-owner">
                                 <option value="0" {% if edit.owner_id == 0 %}selected{% endif %}>— None —</option>
                                 {% for u in users %}
-                                <option value="{{ u.id }}" {% if u.id == edit.owner_id %}selected{% endif %}>{{ u.username }} ({{ u.role }})</option>
+                                <option value="{{ u.id }}" {% if u.id == edit.owner_id %}selected{% endif %}>{{ u.nickname }} {{ u.uid }} ({{ u.role }})</option>
                                 {% endfor %}
                             </select>
                             <div class="field-note">User who owns this container.</div>
@@ -275,7 +275,7 @@
             </div>
 
             <div class="save-row">
-                <button type="button" class="btn-cancel" onclick="location.href='/admin/containers'">
+                <button type="button" class="btn-cancel" onclick="if(window.yuGo){window.yuGo('/admin/containers');}else{location.href='/admin/containers';}">
                     <i class="bi bi-x-lg"></i> Cancel
                 </button>
                 <div style="display:flex;align-items:center;gap:.6rem;">
@@ -1180,7 +1180,9 @@ async function saveEdit(btn) {
         if (data.new_id != null) {
             feedback.textContent = '✓ Saved — reloading…';
             setTimeout(() => {
-                window.location.href = `/admin/servers/${data.new_id}/edit`;
+                const next = `/admin/servers/${data.new_id}/edit`;
+                if (window.yuGo) window.yuGo(next);
+                else window.location.href = next;
             }, 700);
         }
     } catch (e) {

@@ -30,8 +30,8 @@ pub async fn dashboard(
     };
     if !is_admin {
         if let Some(uid) = auth::session_user_id(&state, &jar).await {
-            let owned = db::list_owned_container_ids(&state.db, uid).await.unwrap_or_default();
-            containers.retain(|c| owned.iter().any(|oid| oid.starts_with(&c.id) || c.id.starts_with(oid.as_str())));
+            let allowed = db::list_accessible_container_ids(&state.db, uid).await.unwrap_or_default();
+            containers.retain(|c| allowed.iter().any(|oid| oid.starts_with(&c.id) || c.id.starts_with(oid.as_str())));
         } else {
             containers.clear();
         }
@@ -46,7 +46,26 @@ pub async fn dashboard(
         }
     }
     let auth_username = auth::session_username(&jar).unwrap_or_default();
-    render(IndexTemplate { containers, is_admin, auth_username, cf_token: state.cf_analytics_token.clone(), nonce })
+    let auth_owner_label = db::find_user_by_username(&state.db, &auth_username)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| {
+            if u.nickname.trim().is_empty() {
+                u.username
+            } else {
+                u.nickname
+            }
+        })
+        .unwrap_or_else(|| auth_username.clone());
+    render(IndexTemplate {
+        containers,
+        is_admin,
+        auth_username,
+        auth_owner_label,
+        cf_token: state.cf_analytics_token.clone(),
+        nonce,
+    })
 }
 
 pub async fn server_list_fragment(
@@ -63,8 +82,8 @@ pub async fn server_list_fragment(
     };
     if !is_admin {
         if let Some(uid) = auth::session_user_id(&state, &jar).await {
-            let owned = db::list_owned_container_ids(&state.db, uid).await.unwrap_or_default();
-            containers.retain(|c| owned.iter().any(|oid| oid.starts_with(&c.id) || c.id.starts_with(oid.as_str())));
+            let allowed = db::list_accessible_container_ids(&state.db, uid).await.unwrap_or_default();
+            containers.retain(|c| allowed.iter().any(|oid| oid.starts_with(&c.id) || c.id.starts_with(oid.as_str())));
         } else {
             containers.clear();
         }
@@ -95,22 +114,24 @@ pub async fn api_dashboard_json(
     };
     if !is_admin {
         if let Some(uid) = auth::session_user_id(&state, &jar).await {
-            let owned = db::list_owned_container_ids(&state.db, uid).await.unwrap_or_default();
-            containers.retain(|c| owned.iter().any(|oid| oid.starts_with(&c.id) || c.id.starts_with(oid.as_str())));
+            let allowed = db::list_accessible_container_ids(&state.db, uid).await.unwrap_or_default();
+            containers.retain(|c| allowed.iter().any(|oid| oid.starts_with(&c.id) || c.id.starts_with(oid.as_str())));
         } else {
             containers.clear();
         }
     }
     let info_map = db::get_server_info_map(&state.db).await.unwrap_or_default();
     for c in &mut containers {
-        if let Some((id, name, _owner)) = info_map.get(&c.id) {
+        if let Some((id, name, owner)) = info_map.get(&c.id) {
             c.db_id = *id;
             c.name = name.clone();
+            c.owner = owner.clone();
         }
     }
     let items: Vec<_> = containers.iter().map(|c| json!({
         "db_id": c.db_id,
         "name": c.name,
+        "owner": c.owner,
         "state": c.state,
         "status": c.status,
     })).collect();
@@ -125,6 +146,8 @@ pub async fn new_server_page(
         .into_iter()
         .map(|u| super::templates::UserInfo {
             id: u.id,
+            uid: u.uid,
+            nickname: u.nickname,
             username: u.username,
             role: u.role,
             created_at: u.created_at,

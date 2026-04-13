@@ -12,6 +12,8 @@ pub fn render<T: Template>(t: T) -> Html<String> {
 #[derive(Debug, Clone)]
 pub struct UserInfo {
     pub id: i64,
+    pub uid: String,
+    pub nickname: String,
     pub username: String,
     pub role: String,
     pub created_at: String,
@@ -25,6 +27,7 @@ pub struct IndexTemplate {
     pub containers: Vec<ContainerInfo>,
     pub is_admin: bool,
     pub auth_username: String,
+    pub auth_owner_label: String,
     pub cf_token: String,
     pub nonce: String,
 }
@@ -65,6 +68,20 @@ pub struct LoginTemplate {
 pub struct ConsoleTemplate {
     pub id: i64,
     pub container: ContainerInfo,
+    pub can_power: bool,
+    pub can_members: bool,
+    pub active_tab: &'static str,
+    pub cf_token: String,
+    pub nonce: String,
+}
+
+#[derive(Template)]
+#[template(path = "server_users.html")]
+pub struct ServerUsersTemplate {
+    pub id: i64,
+    pub container: ContainerInfo,
+    pub can_members: bool,
+    pub can_members_write: bool,
     pub active_tab: &'static str,
     pub cf_token: String,
     pub nonce: String,
@@ -75,6 +92,7 @@ pub struct ConsoleTemplate {
 pub struct FilesTemplate {
     pub id: i64,
     pub container: ContainerInfo,
+    pub can_members: bool,
     pub active_tab: &'static str,
     pub cf_token: String,
     pub nonce: String,
@@ -85,6 +103,7 @@ pub struct FilesTemplate {
 pub struct FileEditTemplate {
     pub id: i64,
     pub container: ContainerInfo,
+    pub can_members: bool,
     pub path: String,
     pub filename: String,
     pub content: String,
@@ -101,6 +120,7 @@ pub struct SettingsTemplate {
     pub id: i64,
     pub container: ContainerInfo,
     pub is_admin: bool,
+    pub can_members: bool,
     pub active_tab: &'static str,
     pub cf_token: String,
     pub nonce: String,
@@ -124,12 +144,24 @@ pub struct NetworkingTemplate {
     /// Current bandwidth limit in Mbit/s, or None for unlimited.
     pub bandwidth_mbit: Option<u32>,
     pub is_admin: bool,
+    pub can_members: bool,
     pub ports: Vec<PortRow>,
     pub active_tab: &'static str,
     pub cf_token: String,
     pub nonce: String,
     pub ufw_enabled: bool,
     pub bandwidth_enabled: bool,
+}
+
+#[derive(Template)]
+#[template(path = "server_audit.html")]
+pub struct ServerAuditTemplate {
+    pub id: i64,
+    pub container: ContainerInfo,
+    pub can_members: bool,
+    pub active_tab: &'static str,
+    pub cf_token: String,
+    pub nonce: String,
 }
 
 #[derive(Template)]
@@ -149,6 +181,10 @@ pub struct AdminTemplate {
     pub listen_addr: String,
     pub auth_username: String,
     pub auth_role: String,
+    pub auth_role_color: String,
+    pub auth_role_badge_bg: String,
+    pub auth_role_badge_border: String,
+    pub root_role_color: String,
     pub panel_memory_mb: String,
     pub panel_version: String,
     pub users: Vec<UserInfo>,
@@ -184,6 +220,7 @@ pub struct AdminTemplate {
     pub cf_l7_ips_min: String,
     pub docker_default_quota: String,
     pub container_storage_path: String,
+    pub settings_storage_unsafe_override: bool,
     pub panel_accent: String,
     pub panel_name: String,
 }
@@ -368,9 +405,33 @@ pub struct ChangePwForm {
 
 #[derive(Deserialize)]
 pub struct CreateUserForm {
+    pub uid: String,
+    pub nickname: String,
     pub username: String,
     pub password: String,
     pub role: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetUserRoleForm {
+    pub role: String,
+}
+
+#[derive(Deserialize)]
+pub struct CreateRoleForm {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub color: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetRolePermissionsForm {
+    #[serde(default)]
+    pub permissions: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub color: String,
 }
 
 #[derive(Deserialize)]

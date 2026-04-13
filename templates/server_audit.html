@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    {% include "_head_common.html" %}
+    <title>{{ container.name }} - Audit</title>
+    <link href="/static/css/base.css?v=2" rel="stylesheet">
+    <link href="/static/css/server_audit.css?v=4" rel="stylesheet">
+</head>
+<body class="yu-server-audit">
+    <div class="yu-layout">
+        {% include "_server_sidebar.html" %}
+        <main class="yu-main srv-audit-main">
+            {% include "_mobile_topbar.html" %}
+            <div class="yu-content">
+                <div class="yu-page-hd srv-audit-head">
+                    <div class="srv-audit-head-copy">
+                        <div class="srv-audit-title">Container Audit Log</div>
+                        <p class="srv-audit-subtitle">
+                            Action history for <strong style="color:var(--txt);">{{ container.name }}</strong>
+                            - <span id="server-audit-total-count" style="font-weight:600;">0</span> entries
+                        </p>
+                    </div>
+                    <div class="srv-audit-toolbar">
+                        <input type="text" id="server-audit-search" class="yu-input srv-audit-search" placeholder="Search..." oninput="srvAuditSearchDebounce()">
+                        <button type="button" id="server-audit-download-btn" class="btn-yu btn-ghost-yu btn-sm-yu srv-audit-download-btn" onclick="downloadServerAuditLog()">
+                            <i class="bi bi-download"></i>
+                            Download .log
+                        </button>
+                        <div class="srv-audit-filter-wrap">
+                            <button type="button" id="server-audit-filter-btn" class="yu-input srv-audit-filter-btn" onclick="toggleServerAuditFilterDD()">
+                                <span id="server-audit-filter-label">All actions</span>
+                                <i class="bi bi-chevron-down srv-audit-filter-chevron"></i>
+                            </button>
+                            <div id="server-audit-filter-dd">
+                                <div style="padding:.25rem .75rem;font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Server</div>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="server.create" onchange="serverAuditFilterApply()"> Create</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="server.start" onchange="serverAuditFilterApply()"> Start</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="server.stop" onchange="serverAuditFilterApply()"> Stop</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="server.restart" onchange="serverAuditFilterApply()"> Restart</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="server.kill" onchange="serverAuditFilterApply()"> Kill</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="server.rename" onchange="serverAuditFilterApply()"> Rename</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="server.env_update" onchange="serverAuditFilterApply()"> ENV update</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="server.delete" onchange="serverAuditFilterApply()"> Delete</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="server.factory_reset" onchange="serverAuditFilterApply()"> Factory reset</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="server.factory_reset_failed" onchange="serverAuditFilterApply()"> Reset failed</label>
+
+                                <div style="padding:.25rem .75rem;font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:.3rem;">Console</div>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="console.connect" onchange="serverAuditFilterApply()"> Connect</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="console.command" onchange="serverAuditFilterApply()"> Command</label>
+
+                                <div style="padding:.25rem .75rem;font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:.3rem;">Network</div>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="net.bandwidth" onchange="serverAuditFilterApply()"> Bandwidth</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="net.port_add" onchange="serverAuditFilterApply()"> Port add</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="net.port_remove" onchange="serverAuditFilterApply()"> Port remove</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="net.port_tag" onchange="serverAuditFilterApply()"> Port tag</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="net.port_toggle" onchange="serverAuditFilterApply()"> Port toggle</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="net.ufw_toggle" onchange="serverAuditFilterApply()"> UFW toggle</label>
+
+                                <div style="padding:.25rem .75rem;font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:.3rem;">Files</div>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="file.save" onchange="serverAuditFilterApply()"> File save</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="file.create" onchange="serverAuditFilterApply()"> File create</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="file.delete" onchange="serverAuditFilterApply()"> File delete</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="file.rename" onchange="serverAuditFilterApply()"> File rename</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="file.copy" onchange="serverAuditFilterApply()"> File copy</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="file.move" onchange="serverAuditFilterApply()"> File move</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="file.upload" onchange="serverAuditFilterApply()"> File upload</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="file.extract" onchange="serverAuditFilterApply()"> Extract archive</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="file.archive" onchange="serverAuditFilterApply()"> Create archive</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="file.bulk_delete" onchange="serverAuditFilterApply()"> Bulk delete</label>
+
+                                <div style="padding:.25rem .75rem;font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:.3rem;">DNS</div>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.server_record_add" onchange="serverAuditFilterApply()"> DNS add</label>
+                                <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.server_record_delete" onchange="serverAuditFilterApply()"> DNS delete</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="yu-panel srv-audit-panel">
+                    <div class="yu-panel-bd srv-audit-table-wrap">
+                        <table class="yu-table" id="server-audit-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:155px;">Time</th>
+                                    <th style="width:120px;">Actor</th>
+                                    <th style="width:120px;">IP</th>
+                                    <th style="width:165px;">Action</th>
+                                    <th>Target</th>
+                                    <th style="font-weight:700;letter-spacing:.04em;">DETAIL</th>
+                                    <th style="width:140px;">Device</th>
+                                </tr>
+                            </thead>
+                            <tbody id="server-audit-tbody">
+                                <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:2rem;">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="server-audit-pagination"></div>
+            </div>
+        </main>
+    </div>
+
+    {% include "_scripts_server.html" %}
+    <script nonce="{{nonce}}">window.YU_SERVER_ID = '{{id}}';</script>
+    <script src="/static/js/server_audit.js?v=6" nonce="{{nonce}}"></script>
+    <script nonce="{{nonce}}">if (typeof window.serverAuditInit === 'function') window.serverAuditInit();</script>
+    {% include "_script_footer.html" %}
+</body>
+</html>

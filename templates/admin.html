@@ -4,9 +4,9 @@
     {% include "_head_common.html" %}
     <title>Admin — Yunexal Panel</title>
     <link href="/static/css/base.css?v=2" rel="stylesheet">
-    <link href="/static/css/admin.css?v=6" rel="stylesheet">
+    <link href="/static/css/admin.css?v=8" rel="stylesheet">
 </head>
-<body>
+<body data-auth-role="{{ auth_role }}" data-auth-role-color="{{ auth_role_color }}">
     {% include "_admin_header.html" %}
 
     <div class="yu-shell">
@@ -242,12 +242,84 @@
                 <p style="font-size:.825rem;color:var(--muted);margin:0;">Manage panel accounts and passwords</p>
             </div>
             <div class="row g-3">
+                <!-- Users table -->
+                <div class="col-md-8 order-2 order-md-1">
+                    <div class="yu-card">
+                        <div class="yu-card-hd">
+                            <span><i class="bi bi-people me-2 text-muted"></i>All Users</span>
+                            <span style="font-size:.75rem;color:var(--muted);" id="user-count-lbl">{{ users_count }} total</span>
+                        </div>
+                        <div class="search-wrap">
+                            <div class="yu-search-bar">
+                                <i class="bi bi-search"></i>
+                                <input id="users-search" type="text" placeholder="Search by nickname, uid, username or role…" oninput="filterTableRows(this.value, 'users-tbody')">
+                            </div>
+                        </div>
+                        <div style="overflow-x:auto;">
+                            <table class="yu-table" id="users-table">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>UID</th>
+                                        <th>Nickname</th>
+                                        <th>Username</th>
+                                        <th>Role</th>
+                                        <th>Created</th>
+                                        <th style="text-align:right;">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="users-tbody">
+                                    {% for u in users %}
+                                    <tr id="user-row-{{ u.id }}" data-user-display="{{ u.nickname }} {{ u.uid }}">
+                                        <td class="mono">{{ u.id }}</td>
+                                        <td class="mono">{{ u.uid }}</td>
+                                        <td style="font-weight:600;">{{ u.nickname }}</td>
+                                        <td style="font-weight:600;">{{ u.username }}</td>
+                                        <td>
+                                            {% if u.role == "root" %}
+                                            <span class="pill" style="background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.25);"><span class="pill-dot"></span>root</span>
+                                            {% else %}
+                                            <select class="yu-input yu-user-role-select"
+                                                    data-user-id="{{ u.id }}"
+                                                    data-user-display="{{ u.nickname }} {{ u.uid }}"
+                                                    data-current-role="{{ u.role }}"
+                                                    onchange="setUserRole(this)"
+                                                    style="min-width:130px;padding:.3rem .55rem;font-size:.78rem;cursor:pointer;">
+                                                <option value="{{ u.role }}">{{ u.role }}</option>
+                                            </select>
+                                            {% endif %}
+                                        </td>
+                                        <td style="font-size:.8rem;color:var(--muted);">{{ u.created_at }}</td>
+                                        <td style="text-align:right;">
+                                            <div style="display:flex;gap:.4rem;justify-content:flex-end;">
+                                                <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="openSetPwModal({{ u.id }})"><i class="bi bi-key"></i></button>
+                                                {% if u.role != "root" %}
+                                                <button class="btn-yu btn-danger-yu btn-sm-yu" onclick="deleteUser({{ u.id }}, this)"><i class="bi bi-trash"></i></button>
+                                                {% endif %}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
                 <!-- Create user form -->
-                <div class="col-md-4">
+                <div class="col-md-4 order-1 order-md-2 users-side-col">
                     <div class="yu-card">
                         <div class="yu-card-hd"><i class="bi bi-person-plus me-2 text-muted"></i>Create User</div>
                         <div class="yu-card-bd">
                             <div id="cu-alert" style="display:none;"></div>
+                            <div class="yu-form-group">
+                                <label class="yu-label">#UID</label>
+                                <input type="text" class="yu-input" id="cu-uid" placeholder="#g7k2n9xq" minlength="9" maxlength="16" autocomplete="off">
+                                <div style="font-size:.72rem;color:var(--muted);margin-top:.35rem;">Auto-generated. UID length: 9-16 characters.</div>
+                            </div>
+                            <div class="yu-form-group">
+                                <label class="yu-label">Nickname</label>
+                                <input type="text" class="yu-input" id="cu-nickname" placeholder="PlayerOne" maxlength="24" autocomplete="off">
+                            </div>
                             <div class="yu-form-group">
                                 <label class="yu-label">Username</label>
                                 <input type="text" class="yu-input" id="cu-username" placeholder="john_doe" autocomplete="off">
@@ -259,68 +331,87 @@
                             <div class="yu-form-group">
                                 <label class="yu-label">Role</label>
                                 <select class="yu-input" id="cu-role" style="cursor:pointer;">
-                                    <option value="user">User</option>
-                                    <option value="admin">Admin</option>
+                                    <option value="user">user</option>
                                 </select>
+                                <div id="cu-role-hint" style="font-size:.72rem;color:var(--muted);margin-top:.35rem;">Roles are loaded from Roles tab.</div>
                             </div>
                             <button class="btn-yu btn-primary-yu" onclick="createUser()"><i class="bi bi-person-plus"></i> Create</button>
                         </div>
                     </div>
                 </div>
-                <!-- Users table -->
-                <div class="col-md-8">
-                    <div class="yu-card">
-                        <div class="yu-card-hd">
-                            <span><i class="bi bi-people me-2 text-muted"></i>All Users</span>
-                            <span style="font-size:.75rem;color:var(--muted);" id="user-count-lbl">{{ users_count }} total</span>
-                        </div>
-                        <div class="search-wrap">
-                            <div class="yu-search-bar">
-                                <i class="bi bi-search"></i>
-                                <input id="users-search" type="text" placeholder="Search by username or role…" oninput="filterTableRows(this.value, 'users-tbody')">
+            </div>
+        </div>
+
+        <!-- ─── PANEL: Roles ─── -->
+        <div id="tab-roles" class="yu-tab-panel{% if tab == "roles" %} active{% endif %}">
+            <div class="yu-page-hd">
+                <div style="font-size:1.2rem;font-weight:700;letter-spacing:-.03em;margin-bottom:.2rem;">Roles &amp; Permissions</div>
+                <p style="font-size:.825rem;color:var(--muted);margin:0;">Create custom roles and update access rights across admin features.</p>
+            </div>
+            <div class="roles-studio">
+                <aside class="roles-studio-side">
+                    <div class="yu-card roles-card">
+                        <div class="yu-card-hd"><i class="bi bi-person-badge me-2 text-muted"></i>Create Role</div>
+                        <div class="yu-card-bd">
+                            <div id="role-create-alert" style="display:none;"></div>
+                            <div class="yu-form-group">
+                                <label class="yu-label">Role name</label>
+                                <input type="text" class="yu-input" id="role-create-name" placeholder="support_operator" autocomplete="off">
+                                <div style="font-size:.72rem;color:var(--muted);margin-top:.35rem;">Allowed: lowercase letters, digits, <code>_</code>, <code>-</code>.</div>
                             </div>
-                        </div>
-                        <div style="overflow-x:auto;">
-                            <table class="yu-table" id="users-table">
-                                <thead>
-                                    <tr>
-                                        <th>#</th>
-                                        <th>Username</th>
-                                        <th>Role</th>
-                                        <th>Created</th>
-                                        <th style="text-align:right;">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="users-tbody">
-                                    {% for u in users %}
-                                    <tr id="user-row-{{ u.id }}">
-                                        <td class="mono">{{ u.id }}</td>
-                                        <td style="font-weight:600;">{{ u.username }}</td>
-                                        <td>
-                                            {% if u.role == "root" %}
-                                            <span class="pill" style="background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.25);"><span class="pill-dot"></span>root</span>
-                                            {% else if u.role == "admin" %}
-                                            <span class="pill" style="background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.2);"><span class="pill-dot"></span>admin</span>
-                                            {% else %}
-                                            <span class="pill pill-other"><span class="pill-dot"></span>user</span>
-                                            {% endif %}
-                                        </td>
-                                        <td style="font-size:.8rem;color:var(--muted);">{{ u.created_at }}</td>
-                                        <td style="text-align:right;">
-                                            <div style="display:flex;gap:.4rem;justify-content:flex-end;">
-                                                <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="openSetPwModal({{ u.id }}, '{{ u.username }}')"><i class="bi bi-key"></i></button>
-                                                {% if u.role != "root" %}
-                                                <button class="btn-yu btn-danger-yu btn-sm-yu" onclick="deleteUser({{ u.id }}, '{{ u.username }}', this)"><i class="bi bi-trash"></i></button>
-                                                {% endif %}
-                                            </div>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
+                            <div class="yu-form-group">
+                                <label class="yu-label">Description</label>
+                                <input type="text" class="yu-input" id="role-create-description" placeholder="Can manage users and audit log" autocomplete="off">
+                            </div>
+                            {% if auth_role == "root" %}
+                            <div class="yu-form-group" style="padding-top:.55rem;border-top:1px dashed rgba(255,255,255,.08);margin-top:.55rem;">
+                                <label class="yu-label">Root badge color</label>
+                                <div style="display:flex;align-items:center;gap:.5rem;">
+                                    <input type="color" class="yu-input" id="root-role-color" value="{{ root_role_color }}" style="width:44px;height:34px;padding:.2rem;cursor:pointer;">
+                                    <button type="button" class="btn-yu btn-ghost-yu btn-sm-yu" onclick="saveRootRoleColor()"><i class="bi bi-palette"></i> Save Root Color</button>
+                                </div>
+                                <div style="font-size:.72rem;color:var(--muted);margin-top:.35rem;">Only root role color can be changed here.</div>
+                            </div>
+                            {% endif %}
+                            <button class="btn-yu btn-primary-yu" onclick="createRole()"><i class="bi bi-plus-circle"></i> Create Role</button>
                         </div>
                     </div>
-                </div>
+
+                    <div class="yu-card roles-card" style="margin-top:.9rem;">
+                        <div class="yu-card-hd" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;">
+                            <span><i class="bi bi-collection me-2 text-muted"></i>Role Directory</span>
+                            <span id="roles-count-badge" class="pill pill-other" style="font-size:.66rem;padding:.15rem .5rem;">0 roles</span>
+                        </div>
+                        <div class="yu-card-bd" style="padding:.75rem;">
+                            <div id="roles-nav-list" class="roles-nav-list">
+                                <div style="text-align:center;color:var(--muted);padding:1rem 0;">
+                                    <span class="spinner-border spinner-border-sm"></span> Loading roles...
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+
+                <section class="roles-studio-main">
+                    <div class="yu-card roles-card roles-editor-card">
+                        <div class="yu-card-hd roles-editor-head">
+                            <div class="roles-editor-title">
+                                <span><i class="bi bi-shield-check me-2 text-muted"></i>Role Editor</span>
+                                <small id="roles-editor-subtitle">Select a role to edit permissions and color.</small>
+                            </div>
+                            <div class="roles-editor-tools">
+                                <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="rolesLoad()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                            </div>
+                        </div>
+                        <div class="yu-card-bd">
+                            <div id="roles-list">
+                                <div style="text-align:center;color:var(--muted);padding:1.2rem 0;">
+                                    <span class="spinner-border spinner-border-sm"></span> Loading editor...
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
             </div>
         </div>
 
@@ -609,7 +700,51 @@
                 <p style="font-size:.825rem;color:var(--muted);margin:0;">System-wide configuration for this panel instance. <span style="color:#f87171;">Root only.</span></p>
             </div>
 
-            <div class="yu-panel" style="margin-top:1.5rem;">
+            <div class="settings-shell">
+                <nav class="settings-nav" aria-label="Settings categories">
+                    <p class="settings-nav-label">Settings Categories</p>
+                    <button type="button" class="settings-nav-btn active" data-settings-nav="storage" onclick="settingsSwitchCategory('storage')">
+                        <span class="settings-nav-icon"><i class="bi bi-hdd-stack"></i></span>
+                        <span class="settings-nav-copy">
+                            <strong>Storage</strong>
+                            <small>Volumes, Docker quota, filesystem conversion</small>
+                        </span>
+                    </button>
+                    <button type="button" class="settings-nav-btn" data-settings-nav="security" onclick="settingsSwitchCategory('security')">
+                        <span class="settings-nav-icon"><i class="bi bi-shield-shaded"></i></span>
+                        <span class="settings-nav-copy">
+                            <strong>Security</strong>
+                            <small>Host firewall and Cloudflare anti-attack rules</small>
+                        </span>
+                    </button>
+                    <button type="button" class="settings-nav-btn" data-settings-nav="operations" onclick="settingsSwitchCategory('operations')">
+                        <span class="settings-nav-icon"><i class="bi bi-tools"></i></span>
+                        <span class="settings-nav-copy">
+                            <strong>Operations</strong>
+                            <small>Database integrity and update channel controls</small>
+                        </span>
+                    </button>
+                    <button type="button" class="settings-nav-btn" data-settings-nav="interface" onclick="settingsSwitchCategory('interface')">
+                        <span class="settings-nav-icon"><i class="bi bi-layout-sidebar"></i></span>
+                        <span class="settings-nav-copy">
+                            <strong>Interface</strong>
+                            <small>Panel feature visibility and traffic tooling</small>
+                        </span>
+                    </button>
+                    <div class="settings-nav-note">
+                        <i class="bi bi-lightning-charge"></i>
+                        Changes apply instantly for all panel users.
+                    </div>
+                </nav>
+
+                <div class="settings-main">
+                    <div class="settings-category-intro" id="settings-category-intro">
+                        <p class="settings-category-kicker" id="settings-category-kicker">Storage</p>
+                        <h3 class="settings-category-title" id="settings-category-title">Storage &amp; Docker Core</h3>
+                        <p class="settings-category-text" id="settings-category-text">Manage where containers live, enforce safe quota defaults, and prepare supported filesystems for new workloads.</p>
+                    </div>
+
+                    <div class="yu-panel settings-cat-item" data-settings-cat="storage" style="margin-top:0;">
                 <div class="yu-panel-hd"><i class="bi bi-hdd-stack text-muted"></i> Storage &amp; Docker Daemon</div>
                 <div class="yu-panel-bd">
                     <!-- Disk bars -->
@@ -669,8 +804,24 @@
 
                     <!-- Disk filesystem change (non-system partitions only) -->
                     <div style="padding-top:1rem;border-top:1px solid var(--bdr);margin-top:1rem;">
+                        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
+                            <div>
+                                <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;color:#fbbf24;">Unsafe storage override (at your own risk)</p>
+                                <p style="font-size:.825rem;color:var(--muted);margin:0;max-width:640px;">Disables storage safety validation (critical mount/root/ext4-no-prjquota checks) for custom paths and migrations. Dropdown lists still show only recommended volumes/disks. This can break the host or corrupt system data.</p>
+                            </div>
+                            <label class="yu-toggle" title="Bypass storage safety protections">
+                                <input type="checkbox" id="setting-storage-unsafe-override" {% if settings_storage_unsafe_override %}checked{% endif %}
+                                       onchange="toggleStorageUnsafeOverride(this)">
+                                <span class="yu-toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div id="storage-unsafe-result" style="margin-top:.6rem;font-size:.82rem;color:var(--muted);"></div>
+                    </div>
+
+                    <!-- Disk filesystem change -->
+                    <div style="padding-top:1rem;border-top:1px solid var(--bdr);margin-top:1rem;">
                         <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Disk filesystem conversion</p>
-                        <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Formats a selected non-system partition to <strong>ext4</strong>, <strong>xfs</strong>, or <strong>btrfs</strong>. This erases all data on that partition.</p>
+                        <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Formats a selected partition to <strong>ext4</strong>, <strong>xfs</strong>, <strong>btrfs</strong>, or creates a new <strong>zfs</strong> pool on it. This erases all data on that partition.</p>
 
                         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.6rem;align-items:end;">
                             <div>
@@ -685,6 +836,7 @@
                                     <option value="ext4">ext4</option>
                                     <option value="xfs">xfs</option>
                                     <option value="btrfs">btrfs</option>
+                                    <option value="zfs">zfs</option>
                                 </select>
                             </div>
                             <div>
@@ -703,7 +855,7 @@
                 </div>
             </div>
 
-            <div class="yu-panel" style="border:1px solid rgba(139,92,246,.15);margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="storage" style="border:1px solid rgba(139,92,246,.15);margin-top:1rem;">
                 <div class="yu-panel-hd" style="color:#a78bfa;font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;"><i class="bi bi-info-circle"></i> Storage Architecture</div>
                 <div class="yu-panel-bd" style="font-size:.8rem;color:var(--muted);line-height:1.7;">
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem 1.5rem;margin-bottom:1.25rem;">
@@ -816,7 +968,7 @@
             </div>
 
             <!-- DB Integrity Check -->
-            <div class="yu-panel" style="margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="operations" style="margin-top:1rem;">
                 <div class="yu-panel-hd"><i class="bi bi-database-check text-muted"></i> Database Integrity</div>
                 <div class="yu-panel-bd">
                     <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Cleanup orphaned records</p>
@@ -830,7 +982,7 @@
                 </div>
             </div>
 
-            <div class="yu-panel" style="margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="security" style="margin-top:1rem;">
                 <div class="yu-panel-hd"><i class="bi bi-shield-shaded text-muted"></i> Firewall (UFW)</div>
                 <div class="yu-panel-bd">
                     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
@@ -860,7 +1012,7 @@
                 </div>
             </div>
 
-            <div class="yu-panel" style="margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="interface" style="margin-top:1rem;">
                 <div class="yu-panel-hd"><i class="bi bi-speedometer2 text-muted"></i> Bandwidth Control</div>
                 <div class="yu-panel-bd">
                     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
@@ -877,7 +1029,7 @@
                 </div>
             </div>
 
-            <div class="yu-panel" style="margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="interface" style="margin-top:1rem;">
                 <div class="yu-panel-hd"><i class="bi bi-eye text-muted"></i> Sidebar Visibility</div>
                 <div class="yu-panel-bd">
                     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
@@ -892,7 +1044,7 @@
                 </div>
             </div>
 
-            <div class="yu-panel" style="margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="operations" style="margin-top:1rem;">
                 <div class="yu-panel-hd"><i class="bi bi-arrow-repeat text-muted"></i> Panel Updates</div>
                 <div class="yu-panel-bd">
                     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;">
@@ -914,7 +1066,7 @@
                 </div>
             </div>
 
-            <div class="yu-panel" style="margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="security" style="margin-top:1rem;">
                 <div class="yu-panel-hd"><i class="bi bi-cloud-slash text-muted"></i> Cloudflare Under Attack Mode</div>
                 <div class="yu-panel-bd">
 
@@ -1010,6 +1162,9 @@
                             <i class="bi bi-cloud-slash" id="cf-uam-icon"></i> <span id="cf-uam-label">Enable UAM</span>
                         </button>
                     </div>
+                </div>
+            </div>
+
                 </div>
             </div>
         {% else %}
@@ -1131,7 +1286,7 @@
     {% include "_admin_modals.html" %}
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous" nonce="{{nonce}}"></script>
-    <script src="/static/js/admin.js?v=15" nonce="{{nonce}}"></script>
+    <script src="/static/js/admin.js?v=24" nonce="{{nonce}}"></script>
     <script nonce="{{nonce}}">
     async function adminSetSetting(key, value) {
         const r = await fetch('/api/admin/settings', {
@@ -1142,6 +1297,39 @@
         const d = await r.json();
         if (r.ok) showToast('success', d.message || 'Setting saved');
         else showToast('danger', d.error || 'Failed to save setting');
+        return { ok: r.ok, data: d };
+    }
+
+    async function toggleStorageUnsafeOverride(el) {
+        const next = !!el.checked;
+        const res = document.getElementById('storage-unsafe-result');
+        if (next) {
+            const proceed = confirm('Enable UNSAFE storage override?\n\nThis bypasses storage safety validation for custom paths/migrations (including system/root/ext4-no-prjquota). Recommended dropdown lists stay filtered. Continue at your own risk.');
+            if (!proceed) {
+                el.checked = false;
+                return;
+            }
+        }
+
+        if (res) res.innerHTML = '<span style="color:var(--muted);"><span class="spinner-border spinner-border-sm" style="width:.8rem;height:.8rem;"></span> Saving…</span>';
+        const out = await adminSetSetting('storage_unsafe_override', next ? '1' : '0');
+        if (!out.ok) {
+            el.checked = !next;
+            if (res) res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(out?.data?.error || 'Failed to save setting')}</span>`;
+            return;
+        }
+
+        if (res) {
+            if (next) {
+                res.innerHTML = '<span style="color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> Unsafe override enabled. Storage safety validation is bypassed for custom paths/migrations.</span>';
+            } else {
+                res.innerHTML = '<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> Unsafe override disabled. Safety checks are active again.</span>';
+            }
+        }
+
+        if (typeof loadStorageMountsHint === 'function') loadStorageMountsHint();
+        if (typeof loadStorageDiskCandidates === 'function') loadStorageDiskCandidates();
+        if (typeof loadStorageStats === 'function') loadStorageStats();
     }
 
     let _ufwActive = false;

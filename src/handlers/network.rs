@@ -6,7 +6,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::PrivateCookieJar;
 use serde::Deserialize;
-use crate::{auth, db, docker};
+use crate::{auth, db, docker, host};
 use crate::state::AppState;
 use std::net::SocketAddr;
 use tracing::error;
@@ -19,10 +19,11 @@ pub async fn networking_page(
     Path(db_id): Path<i64>,
     Extension(CspNonce(nonce)): Extension<CspNonce>,
 ) -> impl IntoResponse {
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !auth::can_access_server_permission(&state, &jar, db_id, "networking", false).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
     let is_admin = auth::is_admin_session(&state, &jar).await;
+    let can_members = auth::can_access_server_permission(&state, &jar, db_id, "members", false).await;
     let (docker_id, db_name) = match db::get_server_info_by_db_id(&state.db, db_id).await.ok().flatten() {
         Some(row) => row,
         None => return "Server not found".into_response(),
@@ -56,7 +57,7 @@ pub async fn networking_page(
                 .into_iter()
                 .map(|((hp, cp), (tag, enabled, ufw_blocked))| PortRow { host_port: hp, container_port: cp, tag, enabled, ufw_blocked })
                 .collect();
-            render(NetworkingTemplate { id: db_id, container, bandwidth_mbit, is_admin, ports, active_tab: "networking", cf_token: state.cf_analytics_token.clone(), nonce, ufw_enabled, bandwidth_enabled }).into_response()
+            render(NetworkingTemplate { id: db_id, container, bandwidth_mbit, is_admin, can_members, ports, active_tab: "networking", cf_token: state.cf_analytics_token.clone(), nonce, ufw_enabled, bandwidth_enabled }).into_response()
         }
         Err(e) => format!("Error: {}", e).into_response(),
     }
@@ -73,7 +74,7 @@ pub async fn api_get_bandwidth(
     jar: PrivateCookieJar,
     Path(db_id): Path<i64>,
 ) -> impl IntoResponse {
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !auth::can_access_server_permission(&state, &jar, db_id, "networking", false).await {
         return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error":"Access denied"}))).into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -397,13 +398,14 @@ pub async fn api_toggle_port_ufw(
     }
 
     let port_str = body.host_port.to_string();
+    let ufw_cmd = host::resolve_admin_tool("ufw");
     let ufw_result = if body.block {
-        tokio::process::Command::new("sudo")
-            .args(["-n", "ufw", "deny", &port_str])
+        host::privileged_command(&ufw_cmd)
+            .args(["deny", &port_str])
             .output().await
     } else {
-        tokio::process::Command::new("sudo")
-            .args(["-n", "ufw", "delete", "deny", &port_str])
+        host::privileged_command(&ufw_cmd)
+            .args(["delete", "deny", &port_str])
             .output().await
     };
 
@@ -420,7 +422,11 @@ pub async fn api_toggle_port_ufw(
             let stderr = String::from_utf8_lossy(&out.stderr);
             if stderr.contains("password is required") || stderr.contains("Permission denied") || stderr.contains("not allowed") {
                 let user = std::env::var("USER").unwrap_or_else(|_| "yunexal".into());
-                let fix = format!("echo '{user} ALL=(ALL) NOPASSWD: /usr/sbin/ufw' | sudo tee /etc/sudoers.d/yunexal-ufw && sudo chmod 440 /etc/sudoers.d/yunexal-ufw");
+                let fix = host::sudoers_fix_command(
+                    &user,
+                    "/etc/sudoers.d/yunexal-ufw",
+                    &[host::ufw_sudoers_entry()],
+                );
                 Json(serde_json::json!({"ok": false, "needs_permission": true, "fix_command": fix})).into_response()
             } else {
                 error!("ufw command failed: {}", stderr);
@@ -441,7 +447,7 @@ pub async fn api_server_disk(
     jar: PrivateCookieJar,
     Path(db_id): Path<i64>,
 ) -> impl IntoResponse {
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !auth::can_access_server_permission(&state, &jar, db_id, "networking", false).await {
         return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error":"Access denied"}))).into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {

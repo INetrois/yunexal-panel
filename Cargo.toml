@@ -1,6 +1,6 @@
 [package]
 name = "yunexal-panel"
-version = "0.0.0-snapshot-26m04d11a"
+version = "0.0.0-snapshot-26m04d12a"
 edition = "2021"
 default-run = "yunexal-panel"
 
