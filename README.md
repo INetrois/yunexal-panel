@@ -203,7 +203,9 @@ tar -xzf yunexal-panel-linux-x86_64.tar.gz
 cd yunex-release
 
 # 2. Run the setup wizard
-#    Alpine-only flow: uses apk + OpenRC (no systemd/glibc path)
+#    Auto-detects host flow:
+#    - Alpine/OpenRC (apk + rc-service)
+#    - Debian/Ubuntu/systemd (apt-get + systemctl)
 sudo ./yunexal-setup
 
 # 3. Run
@@ -253,7 +255,10 @@ The panel itself speaks plain HTTP. For production use with a domain and HTTPS (
 
 The setup wizard (`yunexal-setup`) detects nginx and can generate this config automatically (Step 7). If you prefer to configure it manually:
 
-**`/etc/nginx/http.d/yunexal-panel.conf`**
+**Config file path**
+
+- Alpine/OpenRC: `/etc/nginx/http.d/yunexal-panel.conf`
+- Debian/Ubuntu/systemd: `/etc/nginx/sites-available/yunexal-panel.conf` (enable via symlink in `/etc/nginx/sites-enabled/`)
 
 ```nginx
 # HTTP → HTTPS redirect
@@ -292,13 +297,24 @@ server {
 Enable the site and reload nginx:
 
 ```bash
-sudo nginx -t && sudo rc-service nginx reload
+sudo nginx -t
+
+# systemd hosts
+sudo systemctl reload nginx
+
+# OpenRC hosts
+sudo rc-service nginx reload
 ```
 
 To add SSL via Let's Encrypt:
 
 ```bash
+# Alpine/OpenRC
 sudo apk add --no-cache certbot certbot-nginx
+
+# Debian/Ubuntu/systemd
+sudo apt-get install -y certbot python3-certbot-nginx
+
 sudo certbot --nginx -d panel.example.com
 ```
 
@@ -308,7 +324,7 @@ sudo certbot --nginx -d panel.example.com
 
 | Requirement | Notes | Minimum | Recommended |
 |---|---|---|---|
-| **OS** | Distribution for the panel | Alpine 3.20+ | Alpine latest stable |
+| **OS** | Distribution for the panel | Alpine 3.20+ or Debian/Ubuntu with systemd | Alpine latest stable or Ubuntu LTS |
 | **Docker Engine** | Must be running; socket at `/var/run/docker.sock` | 24.0 | 29.0 + |
 | **Docker image `alpine`** | Pulled automatically by `yunexal-setup` | latest | latest |
 | **RAM** | For the panel process | 64 MB if using minimal features with containers | 2 GB if using full features with containers |
@@ -323,7 +339,11 @@ sudo certbot --nginx -d panel.example.com
 
 > **Docker socket access** — add your user to the `docker` group:
 > ```bash
+> # Debian/Ubuntu/systemd
 > sudo usermod -aG docker $USER && newgrp docker
+>
+> # Alpine/OpenRC
+> sudo addgroup $USER docker
 > ```
 
 > **UFW sudo access** — to use per-port UFW blocking without a password prompt, add a sudoers rule
@@ -366,7 +386,7 @@ cargo build --release
 # Musl-only release artifacts (no glibc loader)
 ./scripts/release/build-musl.sh
 
-# Interactive setup (Docker, .env, root user, optional OpenRC service)
+# Interactive setup (Docker, .env, root user, optional OpenRC/systemd service)
 sudo ./target/release/yunexal-setup
 
 ./target/release/yunexal-panel
