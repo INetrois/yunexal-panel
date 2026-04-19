@@ -772,11 +772,6 @@ function saveFormState() {
         bandwidth_mbit:document.getElementById('bandwidth_mbit')?.value || '',
         gui_restart:   document.getElementById('gui_restart')?.value || 'unless-stopped',
         ports, envs, collapsed,
-        srv_enabled:     document.getElementById('srv-enable-chk')?.checked || false,
-        srv_service:     document.getElementById('srv-service')?.value || '',
-        srv_a_subdomain: document.getElementById('srv-a-subdomain')?.value || '',
-        srv_port:        document.getElementById('srv-port')?.value || '',
-        dns_open:        document.getElementById('dns-srv-body')?.style.display !== 'none',
     }));
 }
 
@@ -803,32 +798,11 @@ function restoreFormState() {
         document.querySelectorAll('.sec-card').forEach((card, i) => {
             if (!(i in s.collapsed)) return;
             const bd   = card.querySelector('.sec-bd');
-            const chev = card.querySelector('.sec-chev') || card.querySelector('#dns-srv-chevron');
+            const chev = card.querySelector('.sec-chev');
             if (!bd) return;
             bd.style.display = s.collapsed[i] ? 'none' : '';
-            if (chev) chev.className = 'bi ' + (s.collapsed[i] ? 'bi-chevron-down' : 'bi-chevron-up') +
-                (chev.id === 'dns-srv-chevron' ? '' : ' sec-chev');
+            if (chev) chev.className = 'bi ' + (s.collapsed[i] ? 'bi-chevron-down' : 'bi-chevron-up') + ' sec-chev';
         });
-    }
-    if (s.dns_open) {
-        const body = document.getElementById('dns-srv-body');
-        if (body) { body.style.display = ''; loadSrvProviders(); }
-        const chev = document.getElementById('dns-srv-chevron');
-        if (chev) chev.className = 'bi bi-chevron-up';
-    }
-    if (s.srv_enabled) {
-        const chk = document.getElementById('srv-enable-chk');
-        if (chk) { chk.checked = true; onSrvToggle(); }
-        sv('srv-service', s.srv_service);
-        sv('srv-a-subdomain', s.srv_a_subdomain);
-        // srv-port is a <select> populated by _refreshSrvPortSelect inside onSrvToggle,
-        // so restore value after a tick to ensure options exist
-        if (s.srv_port) setTimeout(() => {
-            const sel = document.getElementById('srv-port');
-            if (sel && sel.querySelector(`option[value="${s.srv_port}"]`)) sel.value = s.srv_port;
-            updateSrvPreview();
-        }, 50);
-        else updateSrvPreview();
     }
 }
 
@@ -896,7 +870,6 @@ function showCreateConfirm() {
     imageEl.style.boxShadow   = '';
 
     updateYaml();
-    prepareSrvHiddenFields();
 
     const name     = document.getElementById('name').value.trim() || '—';
     const ownerSel = document.getElementById('owner_id');
@@ -975,30 +948,6 @@ function showCreateConfirm() {
         sections.push(_cfmSection('bi-code-square', `Environment${envs.length ? ' ('+envs.length+')' : ''}`, inner));
     }
 
-    // ── DNS / SRV ──
-    const srvEnabled = document.getElementById('h-dns-srv-enabled').value === '1';
-    if (srvEnabled) {
-        const srvName   = document.getElementById('h-dns-srv-name').value || '_yunexal';
-        const srvTarget = document.getElementById('h-dns-srv-target').value;
-        const srvPort   = document.getElementById('h-dns-srv-port').value;
-        const aSub      = document.getElementById('h-dns-a-subdomain').value;
-        const aIp       = document.getElementById('h-dns-a-ip').value;
-        const proto     = document.getElementById('h-dns-srv-both-protos').value || 'both';
-        const zone      = document.getElementById('h-dns-zone-name').value;
-        const protoLabel = proto === 'tcp' ? 'TCP only' : proto === 'udp' ? 'UDP only' : 'TCP + UDP';
-        const protoColor = proto === 'both' ? '#34d399' : '#fbbf24';
-        const records = [];
-        if (proto === 'both' || proto === 'tcp') records.push(`<code style="color:#a78bfa;font-size:.77rem;">${esc(srvName)}._tcp.${esc(srvTarget)}</code>`);
-        if (proto === 'both' || proto === 'udp') records.push(`<code style="color:#a78bfa;font-size:.77rem;">${esc(srvName)}._udp.${esc(srvTarget)}</code>`);
-        sections.push(_cfmSection('bi-hdd-network-fill', 'DNS / SRV Record',
-            _cfmKV('Protocol', `<span style="color:${protoColor};font-size:.77rem;font-weight:600;">${protoLabel}</span>`) +
-            records.map((r, i) => _cfmKV(records.length > 1 ? `SRV record ${i+1}` : 'SRV record', r)).join('') +
-            _cfmKV('Target', `<code style="color:var(--txt);font-size:.77rem;">${esc(srvTarget)}:${esc(srvPort)}</code>`) +
-            (zone ? _cfmKV('Zone', `<code style="color:var(--muted);font-size:.77rem;">${esc(zone)}</code>`) : '') +
-            (aSub ? _cfmKV('A-record', `<code style="color:#a78bfa;font-size:.77rem;">${esc(aSub)}.${esc(zone)}</code>${aIp ? ` <span style="color:var(--muted);font-size:.72rem;">→ ${esc(aIp)}</span>` : ''}`) : '')
-        ));
-    }
-
     document.getElementById('confirm-summary').innerHTML = sections.join('');
     document.getElementById('confirmCreateModal').style.display = 'block';}
 
@@ -1017,156 +966,3 @@ document.getElementById('createServerForm')?.addEventListener('submit', (e) => {
         e.preventDefault();
     }
 });
-
-// ── DNS / SRV ──────────────────────────────────────────────────────────────────
-// ── DNS / SRV ─────────────────────────────────────────────────────────────────
-function toggleDnsSrv() {
-    const body = document.getElementById('dns-srv-body');
-    const chev = document.getElementById('dns-srv-chevron');
-    const open = body.style.display !== 'none';
-    body.style.display = open ? 'none' : '';
-    chev.className = open ? 'bi bi-chevron-down' : 'bi bi-chevron-up';
-    if (!open) loadSrvProviders();
-    saveFormState();
-}
-
-function onSrvToggle() {
-    const on = document.getElementById('srv-enable-chk').checked;
-    document.getElementById('srv-fields').style.display = on ? '' : 'none';
-    saveFormState();
-    if (on) {
-        if (!document.getElementById('srv-service').value) document.getElementById('srv-service').value = 'yunexal';
-        if (!document.getElementById('srv-a-subdomain').value) rollSrvSubdomain();
-        _refreshSrvPortSelect();
-    }
-}
-
-function rollSrvSubdomain() {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    let s = '';
-    for (let i = 0; i < 8; i++) s += chars[Math.floor(Math.random() * chars.length)];
-    document.getElementById('srv-a-subdomain').value = s;
-    updateSrvPreview();
-}
-
-function _refreshSrvPortSelect() {
-    const sel = document.getElementById('srv-port');
-    if (!sel) return;
-    const prev = sel.value;
-    sel.innerHTML = '<option value="">\u2014 select port \u2014</option>';
-    const seen = new Set();
-    document.querySelectorAll('#ports-container .entry-row').forEach(row => {
-        const v = row.querySelector('.host-input')?.value.trim();
-        if (!v || seen.has(v)) return;
-        seen.add(v);
-        const proto = row.querySelector('.proto-input')?.value || 'tcp';
-        const o = document.createElement('option');
-        o.value = v;
-        o.textContent = v;
-        o.dataset.proto = proto;
-        sel.appendChild(o);
-    });
-    if (sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
-    updateSrvPreview();
-}
-
-function loadSrvProviders() {
-    fetch('/api/admin/dns/providers', { credentials: 'same-origin' })
-        .then(r => r.json()).then(d => {
-            const sel = document.getElementById('srv-provider');
-            sel.innerHTML = '<option value="">\u2014 Select provider \u2014</option>';
-            (d.providers || []).forEach(p => {
-                const o = document.createElement('option');
-                o.value = p.id; o.textContent = p.name;
-                sel.appendChild(o);
-            });
-        }).catch(() => {});
-}
-
-function onSrvProviderChange() {
-    const pid = document.getElementById('srv-provider').value;
-    const sel = document.getElementById('srv-zone');
-    if (!pid) { sel.innerHTML = '<option value="">Select provider first</option>'; updateSrvPreview(); return; }
-    sel.innerHTML = '<option value="">Loading\u2026</option>';
-    fetch(`/api/admin/dns/providers/${pid}/zones`, { credentials: 'same-origin' })
-        .then(r => r.json()).then(d => {
-            sel.innerHTML = '<option value="">\u2014 Select domain \u2014</option>';
-            (d.zones || []).forEach(z => {
-                const o = document.createElement('option');
-                o.value = z.id; o.textContent = z.name; o.dataset.name = z.name;
-                sel.appendChild(o);
-            });
-            sel.onchange = () => { _autoFetchIp(); updateSrvPreview(); };
-        }).catch(() => { sel.innerHTML = '<option value="">Failed to load</option>'; });
-}
-
-function _getSrvZoneName() {
-    const zSel = document.getElementById('srv-zone');
-    const idx = zSel.selectedIndex;
-    return idx > 0 ? (zSel.options[idx]?.dataset?.name || zSel.options[idx]?.text || '') : '';
-}
-
-function _autoFetchIp() {
-    fetch('/api/admin/dns/public-ip', { credentials: 'same-origin' })
-        .then(r => r.json())
-        .then(d => { if (d.ip) document.getElementById('h-dns-a-ip').value = d.ip; })
-        .catch(() => {});
-}
-
-function _srvContainerName() {
-    return (document.getElementById('name')?.value || 'server')
-        .trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'server';
-}
-
-function _getSrvProto() {
-    const sel = document.getElementById('srv-port');
-    const p = sel?.options[sel.selectedIndex]?.dataset?.proto || 'tcp';
-    return p === 'tcp+udp' ? 'both' : p;
-}
-
-function updateSrvPreview() {
-    const svc   = (document.getElementById('srv-service')?.value.trim() || 'yunexal').replace(/[^a-z0-9-]/gi, '-').toLowerCase();
-    const sub   = document.getElementById('srv-a-subdomain').value.trim();
-    const zone  = _getSrvZoneName();
-    const port  = document.getElementById('srv-port').value;
-    const proto = _getSrvProto();
-    const box   = document.getElementById('srv-preview-box');
-    if (!box) return;
-    if (!sub || !zone || !port) {
-        box.innerHTML = '<em style="color:var(--muted);font-size:.74rem;">Fill in service, subdomain, domain and port to see preview</em>';
-        return;
-    }
-    const target = `${sub}.${zone}`;
-    const arrow  = `<span style="color:var(--muted);font-size:.72rem;"> \u2192 ${esc(target)}:${esc(port)}</span>`;
-    const rows = [];
-    if (proto === 'both' || proto === 'tcp') rows.push(`<code style="color:#a78bfa;font-size:.76rem;">_${esc(svc)}._tcp.${esc(target)}</code>${arrow}`);
-    if (proto === 'both' || proto === 'udp') rows.push(`<code style="color:#a78bfa;font-size:.76rem;">_${esc(svc)}._udp.${esc(target)}</code>${arrow}`);
-    box.innerHTML = rows.map(r => `<div style="margin-bottom:.15rem;">${r}</div>`).join('');
-}
-
-function prepareSrvHiddenFields() {
-    const chk = document.getElementById('srv-enable-chk');
-    if (!chk || !chk.checked) { document.getElementById('h-dns-srv-enabled').value = '0'; return; }
-    const pid   = document.getElementById('srv-provider').value;
-    const zSel  = document.getElementById('srv-zone');
-    const zid   = zSel.value;
-    const zname = zSel.options[zSel.selectedIndex]?.dataset?.name || zSel.options[zSel.selectedIndex]?.text || zid;
-    const port  = document.getElementById('srv-port').value;
-    const aSub  = document.getElementById('srv-a-subdomain').value.trim();
-    if (!pid || !zid || !port || !aSub) { document.getElementById('h-dns-srv-enabled').value = '0'; return; }
-    const svc    = (document.getElementById('srv-service')?.value.trim() || 'yunexal').replace(/[^a-z0-9-]/gi, '-').toLowerCase();
-    const target = `${aSub}.${zname}`;
-    const proto = _getSrvProto();
-    document.getElementById('h-dns-srv-enabled').value     = '1';
-    document.getElementById('h-dns-srv-both-protos').value = proto;
-    document.getElementById('h-dns-provider-id').value     = pid;
-    document.getElementById('h-dns-zone-id').value         = zid;
-    document.getElementById('h-dns-zone-name').value       = zname;
-    document.getElementById('h-dns-srv-name').value        = `_${svc}`;
-    document.getElementById('h-dns-srv-port').value        = port;
-    document.getElementById('h-dns-srv-target').value      = target;
-    document.getElementById('h-dns-srv-priority').value    = '0';
-    document.getElementById('h-dns-srv-weight').value      = '0';
-    document.getElementById('h-dns-a-subdomain').value     = aSub;
-    // h-dns-a-ip already set by _autoFetchIp()
-}

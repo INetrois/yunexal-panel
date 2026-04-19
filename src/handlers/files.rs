@@ -507,7 +507,6 @@ pub async fn edit_file_page(
         content,
         ace_mode,
         active_tab: "files",
-        cf_token: state.cf_analytics_token.clone(),
         nonce,
     })
     .into_response()

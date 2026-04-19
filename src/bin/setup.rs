@@ -75,6 +75,39 @@ fn check_root() -> bool {
         .unwrap_or(false)
 }
 
+fn root_fs_type() -> Option<String> {
+    let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
+    for line in mounts.lines() {
+        let mut cols = line.split_whitespace();
+        let _source = cols.next()?;
+        let mount_point = cols.next()?;
+        let fs_type = cols.next()?;
+        if mount_point == "/" {
+            return Some(fs_type.to_string());
+        }
+    }
+    None
+}
+
+fn is_alpine_live_installer() -> bool {
+    if !Path::new("/etc/alpine-release").exists() {
+        return false;
+    }
+
+    let cmdline = std::fs::read_to_string("/proc/cmdline").unwrap_or_default();
+    let has_live_boot_token = ["apkovl=", "modloop=", "alpine_dev="]
+        .iter()
+        .any(|token| cmdline.contains(token));
+
+    let root_fs = root_fs_type().unwrap_or_default();
+    let ephemeral_root = matches!(
+        root_fs.as_str(),
+        "tmpfs" | "overlay" | "squashfs" | "ramfs"
+    );
+
+    has_live_boot_token || ephemeral_root
+}
+
 /// Returns the real invoking user (strips sudo).
 fn real_user() -> String {
     std::env::var("SUDO_USER").unwrap_or_else(|_| {
@@ -357,6 +390,16 @@ async fn main() -> Result<()> {
 
     if !check_root() {
         eprintln!("\x1b[31m[ERROR]\x1b[0m This tool must be run as root (use sudo).");
+        std::process::exit(1);
+    }
+
+    if is_alpine_live_installer() {
+        eprintln!("\x1b[31m[ERROR]\x1b[0m Running yunexal-setup from Alpine live USB is blocked.");
+        eprintln!("\x1b[33m[INFO]\x1b[0m  Use installer flow from live session:");
+        eprintln!("\x1b[33m[INFO]\x1b[0m    1) yunexal-install prepare --disk /dev/sdX --mode safe --root-size-gib 40");
+        eprintln!("\x1b[33m[INFO]\x1b[0m    2) yunexal-setup (run installer to YUNEXAL_SYS)");
+        eprintln!("\x1b[33m[INFO]\x1b[0m    3) yunexal-install finalize --disk /dev/sdX --target-root /mnt");
+        eprintln!("\x1b[33m[INFO]\x1b[0m    4) reboot into installed system and run yunexal-setup there");
         std::process::exit(1);
     }
 

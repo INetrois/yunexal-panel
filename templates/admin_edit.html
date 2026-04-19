@@ -3,7 +3,7 @@
 <head>
     {% include "_head_common.html" %}
     <title>Edit {{ container.name }} — Yunexal Panel</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js" integrity="sha384-+pxiN6T7yvpryuJmE1gM9PX7yQit15auDb+ZwwvJOd/4be2Cie5/IuVXgQb/S9du" crossorigin="anonymous" nonce="{{nonce}}"></script>
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js" nonce="{{nonce}}"></script>
     <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js" integrity="sha384-SF/kPhqG3NMxqsYAbQqHkdF53WQx8yTkY0Ys+M+ayeC20QNujPyyxIuUEdEf0eG/" crossorigin="anonymous" nonce="{{nonce}}"></script>
     <link href="/static/css/new_server.css?v=1" rel="stylesheet">
     <style>
@@ -253,27 +253,6 @@
                 </div>
             </div>
 
-            <div class="sec-card" data-section="dns-records">
-                <div class="sec-hd" style="cursor:pointer;user-select:none;" onclick="toggleSecCard(this)">
-                    <div class="sec-hd-icon"><i class="bi bi-hdd-network-fill"></i></div>
-                    <div class="sec-hd-title">DNS / SRV Records</div>
-                    <i class="bi bi-chevron-down sec-chev" style="margin-left:auto;color:var(--muted);transition:transform .2s;"></i>
-                </div>
-                <div class="sec-bd" style="display:none;">
-                    <div class="field-note" style="margin-bottom:.6rem;">
-                        Edit linked DNS records (A/SRV) and push changes to provider.
-                    </div>
-                    <div id="ae-dns-records" style="display:flex;flex-direction:column;gap:.6rem;"></div>
-                    <div id="ae-dns-empty" class="field-note" style="display:none;">No DNS records linked to this server.</div>
-                    <div style="display:flex;align-items:center;gap:.6rem;margin-top:.5rem;">
-                        <button type="button" class="add-row-btn" onclick="reloadDnsRecords(true)">
-                            <i class="bi bi-arrow-repeat"></i> Reload DNS
-                        </button>
-                        <span id="ae-dns-feedback" style="font-size:.78rem;"></span>
-                    </div>
-                </div>
-            </div>
-
             <div class="save-row">
                 <button type="button" class="btn-cancel" onclick="if(window.yuGo){window.yuGo('/admin/containers');}else{location.href='/admin/containers';}">
                     <i class="bi bi-x-lg"></i> Cancel
@@ -407,10 +386,6 @@ function toggleSecCard(hd) {
     if (chev) {
         chev.className = 'bi ' + (open ? 'bi-chevron-down' : 'bi-chevron-up') + ' sec-chev';
         chev.style.cssText = 'margin-left:auto;color:var(--muted);transition:transform .2s;';
-    }
-
-    if (!open && card?.dataset?.section === 'dns-records') {
-        reloadDnsRecords(false);
     }
 }
 
@@ -846,170 +821,6 @@ async function migrateStorage(btn) {
     } catch (e) {
         feedback.textContent = `✗ ${e.message || 'Network error'}`;
         feedback.style.color = '#ef4444';
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = oldHtml;
-    }
-}
-
-function setDnsFeedback(text, color) {
-    const fb = document.getElementById('ae-dns-feedback');
-    if (!fb) return;
-    fb.textContent = text || '';
-    fb.style.color = color || '';
-}
-
-function renderDnsRecordRow(rec) {
-    const rid = Number(rec.id);
-    const type = String(rec.record_type || '').toUpperCase();
-    const name = esc(rec.name || '');
-    const value = esc(rec.value || '');
-    const zone = esc(rec.zone_name || '');
-    const ttl = Number(rec.ttl || 1);
-    const priority = Number(rec.priority || 0);
-    const proxied = !!rec.proxied;
-
-    return `
-        <div class="entry-row" data-dns-id="${rid}" style="display:flex;flex-direction:column;gap:.5rem;padding:.55rem .6rem;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.02);">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:.55rem;">
-                <span style="display:inline-flex;align-items:center;gap:.35rem;font-size:.68rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:${type === 'SRV' ? '#a78bfa' : '#60a5fa'};">${esc(type)} record</span>
-                <span style="font-size:.7rem;color:var(--muted);">Zone: ${zone || '—'}</span>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:.45rem;">
-                <input class="form-control" data-k="name" value="${name}" placeholder="record name">
-                <input class="form-control" data-k="value" value="${value}" placeholder="record value">
-            </div>
-            <div style="display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;">
-                <input type="number" min="1" class="form-control" data-k="ttl" value="${ttl}" style="max-width:92px;" title="TTL">
-                <input type="number" min="0" class="form-control" data-k="priority" value="${priority}" style="max-width:100px;" title="Priority">
-                <label style="display:inline-flex;align-items:center;gap:.35rem;font-size:.74rem;color:var(--muted);margin:0 .25rem 0 .2rem;">
-                    <input type="checkbox" data-k="proxied" ${proxied ? 'checked' : ''}>
-                    Proxied
-                </label>
-                <button type="button" class="add-row-btn" onclick="saveDnsRecord(this, ${rid})"><i class="bi bi-check2"></i> Save DNS</button>
-                <button type="button" class="row-del" style="margin-left:auto;" onclick="deleteDnsRecord(this, ${rid})" title="Delete DNS record"><i class="bi bi-trash3"></i></button>
-            </div>
-        </div>
-    `;
-}
-
-async function reloadDnsRecords(showFeedback) {
-    const list = document.getElementById('ae-dns-records');
-    const empty = document.getElementById('ae-dns-empty');
-    if (!list || !empty) return;
-
-    list.innerHTML = '<div class="field-note">Loading DNS records…</div>';
-    empty.style.display = 'none';
-    if (showFeedback) setDnsFeedback('', '');
-
-    try {
-        const res = await fetch(`/api/servers/${AE_ID}/dns`, { credentials: 'same-origin' });
-        const data = await res.json().catch(() => ({}));
-
-        if (!res.ok || !data.ok) {
-            list.innerHTML = '';
-            empty.style.display = '';
-            empty.textContent = data.error || 'Failed to load DNS records.';
-            if (showFeedback) setDnsFeedback(`✗ ${data.error || 'Failed to load DNS records.'}`, '#ef4444');
-            return;
-        }
-
-        const records = (data.records || []).filter((r) => {
-            const t = String(r.record_type || '').toUpperCase();
-            return t === 'A' || t === 'SRV';
-        });
-
-        if (!records.length) {
-            list.innerHTML = '';
-            empty.style.display = '';
-            empty.textContent = 'No DNS records linked to this server.';
-            if (showFeedback) setDnsFeedback('No linked A/SRV records found.', '#93c5fd');
-            return;
-        }
-
-        list.innerHTML = records.map(renderDnsRecordRow).join('');
-        empty.style.display = 'none';
-        if (showFeedback) setDnsFeedback('✓ DNS records loaded', '#10b981');
-    } catch (e) {
-        list.innerHTML = '';
-        empty.style.display = '';
-        empty.textContent = 'Network error while loading DNS records.';
-        if (showFeedback) setDnsFeedback(`✗ ${e.message || 'Network error'}`, '#ef4444');
-    }
-}
-
-async function saveDnsRecord(btn, recordId) {
-    const row = document.querySelector(`[data-dns-id="${recordId}"]`);
-    if (!row) return;
-
-    const name = (row.querySelector('[data-k="name"]')?.value || '').trim();
-    const value = (row.querySelector('[data-k="value"]')?.value || '').trim();
-    const ttl = parseInt((row.querySelector('[data-k="ttl"]')?.value || '1'), 10) || 1;
-    const priority = parseInt((row.querySelector('[data-k="priority"]')?.value || '0'), 10) || 0;
-    const proxied = !!row.querySelector('[data-k="proxied"]')?.checked;
-
-    if (!name || !value) {
-        setDnsFeedback('✗ DNS name/value cannot be empty.', '#ef4444');
-        return;
-    }
-
-    const oldHtml = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Saving…';
-
-    try {
-        const res = await fetch(`/api/admin/dns/records/${recordId}/update`, {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                name,
-                value,
-                ttl,
-                priority,
-                proxied,
-                push_to_provider: true,
-            }),
-        });
-        const data = await res.json().catch(() => ({}));
-
-        if (!res.ok || !data.ok) {
-            setDnsFeedback(`✗ ${data.error || 'Failed to save DNS record.'}`, '#ef4444');
-            return;
-        }
-
-        setDnsFeedback('✓ DNS record updated', '#10b981');
-    } catch (e) {
-        setDnsFeedback(`✗ ${e.message || 'Network error'}`, '#ef4444');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = oldHtml;
-    }
-}
-
-async function deleteDnsRecord(btn, recordId) {
-    if (!confirm('Delete this DNS record?')) return;
-
-    const oldHtml = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<i class="bi bi-arrow-repeat"></i>';
-
-    try {
-        const res = await fetch(`/api/servers/${AE_ID}/dns/${recordId}/delete`, {
-            method: 'POST',
-            credentials: 'same-origin',
-        });
-        const data = await res.json().catch(() => ({}));
-
-        if (!res.ok || !data.ok) {
-            setDnsFeedback(`✗ ${data.error || 'Failed to delete DNS record.'}`, '#ef4444');
-            return;
-        }
-
-        setDnsFeedback('✓ DNS record deleted', '#10b981');
-        reloadDnsRecords(false);
-    } catch (e) {
-        setDnsFeedback(`✗ ${e.message || 'Network error'}`, '#ef4444');
     } finally {
         btn.disabled = false;
         btn.innerHTML = oldHtml;

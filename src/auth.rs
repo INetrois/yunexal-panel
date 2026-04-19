@@ -18,7 +18,6 @@ pub fn permission_for_admin_tab(tab: &str) -> &'static str {
         "images" => "tab.images",
         "users" => "tab.users",
         "roles" => "tab.roles",
-        "dns" => "tab.dns",
         "audit" => "tab.audit",
         "settings" => "tab.settings",
         _ => "admin.access",
@@ -56,9 +55,6 @@ fn required_admin_permission_for_path(path: &str, method: &Method) -> &'static s
     if path == "/api/admin/images" || path.starts_with("/api/admin/images/") {
         return "images.manage";
     }
-    if path == "/api/admin/dns" || path.starts_with("/api/admin/dns/") {
-        return "dns.manage";
-    }
     if path == "/api/admin/audit" {
         return "audit.read";
     }
@@ -71,7 +67,7 @@ fn required_admin_permission_for_path(path: &str, method: &Method) -> &'static s
     if path.starts_with("/api/admin/storage/") {
         return "storage.manage";
     }
-    if path.starts_with("/api/admin/ufw/") || path.starts_with("/api/admin/cf/") {
+    if path.starts_with("/api/admin/ufw/") {
         return "security.manage";
     }
     if path == "/api/admin/theme/favicon" {

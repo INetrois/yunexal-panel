@@ -35,5 +35,8 @@ Thumbs.db
 /.build/
 /out/
 
+# ── Scripts (kept local, not tracked) ────────────────────────────
+/scripts/
+
 # ── build artefacts ─────────────────────────────────────────────────────────────
 .build/

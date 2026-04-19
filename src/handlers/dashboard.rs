@@ -63,7 +63,6 @@ pub async fn dashboard(
         is_admin,
         auth_username,
         auth_owner_label,
-        cf_token: state.cf_analytics_token.clone(),
         nonce,
     })
 }
@@ -157,5 +156,5 @@ pub async fn new_server_page(
         let v = db::get_panel_setting(&state.db, "docker_default_quota").await;
         if v.is_empty() { "15".to_string() } else { v }
     };
-    render(NewServerTemplate { error: None, fix_cmd: None, users, cf_token: state.cf_analytics_token.clone(), nonce, default_quota_gb })
+    render(NewServerTemplate { error: None, fix_cmd: None, users, nonce, default_quota_gb })
 }

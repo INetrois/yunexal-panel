@@ -57,11 +57,6 @@ const PERMISSION_CATALOG: &[PermissionDef] = &[
         description: "Access roles tab.",
     },
     PermissionDef {
-        key: "tab.dns",
-        label: "Tab: DNS",
-        description: "Access DNS tab.",
-    },
-    PermissionDef {
         key: "tab.audit",
         label: "Tab: Audit",
         description: "Access audit log tab.",
@@ -112,11 +107,6 @@ const PERMISSION_CATALOG: &[PermissionDef] = &[
         description: "Create roles and change permission sets.",
     },
     PermissionDef {
-        key: "dns.manage",
-        label: "Manage DNS",
-        description: "Manage DNS providers, records and DDNS sync.",
-    },
-    PermissionDef {
         key: "audit.read",
         label: "Read Audit Log",
         description: "Read audit events.",
@@ -139,7 +129,7 @@ const PERMISSION_CATALOG: &[PermissionDef] = &[
     PermissionDef {
         key: "security.manage",
         label: "Security Controls",
-        description: "Toggle UFW and Cloudflare controls.",
+        description: "Toggle host firewall controls.",
     },
     PermissionDef {
         key: "theme.manage",
@@ -198,7 +188,6 @@ fn default_role_permissions(role: &str) -> &'static [&'static str] {
             "tab.images",
             "tab.users",
             "tab.roles",
-            "tab.dns",
             "tab.audit",
             "tab.settings",
             "servers.create",
@@ -209,7 +198,6 @@ fn default_role_permissions(role: &str) -> &'static [&'static str] {
             "images.manage",
             "users.manage",
             "roles.manage",
-            "dns.manage",
             "audit.read",
             "panel.update",
             "panel.settings",
@@ -224,7 +212,6 @@ fn default_role_permissions(role: &str) -> &'static [&'static str] {
             "tab.images",
             "tab.users",
             "tab.roles",
-            "tab.dns",
             "tab.audit",
             "servers.create",
             "servers.edit",
@@ -234,7 +221,6 @@ fn default_role_permissions(role: &str) -> &'static [&'static str] {
             "images.manage",
             "users.manage",
             "roles.manage",
-            "dns.manage",
             "audit.read",
             "panel.update",
         ],

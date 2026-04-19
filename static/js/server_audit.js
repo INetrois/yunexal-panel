@@ -67,8 +67,6 @@ function _srvAuditActionBadge(action) {
         'file.extract': ['#2dd4bf', 'rgba(45,212,191,.12)'],
         'file.archive': ['#2dd4bf', 'rgba(45,212,191,.12)'],
         'file.bulk_delete': ['#ef4444', 'rgba(239,68,68,.18)'],
-        'dns.server_record_add': ['#2dd4bf', 'rgba(45,212,191,.12)'],
-        'dns.server_record_delete': ['#f87171', 'rgba(239,68,68,.12)'],
     };
     const palette = colors[action] || ['var(--muted)', 'rgba(255,255,255,.05)'];
     return `<span style="display:inline-block;padding:.2rem .5rem;border-radius:5px;font-size:.75rem;font-weight:600;letter-spacing:.02em;color:${palette[0]};background:${palette[1]};">${_srvAuditEscHtml(action)}</span>`;

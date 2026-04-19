@@ -7,7 +7,6 @@ use axum::{
 use axum_extra::extract::cookie::{Cookie, PrivateCookieJar, SameSite};
 use time::Duration as TimeDuration;
 use std::net::SocketAddr;
-use std::time::Instant;
 use tracing::warn;
 use crate::{auth, db, password};
 use crate::state::AppState;
@@ -67,90 +66,10 @@ pub async fn login_submit(
         if locked {
             warn!("IP {} locked out after repeated failed logins", ip);
         }
-        // Async: check multi-IP brute force and maybe trigger CF UAM
-        let state2 = state.clone();
-        tokio::spawn(async move {
-            check_and_maybe_trigger_uam(state2).await;
-        });
         render(LoginTemplate {
             error: Some("Invalid username or password.".to_string()),
         })
         .into_response()
-    }
-}
-
-/// Counts how many distinct IPs have recent failed logins;
-/// if above threshold, enables Cloudflare Under Attack Mode.
-async fn check_and_maybe_trigger_uam(state: AppState) {
-    if !db::get_panel_setting_bool(&state.db, "cf_uam_enabled").await { return; }
-    let token = db::get_panel_setting(&state.db, "cf_api_token").await;
-    let zone_id = db::get_panel_setting(&state.db, "cf_zone_id").await;
-    if token.is_empty() || zone_id.is_empty() { return; }
-
-    let threshold: usize = db::get_panel_setting(&state.db, "cf_uam_threshold").await
-        .parse().unwrap_or(5);
-
-    let now = Instant::now();
-    let distinct_ips = state.login_attempts.iter()
-        .filter(|e| {
-            let (count, last) = e.value();
-            *count >= 1 && now.duration_since(*last).as_secs() <= crate::state::LOGIN_WINDOW_SECS
-        })
-        .count();
-
-    if distinct_ips < threshold { return; }
-
-    // Already auto-triggered?
-    {
-        let guard = state.cf_uam_triggered_at.lock().await;
-        if guard.is_some() { return; }
-    }
-
-    match crate::cloudflare::enable_under_attack(&zone_id, &token).await {
-        Ok(()) => {
-            let mut guard = state.cf_uam_triggered_at.lock().await;
-            *guard = Some(now);
-            warn!("CF Under Attack Mode auto-enabled: {} distinct IPs failing login", distinct_ips);
-            let _ = db::audit_log(&state.db, "system", "panel.cf_uam_enable", "auto",
-                &format!("{} distinct IPs", distinct_ips), "127.0.0.1", "system").await;
-        }
-        Err(e) => {
-            tracing::error!("Failed to auto-enable CF UAM: {}", e);
-        }
-    }
-}
-
-/// Counts distinct IPs with abnormally-high request rates (L7 HTTP flood);
-/// if the number of flooding IPs meets the configured minimum, enables Cloudflare UAM.
-pub async fn check_l7_and_maybe_trigger_uam(state: AppState) {
-    if !db::get_panel_setting_bool(&state.db, "cf_uam_enabled").await { return; }
-    if !db::get_panel_setting_bool(&state.db, "cf_l7_enabled").await { return; }
-    let token = db::get_panel_setting(&state.db, "cf_api_token").await;
-    let zone_id = db::get_panel_setting(&state.db, "cf_zone_id").await;
-    if token.is_empty() || zone_id.is_empty() { return; }
-
-    let threshold: u32 = db::get_panel_setting(&state.db, "cf_l7_threshold")
-        .await.parse().unwrap_or(200);
-    let min_ips: usize = db::get_panel_setting(&state.db, "cf_l7_ips_min")
-        .await.parse().unwrap_or(2);
-
-    let attacking = state.l7_attacking_ips(threshold);
-    if attacking < min_ips { return; }
-
-    {
-        let guard = state.cf_uam_triggered_at.lock().await;
-        if guard.is_some() { return; }
-    }
-
-    let now = Instant::now();
-    match crate::cloudflare::enable_under_attack(&zone_id, &token).await {
-        Ok(()) => {
-            *state.cf_uam_triggered_at.lock().await = Some(now);
-            warn!("CF Under Attack Mode auto-enabled: {} IPs flooding (L7 >{}/min)", attacking, threshold);
-            let _ = db::audit_log(&state.db, "system", "panel.cf_uam_enable", "auto-l7",
-                &format!("{} IPs flooding >{}/min", attacking, threshold), "127.0.0.1", "system").await;
-        }
-        Err(e) => tracing::error!("Failed to auto-enable CF UAM (L7): {}", e),
     }
 }
 

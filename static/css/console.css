@@ -289,7 +289,7 @@ button.con-btn-kill:hover:not(:disabled)    { background: rgba(239,68,68,.2); }
     padding: .45rem;
 }
 
-/* ── DNS panel ── */
+/* ── Generic panel block ── */
 .yu-panel { background: var(--surface); border: 1px solid var(--bdr); border-radius: 10px; overflow: hidden; }
 .yu-panel-hd { padding: .7rem .85rem; border-bottom: 1px solid var(--bdr); font-size: .82rem; font-weight: 600; display: flex; align-items: center; gap: .4rem; }
 .yu-panel-bd { padding: .85rem; }

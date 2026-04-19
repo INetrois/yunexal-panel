@@ -28,7 +28,6 @@ pub struct IndexTemplate {
     pub is_admin: bool,
     pub auth_username: String,
     pub auth_owner_label: String,
-    pub cf_token: String,
     pub nonce: String,
 }
 
@@ -52,7 +51,6 @@ pub struct NewServerTemplate {
     pub error: Option<String>,
     pub fix_cmd: Option<String>,
     pub users: Vec<UserInfo>,
-    pub cf_token: String,
     pub nonce: String,
     pub default_quota_gb: String,
 }
@@ -71,7 +69,6 @@ pub struct ConsoleTemplate {
     pub can_power: bool,
     pub can_members: bool,
     pub active_tab: &'static str,
-    pub cf_token: String,
     pub nonce: String,
 }
 
@@ -83,7 +80,6 @@ pub struct ServerUsersTemplate {
     pub can_members: bool,
     pub can_members_write: bool,
     pub active_tab: &'static str,
-    pub cf_token: String,
     pub nonce: String,
 }
 
@@ -94,7 +90,6 @@ pub struct FilesTemplate {
     pub container: ContainerInfo,
     pub can_members: bool,
     pub active_tab: &'static str,
-    pub cf_token: String,
     pub nonce: String,
 }
 
@@ -109,7 +104,6 @@ pub struct FileEditTemplate {
     pub content: String,
     pub ace_mode: String,
     pub active_tab: &'static str,
-    pub cf_token: String,
     pub nonce: String,
 }
 
@@ -122,7 +116,6 @@ pub struct SettingsTemplate {
     pub is_admin: bool,
     pub can_members: bool,
     pub active_tab: &'static str,
-    pub cf_token: String,
     pub nonce: String,
     pub env: String,
 }
@@ -147,7 +140,6 @@ pub struct NetworkingTemplate {
     pub can_members: bool,
     pub ports: Vec<PortRow>,
     pub active_tab: &'static str,
-    pub cf_token: String,
     pub nonce: String,
     pub ufw_enabled: bool,
     pub bandwidth_enabled: bool,
@@ -160,7 +152,6 @@ pub struct ServerAuditTemplate {
     pub container: ContainerInfo,
     pub can_members: bool,
     pub active_tab: &'static str,
-    pub cf_token: String,
     pub nonce: String,
 }
 
@@ -206,18 +197,9 @@ pub struct AdminTemplate {
     pub zram_compr_mb: String,
     pub zram_ratio: String,
     pub zram_algorithm: String,
-    pub cf_token: String,
     pub nonce: String,
     pub settings_ufw_enabled: bool,
     pub settings_bandwidth_enabled: bool,
-    pub settings_cf_uam_enabled: bool,
-    pub cf_zone_id: String,
-    pub cf_api_token_set: bool,
-    pub cf_uam_threshold: String,
-    pub cf_uam_cooldown_mins: String,
-    pub settings_cf_l7_enabled: bool,
-    pub cf_l7_threshold: String,
-    pub cf_l7_ips_min: String,
     pub docker_default_quota: String,
     pub container_storage_path: String,
     pub settings_storage_unsafe_override: bool,
@@ -235,7 +217,6 @@ pub struct AdminEditTemplate {
     pub current_storage_base: String,
     pub users: Vec<UserInfo>,
     pub error: Option<String>,
-    pub cf_token: String,
     pub nonce: String,
 }
 
@@ -272,38 +253,6 @@ pub struct CreateServerForm {
     /// Owner user id selected in the form. 0 = assigned server-side (self).
     #[serde(default)]
     pub owner_id: i64,
-    // ── DNS / SRV auto-record ────────────────────────────────────────────────
-    /// "1" to create an SRV record after container is created.
-    #[serde(default)]
-    pub dns_srv_enabled: String,
-    #[serde(default)]
-    pub dns_provider_id: String,
-    #[serde(default)]
-    pub dns_zone_id: String,
-    #[serde(default)]
-    pub dns_zone_name: String,
-    /// Full SRV name, e.g. `_minecraft._tcp`
-    #[serde(default)]
-    pub dns_srv_name: String,
-    #[serde(default)]
-    pub dns_srv_port: String,
-    /// SRV target hostname (leave empty to use zone name or auto-generated A record)
-    #[serde(default)]
-    pub dns_srv_target: String,
-    #[serde(default)]
-    pub dns_srv_priority: String,
-    #[serde(default)]
-    pub dns_srv_weight: String,
-    /// "1" = create both _tcp and _udp SRV records (default behaviour)
-    #[serde(default)]
-    pub dns_srv_both_protos: String,
-    // ── A record (created before SRV so its FQDN is the SRV target) ──────────
-    /// Subdomain for the auto-created A record (e.g. "mc" → mc.example.com)
-    #[serde(default)]
-    pub dns_a_subdomain: String,
-    /// IPv4 address for the A record
-    #[serde(default)]
-    pub dns_a_ip: String,
     /// Custom storage path for this container's volume. Empty = use panel default.
     #[serde(default)]
     pub container_storage_path: String,

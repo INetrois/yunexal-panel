@@ -3,7 +3,6 @@ mod users;
 mod roles;
 mod servers;
 mod ports;
-mod dns;
 mod images;
 mod settings;
 
@@ -12,7 +11,6 @@ pub use users::*;
 pub use roles::*;
 pub use servers::*;
 pub use ports::*;
-pub use dns::*;
 pub use images::*;
 pub use settings::*;
 
@@ -224,49 +222,6 @@ pub async fn init_db() -> Result<Pool<Sqlite>> {
 
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS dns_providers (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            name          TEXT NOT NULL,
-            provider_type TEXT NOT NULL,
-            credentials   TEXT NOT NULL DEFAULT '{}',
-            enabled       INTEGER NOT NULL DEFAULT 1,
-            created_at    TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .context("Failed to create dns_providers table")?;
-
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS dns_records (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            provider_id   INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE,
-            zone_id       TEXT NOT NULL DEFAULT '',
-            zone_name     TEXT NOT NULL DEFAULT '',
-            record_type   TEXT NOT NULL DEFAULT 'A',
-            name          TEXT NOT NULL DEFAULT '',
-            value         TEXT NOT NULL DEFAULT '',
-            ttl           INTEGER NOT NULL DEFAULT 300,
-            priority      INTEGER NOT NULL DEFAULT 0,
-            proxied       INTEGER NOT NULL DEFAULT 0,
-            remote_id     TEXT NOT NULL DEFAULT '',
-            container_id  INTEGER DEFAULT NULL,
-            ddns_enabled  INTEGER NOT NULL DEFAULT 0,
-            ddns_interval INTEGER NOT NULL DEFAULT 300,
-            last_ip       TEXT NOT NULL DEFAULT '',
-            last_synced   TEXT NOT NULL DEFAULT '',
-            created_at    TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .context("Failed to create dns_records table")?;
-
-    sqlx::query(
-        r#"
         CREATE TABLE IF NOT EXISTS audit_log (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             actor      TEXT NOT NULL,
@@ -309,30 +264,6 @@ pub async fn init_db() -> Result<Pool<Sqlite>> {
     ).execute(&pool).await;
     let _ = sqlx::query(
         "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('bandwidth_enabled', '1')"
-    ).execute(&pool).await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('cf_uam_enabled', '0')"
-    ).execute(&pool).await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('cf_zone_id', '')"
-    ).execute(&pool).await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('cf_api_token', '')"
-    ).execute(&pool).await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('cf_uam_threshold', '5')"
-    ).execute(&pool).await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('cf_uam_cooldown_mins', '10')"
-    ).execute(&pool).await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('cf_l7_enabled', '0')"
-    ).execute(&pool).await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('cf_l7_threshold', '200')"
-    ).execute(&pool).await;
-    let _ = sqlx::query(
-        "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('cf_l7_ips_min', '2')"
     ).execute(&pool).await;
     let _ = sqlx::query(
         "INSERT OR IGNORE INTO panel_settings (key, value) VALUES ('docker_default_quota', '15')"

@@ -9,8 +9,6 @@ use axum::{
 };
 use crate::docker::{self, ContainerInfo};
 use crate::{auth, db};
-use crate::dns as dns_lib;
-use serde_json::Value as JsonValue;
 use axum_extra::extract::cookie::PrivateCookieJar;
 use crate::state::AppState;
 use std::net::SocketAddr;
@@ -79,7 +77,6 @@ pub async fn console_page(
                 can_power,
                 can_members,
                 active_tab: "console",
-                cf_token: state.cf_analytics_token.clone(),
                 nonce,
             })
             .into_response()
@@ -117,7 +114,6 @@ pub async fn server_users_page(
                 can_members,
                 can_members_write,
                 active_tab: "users",
-                cf_token: state.cf_analytics_token.clone(),
                 nonce,
             })
             .into_response()
@@ -140,7 +136,7 @@ pub async fn files_page(
         Ok(v) => v, Err(e) => return e.into_response(),
     };
     match docker::get_container(&state.docker, &docker_id).await {
-        Ok(mut c) => { c.db_id = db_id; c.name = db_name; render(FilesTemplate { id: db_id, container: c, can_members, active_tab: "files", cf_token: state.cf_analytics_token.clone(), nonce }).into_response() }
+        Ok(mut c) => { c.db_id = db_id; c.name = db_name; render(FilesTemplate { id: db_id, container: c, can_members, active_tab: "files", nonce }).into_response() }
         Err(e) => format!("Error: {}", e).into_response(),
     }
 }
@@ -163,7 +159,7 @@ pub async fn settings_page(
         .map(|c| c.env)
         .unwrap_or_default();
     match docker::get_container(&state.docker, &docker_id).await {
-        Ok(mut c) => { c.db_id = db_id; c.name = db_name; render(SettingsTemplate { id: db_id, container: c, is_admin, can_members, active_tab: "settings", cf_token: state.cf_analytics_token.clone(), nonce, env }).into_response() }
+        Ok(mut c) => { c.db_id = db_id; c.name = db_name; render(SettingsTemplate { id: db_id, container: c, is_admin, can_members, active_tab: "settings", nonce, env }).into_response() }
         Err(e) => format!("Error: {}", e).into_response(),
     }
 }
@@ -191,7 +187,6 @@ pub async fn server_audit_page(
                 container: c,
                 can_members,
                 active_tab: "audit",
-                cf_token: state.cf_analytics_token.clone(),
                 nonce,
             })
             .into_response()
@@ -938,22 +933,6 @@ pub async fn delete_server(
         if let Err(e) = tokio::fs::remove_dir_all(&volume_path).await {
             error!("Failed to delete volume directory {}: {}", volume_dir, e);
         }
-    }
-
-    // ── Delete linked DNS records ──────────────────────────────────────────
-    // Best-effort: delete from provider API then from local DB
-    if let Ok(dns_recs) = db::dns_list_records_by_server_id(&state.db, db_id).await {
-        for rec in &dns_recs {
-            if rec.remote_id.is_empty() { continue; }
-            if let Ok(Some(provider)) = db::dns_get_provider(&state.db, rec.provider_id).await {
-                let creds: JsonValue = serde_json::from_str(&provider.credentials)
-                    .unwrap_or(JsonValue::Object(Default::default()));
-                if let Ok(client) = dns_lib::DnsClient::from_type(&provider.provider_type, &creds) {
-                    let _ = client.delete_record(&rec.zone_id, &rec.remote_id).await;
-                }
-            }
-        }
-        let _ = db::dns_delete_records_by_server_id(&state.db, db_id).await;
     }
 
     // Clean up dedicated isolation network and iptables rules BEFORE removing

@@ -4,7 +4,7 @@
     {% include "_head_common.html" %}
     <title>New Server — Yunexal Panel</title>
     <script src="https://unpkg.com/htmx.org@1.9.10" integrity="sha384-D1Kt99CQMDuVetoL1lrYwg5t+9QdHe7NLX/SoJYkXDFfX37iInKRy5xLSi8nO7UC" crossorigin="anonymous" nonce="{{nonce}}"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js" integrity="sha384-+pxiN6T7yvpryuJmE1gM9PX7yQit15auDb+ZwwvJOd/4be2Cie5/IuVXgQb/S9du" crossorigin="anonymous" nonce="{{nonce}}"></script>
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js" nonce="{{nonce}}"></script>
     <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js" integrity="sha384-SF/kPhqG3NMxqsYAbQqHkdF53WQx8yTkY0Ys+M+ayeC20QNujPyyxIuUEdEf0eG/" crossorigin="anonymous" nonce="{{nonce}}"></script>
     <link href="/static/css/new_server.css?v=1" rel="stylesheet">
 </head>
@@ -260,82 +260,6 @@
                 </div>
             </div><!-- /Environment -->
 
-            <!-- ── DNS / SRV Record ── -->
-            <div class="sec-card">
-                <div class="sec-hd" style="cursor:pointer;user-select:none;" onclick="toggleDnsSrv()">
-                    <div class="sec-hd-icon"><i class="bi bi-hdd-network-fill" style="color:#a78bfa;"></i></div>
-                    <div>
-                        <div class="sec-hd-title">DNS / SRV Record</div>
-                        <div class="sec-hd-sub">Auto-create SRV on creation, auto-delete on removal</div>
-                    </div>
-                    <i class="bi bi-chevron-down" id="dns-srv-chevron" style="margin-left:auto;color:var(--muted);transition:transform .2s;"></i>
-                </div>
-                <div class="sec-bd" id="dns-srv-body" style="display:none;padding-top:0;">
-                    <label class="yu-toggle-card">
-                        <div class="yu-toggle-left">
-                            <div class="yu-toggle-icon">
-                                <i class="bi bi-hdd-rack-fill"></i>
-                            </div>
-                            <div class="yu-toggle-info">
-                                <div class="yu-toggle-title">Enable auto SRV record</div>
-                                <div class="yu-toggle-sub">Automatically create and manage the SRV DNS entry</div>
-                            </div>
-                        </div>
-
-                        <div class="yu-toggle-right">
-                            <input type="checkbox" id="srv-enable-chk" onchange="onSrvToggle()">
-                            <span class="yu-toggle-slider"></span>
-                        </div>
-                    </label>
-                    <!---->
-                    <div id="srv-fields" style="display:none;">
-                        <!-- Provider + Domain -->
-                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.7rem;">
-                            <div>
-                                <label class="field-label">DNS Provider</label>
-                                <select class="form-select" id="srv-provider" onchange="onSrvProviderChange()">
-                                    <option value="">— Select provider —</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="field-label">Domain</label>
-                                <select class="form-select" id="srv-zone" onchange="_autoFetchIp();updateSrvPreview();">
-                                    <option value="">Select provider first</option>
-                                </select>
-                            </div>
-                        </div>
-                        <!-- Service type -->
-                        <div style="margin-bottom:.7rem;">
-                            <label class="field-label">Service <span style="font-size:.69rem;color:var(--muted);">per RFC 2782 — used as <code style="font-size:.69rem;">_service._tcp</code></span></label>
-                            <input type="text" class="form-control" id="srv-service" list="srv-service-list" placeholder="yunexal" oninput="updateSrvPreview()" style="font-family:monospace;letter-spacing:.04em;">
-                        </div>
-                        <!-- Subdomain -->
-                        <div style="margin-bottom:.7rem;">
-                            <label class="field-label">Subdomain <span style="font-size:.69rem;color:var(--muted);">(A-record — IP auto-detected)</span></label>
-                            <div style="display:flex;align-items:center;gap:.35rem;">
-                                <input type="text" class="form-control" id="srv-a-subdomain" placeholder="myserver" oninput="updateSrvPreview()" style="font-family:monospace;letter-spacing:.04em;">
-                                <button type="button" style="background:var(--surface3);border:1px solid var(--bdr2);color:var(--txt);border-radius:8px;padding:.3rem .55rem;cursor:pointer;flex-shrink:0;" onclick="rollSrvSubdomain()" title="Random subdomain"><i class="bi bi-shuffle"></i></button>
-                            </div>
-                        </div>
-                        <!-- Port (only from port bindings) -->
-                        <div style="margin-bottom:.85rem;">
-                            <label class="field-label">Port <span style="font-size:.69rem;color:var(--muted);">from Port Bindings only</span></label>
-                            <select class="form-select" id="srv-port" onchange="updateSrvPreview()">
-                                <option value="">Add port bindings first</option>
-                            </select>
-                        </div>
-                        <!-- Preview -->
-                        <div id="srv-preview-box" style="background:var(--surface3);border:1px solid var(--bdr);border-radius:8px;padding:.55rem .85rem;font-size:.74rem;line-height:1.8;color:var(--muted);">
-                            <em>Fill in subdomain, domain and port to see preview</em>
-                        </div>
-                        <div style="font-size:.72rem;color:var(--muted);margin-top:.65rem;">
-                            <i class="bi bi-info-circle" style="color:#a78bfa;"></i>
-                            Record is created on Cloudflare when the server saves, and deleted automatically when the server is removed.
-                        </div>
-                    </div>
-                </div>
-            </div><!-- /DNS SRV -->
-
             <!-- ── Actions ── -->
             <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-top:.5rem;">
                 <button type="button" class="btn-cancel" onclick="clearFormState();history.back()"><i class="bi bi-x-lg"></i> Cancel</button>
@@ -368,38 +292,6 @@
 
     </div><!-- /form-grid -->
 
-    <!-- DNS/SRV hidden fields -->
-    <!-- datalists referenced by the DNS section inputs -->
-    <datalist id="srv-service-list">
-        <!-- Gaming -->
-        <option value="minecraft"><option value="terraria"><option value="factorio"><option value="valheim"><option value="rust"><option value="ark"><option value="cs2"><option value="tf2"><option value="gmod"><option value="satisfactory"><option value="palworld"><option value="7dtd">
-        <!-- Voice / Chat -->
-        <option value="mumble"><option value="ts3"><option value="teamspeak"><option value="discord"><option value="matrix"><option value="xmpp-client"><option value="xmpp-server">
-        <!-- Web / Proxy -->
-        <option value="http"><option value="https"><option value="http-alt"><option value="caldav"><option value="carddav">
-        <!-- Mail -->
-        <option value="smtp"><option value="submission"><option value="imap"><option value="imaps"><option value="pop3"><option value="pop3s">
-        <!-- Infra / Auth -->
-        <option value="ssh"><option value="ftp"><option value="ftps"><option value="sftp"><option value="ldap"><option value="ldaps"><option value="kerberos"><option value="ntp"><option value="dns"><option value="openvpn"><option value="wireguard">
-        <!-- Databases -->
-        <option value="mysql"><option value="postgresql"><option value="redis"><option value="mongodb"><option value="elasticsearch"><option value="clickhouse">
-        <!-- VoIP -->
-        <option value="sip"><option value="sips"><option value="rtsp"><option value="rtp">
-        <!-- Custom -->
-        <option value="yunexal">
-    </datalist>
-    <input type="hidden" name="dns_srv_enabled" id="h-dns-srv-enabled" value="0">
-    <input type="hidden" name="dns_provider_id" id="h-dns-provider-id" value="">
-    <input type="hidden" name="dns_zone_id" id="h-dns-zone-id" value="">
-    <input type="hidden" name="dns_zone_name" id="h-dns-zone-name" value="">
-    <input type="hidden" name="dns_srv_name" id="h-dns-srv-name" value="">
-    <input type="hidden" name="dns_srv_port" id="h-dns-srv-port" value="">
-    <input type="hidden" name="dns_srv_target" id="h-dns-srv-target" value="">
-    <input type="hidden" name="dns_srv_priority" id="h-dns-srv-priority" value="0">
-    <input type="hidden" name="dns_srv_weight" id="h-dns-srv-weight" value="0">
-    <input type="hidden" name="dns_srv_both_protos" id="h-dns-srv-both-protos" value="1">
-    <input type="hidden" name="dns_a_subdomain" id="h-dns-a-subdomain" value="">
-    <input type="hidden" name="dns_a_ip" id="h-dns-a-ip" value="">
     <input type="hidden" id="config" name="config">
     </form>
 

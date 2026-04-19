@@ -2,7 +2,6 @@ pub mod admin;
 pub mod auth;
 pub mod create;
 pub mod dashboard;
-pub mod dns;
 pub mod files;
 pub mod network;
 pub mod servers;
@@ -22,8 +21,6 @@ use rust_embed::Embed;
 use crate::auth as auth_middleware;
 use crate::db;
 use crate::state::AppState;
-use std::net::SocketAddr;
-use axum::extract::ConnectInfo;
 
 /// Per-request CSP nonce (128-bit, base64-encoded).
 #[derive(Clone)]
@@ -90,34 +87,6 @@ async fn serve_theme_css(State(state): State<AppState>) -> impl IntoResponse {
     ).into_response()
 }
 
-// ── L7 request-rate tracking middleware ─────────────────────────────────────
-
-async fn track_requests(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    req: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> impl IntoResponse {
-    let ip = req.headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string())
-        .or_else(|| {
-            req.headers()
-                .get("x-real-ip")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.trim().to_string())
-        })
-        .or_else(|| {
-            req.extensions()
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|ci| ci.0.ip().to_string())
-        })
-        .unwrap_or_else(|| "unknown".to_string());
-    state.record_request(&ip);
-    next.run(req).await
-}
-
 // ── Security headers middleware ───────────────────────────────────────────────
 
 async fn security_headers(
@@ -139,7 +108,7 @@ async fn security_headers(
 
     let csp = format!(
         "default-src 'self'; \
-         script-src 'nonce-{nonce}' https://unpkg.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://static.cloudflareinsights.com; \
+         script-src 'nonce-{nonce}' https://unpkg.com https://cdn.jsdelivr.net; \
          script-src-attr 'unsafe-inline'; \
          style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; \
          font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; \
@@ -202,21 +171,12 @@ use admin::{
     api_update_check, api_update_apply,
     api_admin_set_setting,
     api_ufw_status, api_ufw_toggle,
-    api_cf_status, api_cf_uam_set,
     api_admin_storage_stats, api_admin_docker_daemon,
     api_admin_storage_mounts, api_admin_storage_disks,
     api_admin_storage_change_fs, api_admin_storage_migrate,
     api_admin_db_integrity,
     api_admin_theme_favicon,
     role_permissions_page,
-};
-use dns::{
-    api_dns_list_providers, api_dns_add_provider, api_dns_update_provider, api_dns_delete_provider,
-    api_dns_test_provider, api_dns_list_zones, api_dns_remote_records, api_dns_local_records,
-    api_dns_add_record, api_dns_update_record, api_dns_delete_record,
-    api_dns_public_ip, api_dns_sync, api_dns_sync_records, api_dns_set_proxy,
-    api_dns_container_records,
-    api_server_dns_list, api_server_dns_add, api_server_dns_delete,
 };
 use auth::{api_service_login, login_page, login_submit, logout};
 use create::{api_build_image_from_dockerfile, api_image_env, api_image_env_overrides, api_local_images, api_quota_check, api_xfs_check, create_server};
@@ -299,14 +259,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/ws/stats", get(stats_ws))
         // PWA manifest (behind auth)
         .route("/manifest.json", get(serve_manifest))
-        // Server DNS records (owner-accessible)
-        .route("/api/servers/{id}/dns", get(api_server_dns_list))
-        .route("/api/servers/{id}/dns/add", post(api_server_dns_add))
-        .route("/api/servers/{id}/dns/{record_id}/delete", post(api_server_dns_delete))
-        // DNS read-only (needed by console add-record form)
-        .route("/api/dns/providers", get(api_dns_list_providers))
-        .route("/api/dns/providers/{id}/zones", get(api_dns_list_zones))
-        .route("/api/dns/public-ip", get(api_dns_public_ip))
         // Account (own user)
         .route("/api/user/change-password", post(admin_change_password))
         .route_layer(middleware::from_fn_with_state(
@@ -346,30 +298,12 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/admin/containers", get(api_admin_containers))
         .route("/api/admin/overview", get(api_admin_overview))
         .route("/api/servers/{id}/delete", post(delete_server))
-        // DNS management
-        .route("/api/admin/dns/providers", get(api_dns_list_providers).post(api_dns_add_provider))
-        .route("/api/admin/dns/providers/{id}/update", post(api_dns_update_provider))
-        .route("/api/admin/dns/providers/{id}/delete", post(api_dns_delete_provider))
-        .route("/api/admin/dns/providers/{id}/test",   post(api_dns_test_provider))
-        .route("/api/admin/dns/providers/{id}/zones",  get(api_dns_list_zones))
-        .route("/api/admin/dns/providers/{id}/records-remote", get(api_dns_remote_records))
-        .route("/api/admin/dns/providers/{id}/records", get(api_dns_local_records))
-        .route("/api/admin/dns/records",           post(api_dns_add_record))
-        .route("/api/admin/dns/records/{id}/update", post(api_dns_update_record))
-        .route("/api/admin/dns/records/{id}/delete", post(api_dns_delete_record))
-        .route("/api/admin/dns/records/{id}/set-proxy", post(api_dns_set_proxy))
-        .route("/api/admin/dns/public-ip",  get(api_dns_public_ip))
-        .route("/api/admin/dns/sync",       post(api_dns_sync))
-        .route("/api/admin/dns/providers/{id}/sync-records", post(api_dns_sync_records))
-        .route("/api/admin/dns/container-records", get(api_dns_container_records))
         .route("/api/admin/audit", get(api_audit_list))
         .route("/api/admin/updates/check", get(api_update_check))
         .route("/api/admin/updates/apply", post(api_update_apply))
         .route("/api/admin/settings", post(api_admin_set_setting))
         .route("/api/admin/ufw/status", get(api_ufw_status))
         .route("/api/admin/ufw/toggle", post(api_ufw_toggle))
-        .route("/api/admin/cf/status", get(api_cf_status))
-        .route("/api/admin/cf/uam", post(api_cf_uam_set))
         .route("/api/admin/storage/stats", get(api_admin_storage_stats))
         .route("/api/admin/storage/daemon", post(api_admin_docker_daemon))
         .route("/api/admin/storage/mounts", get(api_admin_storage_mounts))
@@ -391,7 +325,6 @@ pub fn create_router(state: AppState) -> Router {
         .nest_service("/static", ServeEmbed::<StaticAssets>::new())
         .fallback(fallback)
         .layer(middleware::from_fn(sanitize_errors))
-        .layer(middleware::from_fn_with_state(state.clone(), track_requests))
         .layer(middleware::from_fn(security_headers))
         .with_state(state)
 }

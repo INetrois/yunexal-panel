@@ -12,7 +12,7 @@ Templates and static assets are compiled into a single binary — no external ru
 - [Roadmap](#roadmap)
 - [Features](#features)
 - [Installation](#installation)
-- [Alpine Installer ISO](#alpine-installer-iso)
+- [Repository Status](#repository-status)
 - [Reverse Proxy (nginx)](#reverse-proxy-nginx)
 - [Requirements](#requirements)
 - [Configuration](#configuration)
@@ -42,8 +42,7 @@ Templates and static assets are compiled into a single binary — no external ru
 | Status | Feature |
 |---|---|
 | ✅ | Users — create, delete, roles (`root` / `admin` / `user`) |
-| ✅ | DNS — multi-provider (Cloudflare, GoDaddy, DuckDNS, Namecheap, Generic), DDNS, SRV |
-| 🔜 | Agents — automated task runners attached to containers |
+| 🔜 | Distpatchers — task dispatchers and future agent manager workflows |
 | 🔜 | Firewall — global IP allow/block rules beyond per-port UFW |
 | 🔜 | Backups — scheduled volume snapshots with retention policies |
 | 🔜 | Tickets — built-in support ticket system for end users |
@@ -57,7 +56,7 @@ Templates and static assets are compiled into a single binary — no external ru
 ### Configuration
 | Status | Feature |
 |---|---|
-| ✅ | Panel Settings — UFW, bandwidth, Cloudflare UAM/L7, sidebar visibility, panel updates |
+| ✅ | Panel Settings — UFW, bandwidth, sidebar visibility, panel updates |
 | 🔜 | Notifications — email / webhook alerts for events (container down, login, etc.) |
 | 🔜 | Themes — custom colour schemes and branding per installation |
 | 🔜 | API Keys — REST API access tokens for external integrations |
@@ -95,7 +94,6 @@ Or help to implement features by joining the development on the [Discussions](ht
 - Live metric charts (1 s polling, 200-point history):
   - CPU % · RAM % (used / limit) · Network KB/s · Disk I/O KB/s
 - **Storage card** — volume size (MB) fetched once on open
-- Per-server DNS panel — view records linked to this server
 
 ### File Manager
 - Folder/file browsing with breadcrumb navigation
@@ -105,7 +103,7 @@ Or help to implement features by joining the development on the [Discussions](ht
 - **Edit** text/config files in a full-screen Ace code editor
 - **Create** new files and directories
 - **Rename**, **Copy/Paste**, **Delete** (right-click context menu)
-- **Drag-and-drop upload** with per-file progress (streamed to disk, root-permission safe via Alpine helper)
+- **Drag-and-drop upload** with per-file progress (streamed to disk, root-permission safe via helper container)
 - **Archive & Extract** — create `.tar.gz` archives; extract `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.zip`, `.jar`, `.rar`, `.7z`, `.gz`, `.bz2`, `.xz`
 - Path traversal protection enforced on all backend endpoints
 
@@ -135,25 +133,9 @@ Or help to implement features by joining the development on the [Discussions](ht
 - **Image ENV overrides** — admin-configured DB defaults applied on top of image defaults
 - Port conflict detection and duplicate name check before creation
 - Owner assignment — assign any container to any user
-- **DNS/SRV auto-record** — optionally create an SRV record on creation and delete it on removal
-
-### DNS Management (admin only)
-Full multi-provider DNS management:
-
-| Provider | Zones | Record CRUD | DDNS | Proxy |
-|---|---|---|---|---|
-| **Cloudflare** | Full API zone list | All types | ✓ | ✓ |
-| **GoDaddy** | Active domains | Full | ✓ | — |
-| **DuckDNS** | Single domain | — | ✓ | — |
-| **Namecheap** | Single domain | — | ✓ | — |
-| **Generic** | Single domain | — | ✓ (templated URL) | — |
-
-- Record types: A, AAAA, CNAME, MX, TXT, SRV, NS, CAA and more
-- **DDNS** — per-record toggle with configurable interval; auto-updates A records with the server's public IP
-- Container-linked records, TTL presets, type-coloured badges, search and filter chips
 
 ### Admin Panel
-**Tabs:** Overview · Containers · Images · Users · DNS · Audit Log · Panel Settings
+**Tabs:** Overview · Containers · Images · Users · Audit Log · Panel Settings
 
 - **Users** — create, delete and set passwords; role-based access (`root` / `admin` / `user`);
   admins cannot delete other admins — only `root` can
@@ -165,11 +147,6 @@ Full multi-provider DNS management:
 ### Panel Settings (root only)
 - **UFW toggle** — enable/disable UFW port-blocking globally
 - **Bandwidth toggle** — show/hide the Bandwidth section on Networking pages
-- **Cloudflare Under Attack Mode (auto)**
-  - Brute-force trigger: auto-enables UAM when distinct failing IPs ≥ threshold
-  - L7 HTTP-flood trigger: auto-enables UAM when ≥ N IPs exceed req/min threshold (60 s window)
-  - Auto-disables after cooldown when no active attacks detected
-  - Manual override button
 - **Sidebar Visibility** — toggle SOON (upcoming feature) badges in the admin sidebar
 - **ZRAM hint** — collapsible "How to enable ZRAM" block when ZRAM is inactive
 
@@ -203,9 +180,7 @@ tar -xzf yunexal-panel-linux-x86_64.tar.gz
 cd yunex-release
 
 # 2. Run the setup wizard
-#    Auto-detects host flow:
-#    - Alpine/OpenRC (apk + rc-service)
-#    - Debian/Ubuntu/systemd (apt-get + systemctl)
+#    Auto-detects host flow and configures dependencies/services.
 sudo ./yunexal-setup
 
 # 3. Run
@@ -216,30 +191,13 @@ The SQLite database (`panel.db`) and `volumes/` directory are created automatica
 
 ---
 
-## Alpine Installer ISO
+## Repository Status
 
-Build a custom Alpine installer image with Yunexal integrated:
+Installer-image customization work is currently paused.
 
-```bash
-./scripts/iso/build-installer.sh
-```
+Repository scripts are currently kept as local-only files and are ignored by git, so they are not part of the GitHub-tracked source set.
 
-Outputs:
-
-- `x86_64` installer ISO with Yunexal profile (`scripts/iso/mkimg.yunexal.sh`)
-- Experimental ARM images (`aarch64`, `armv7`) via upstream profile
-
-Inside the live installer shell, use safe partition workflow:
-
-```bash
-yunexal-install prepare --disk /dev/sdX --mode safe --root-size-gib 40
-# then run setup-alpine targeting partition 2
-yunexal-install finalize --disk /dev/sdX --target-root /mnt
-```
-
-This enforces a separate persistent data partition (`/var/lib/yunexal/volumes`) with `prjquota` mount options in installed `fstab`.
-
-Detailed knobs and environment variables are in [scripts/iso/README.md](scripts/iso/README.md).
+The active and supported flow in this repository is direct host installation using release binaries and `yunexal-setup`.
 
 ---
 
@@ -249,16 +207,11 @@ The panel itself speaks plain HTTP. For production use with a domain and HTTPS (
 
 > **Important:** The WebSocket console (`wss://`) will **not work** unless the reverse proxy is configured to forward WebSocket upgrade headers. Without this, Firefox shows *"can't establish a connection to the server at wss://…"*.
 
-> **Cloudflare Proxy users:** Disable **Rocket Loader** for the panel domain.
-> Rocket Loader rewrites `<script>` tags and injects its own scripts without a CSP nonce, which conflicts with the panel's Content Security Policy and breaks Monaco Editor, Chart.js and WebSocket initialization.
-> **Cloudflare Dashboard → Your Domain → Speed → Settings → Rocket Loader → OFF**
-
 The setup wizard (`yunexal-setup`) detects nginx and can generate this config automatically (Step 7). If you prefer to configure it manually:
 
 **Config file path**
 
-- Alpine/OpenRC: `/etc/nginx/http.d/yunexal-panel.conf`
-- Debian/Ubuntu/systemd: `/etc/nginx/sites-available/yunexal-panel.conf` (enable via symlink in `/etc/nginx/sites-enabled/`)
+- `/etc/nginx/sites-available/yunexal-panel.conf` (enable via symlink in `/etc/nginx/sites-enabled/`)
 
 ```nginx
 # HTTP → HTTPS redirect
@@ -299,20 +252,12 @@ Enable the site and reload nginx:
 ```bash
 sudo nginx -t
 
-# systemd hosts
 sudo systemctl reload nginx
-
-# OpenRC hosts
-sudo rc-service nginx reload
 ```
 
 To add SSL via Let's Encrypt:
 
 ```bash
-# Alpine/OpenRC
-sudo apk add --no-cache certbot certbot-nginx
-
-# Debian/Ubuntu/systemd
 sudo apt-get install -y certbot python3-certbot-nginx
 
 sudo certbot --nginx -d panel.example.com
@@ -324,9 +269,9 @@ sudo certbot --nginx -d panel.example.com
 
 | Requirement | Notes | Minimum | Recommended |
 |---|---|---|---|
-| **OS** | Distribution for the panel | Alpine 3.20+ or Debian/Ubuntu with systemd | Alpine latest stable or Ubuntu LTS |
+| **OS** | Distribution for the panel | Linux with Docker and service manager support | Ubuntu LTS |
 | **Docker Engine** | Must be running; socket at `/var/run/docker.sock` | 24.0 | 29.0 + |
-| **Docker image `alpine`** | Pulled automatically by `yunexal-setup` | latest | latest |
+| **Helper shell image** | Pulled automatically by `yunexal-setup` | latest | latest |
 | **RAM** | For the panel process | 64 MB if using minimal features with containers | 2 GB if using full features with containers |
 | **CPU** | For the panel process | 1 vCPU | 2 vCPU |
 | **GPU** | For hardware acceleration (optional) | None | Recommended if using GPU-intensive features |
@@ -339,11 +284,7 @@ sudo certbot --nginx -d panel.example.com
 
 > **Docker socket access** — add your user to the `docker` group:
 > ```bash
-> # Debian/Ubuntu/systemd
 > sudo usermod -aG docker $USER && newgrp docker
->
-> # Alpine/OpenRC
-> sudo addgroup $USER docker
 > ```
 
 > **UFW sudo access** — to use per-port UFW blocking without a password prompt, add a sudoers rule
@@ -383,8 +324,8 @@ git clone https://github.com/nestorchurin/yunexal-panel.git
 cd yunexal-panel
 cargo build --release
 
-# Musl-only release artifacts (no glibc loader)
-./scripts/release/build-musl.sh
+# Musl-only release artifacts for x86_64 (no glibc loader)
+cargo build --release --target x86_64-unknown-linux-musl --bin yunexal-panel --bin yunexal-setup
 
 # Interactive setup (Docker, .env, root user, optional OpenRC/systemd service)
 sudo ./target/release/yunexal-setup
@@ -400,18 +341,15 @@ sudo ./target/release/yunexal-setup
 src/
 ├── main.rs               # Entry point, router, middleware
 ├── lib.rs                # Library crate (shared between binaries)
-├── state.rs              # AppState — DB pool, Docker client, CF UAM state, L7 counters
-├── auth.rs               # Session helpers, admin guard, rate limiter, CF UAM/L7 triggers
-├── cloudflare.rs         # Cloudflare API wrapper (security level, UAM enable/disable)
+├── state.rs              # AppState — DB pool, Docker client, login limiter state
+├── auth.rs               # Session helpers, admin guard, rate limiter
 ├── compose.rs            # Docker Compose YAML parser
 ├── password.rs           # Argon2id hash / verify
-├── dns.rs                # DNS provider API clients
 ├── db/
 │   ├── mod.rs            # Schema init, migrations, seed defaults
 │   ├── users.rs          # User CRUD
 │   ├── servers.rs        # Server CRUD
 │   ├── ports.rs          # Port mappings + UFW state
-│   ├── dns.rs            # DNS records & providers
 │   ├── images.rs         # Image ENV overrides
 │   ├── audit.rs          # Audit log (immutable, user-agent)
 │   └── settings.rs       # panel_settings key/value store
@@ -434,7 +372,6 @@ src/
     ├── network.rs        # Networking + port / bandwidth / UFW API
     ├── create.rs         # Container creation
     ├── admin.rs          # Admin panel — users, images, containers, panel settings
-    ├── dns.rs            # DNS management API
     ├── ws.rs             # WebSocket console
     └── templates.rs      # Askama template structs
 

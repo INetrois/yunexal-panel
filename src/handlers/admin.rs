@@ -22,7 +22,7 @@ use super::templates::{
 
 const VALID_TABS: &[&str] = &[
     "overview", "containers", "users", "images",
-    "roles", "agents", "dns", "firewall", "backups",
+    "roles", "distpatchers", "firewall", "backups",
     "insights", "audit", "settings", "tickets",
     "notifications", "themes", "apikeys", "nodes",
 ];
@@ -37,7 +37,6 @@ const ROLE_GROUPS: &[(&str, &[&str])] = &[
             "tab.images",
             "tab.users",
             "tab.roles",
-            "tab.dns",
             "tab.audit",
             "tab.settings",
         ],
@@ -58,7 +57,6 @@ const ROLE_GROUPS: &[(&str, &[&str])] = &[
             "images.manage",
             "users.manage",
             "roles.manage",
-            "dns.manage",
             "audit.read",
             "panel.update",
             "panel.settings",
@@ -133,7 +131,6 @@ async fn first_allowed_admin_tab(state: &AppState, role: &str) -> String {
         "users",
         "roles",
         "images",
-        "dns",
         "audit",
         "settings",
     ];
@@ -304,30 +301,9 @@ async fn build_admin_template(state: &AppState, tab: String, username: String, n
         zram_compr_mb,
         zram_ratio,
         zram_algorithm,
-        cf_token: state.cf_analytics_token.clone(),
         nonce,
         settings_ufw_enabled: db::get_panel_setting_bool(&state.db, "ufw_enabled").await,
         settings_bandwidth_enabled: db::get_panel_setting_bool(&state.db, "bandwidth_enabled").await,
-        settings_cf_uam_enabled: db::get_panel_setting_bool(&state.db, "cf_uam_enabled").await,
-        cf_zone_id: db::get_panel_setting(&state.db, "cf_zone_id").await,
-        cf_api_token_set: !db::get_panel_setting(&state.db, "cf_api_token").await.is_empty(),
-        cf_uam_threshold: {
-            let v = db::get_panel_setting(&state.db, "cf_uam_threshold").await;
-            if v.is_empty() { "5".into() } else { v }
-        },
-        cf_uam_cooldown_mins: {
-            let v = db::get_panel_setting(&state.db, "cf_uam_cooldown_mins").await;
-            if v.is_empty() { "10".into() } else { v }
-        },
-        settings_cf_l7_enabled: db::get_panel_setting_bool(&state.db, "cf_l7_enabled").await,
-        cf_l7_threshold: {
-            let v = db::get_panel_setting(&state.db, "cf_l7_threshold").await;
-            if v.is_empty() { "200".into() } else { v }
-        },
-        cf_l7_ips_min: {
-            let v = db::get_panel_setting(&state.db, "cf_l7_ips_min").await;
-            if v.is_empty() { "2".into() } else { v }
-        },
         docker_default_quota: {
             let v = db::get_panel_setting(&state.db, "docker_default_quota").await;
             if v.is_empty() { "15".into() } else { v }
@@ -1457,7 +1433,6 @@ pub async fn admin_edit_page(
         current_storage_base,
         users,
         error: None,
-        cf_token: state.cf_analytics_token.clone(),
         nonce,
     }).into_response()
 }
@@ -2395,13 +2370,9 @@ pub async fn api_admin_set_setting(
     // Allowlist of mutable keys
     const BOOL_KEYS: &[&str] = &[
         "ufw_enabled", "bandwidth_enabled",
-        "cf_uam_enabled", "cf_l7_enabled",
         "storage_unsafe_override",
     ];
     const STR_KEYS: &[&str] = &[
-        "cf_zone_id", "cf_api_token",
-        "cf_uam_threshold", "cf_uam_cooldown_mins",
-        "cf_l7_threshold", "cf_l7_ips_min",
         "docker_default_quota",
         "container_storage_path",
         "service_api_key",
@@ -2727,87 +2698,6 @@ pub async fn api_ufw_toggle(
         Err(e) => {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Failed to run ufw: {}", e)}))).into_response()
         }
-    }
-}
-
-// ── Cloudflare UAM endpoints ─────────────────────────────────────────────────
-
-/// GET /api/admin/cf/status — returns CF security level and auto-UAM state.
-pub async fn api_cf_status(
-    State(state): State<AppState>,
-    jar: PrivateCookieJar,
-) -> impl IntoResponse {
-    if !auth::is_root_session(&state, &jar).await {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Root access required"}))).into_response();
-    }
-    let token = db::get_panel_setting(&state.db, "cf_api_token").await;
-    let zone_id = db::get_panel_setting(&state.db, "cf_zone_id").await;
-    let auto_active = state.cf_uam_triggered_at.lock().await.is_some();
-
-    if token.is_empty() || zone_id.is_empty() {
-        return Json(serde_json::json!({
-            "ok": true,
-            "configured": false,
-            "auto_active": auto_active,
-        })).into_response();
-    }
-
-    match crate::cloudflare::get_security_level(&zone_id, &token).await {
-        Ok(level) => Json(serde_json::json!({
-            "ok": true,
-            "configured": true,
-            "level": level,
-            "under_attack": level == "under_attack",
-            "auto_active": auto_active,
-        })).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({
-            "ok": false,
-            "error": e.to_string(),
-            "auto_active": auto_active,
-        }))).into_response(),
-    }
-}
-
-#[derive(serde::Deserialize)]
-pub struct CfUamBody {
-    pub enable: bool,
-}
-
-/// POST /api/admin/cf/uam — manually enable or disable Cloudflare Under Attack Mode.
-pub async fn api_cf_uam_set(
-    State(state): State<AppState>,
-    jar: PrivateCookieJar,
-    addr: ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(body): Json<CfUamBody>,
-) -> impl IntoResponse {
-    if !auth::is_root_session(&state, &jar).await {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Root access required"}))).into_response();
-    }
-    let token = db::get_panel_setting(&state.db, "cf_api_token").await;
-    let zone_id = db::get_panel_setting(&state.db, "cf_zone_id").await;
-    if token.is_empty() || zone_id.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "CF credentials not configured"}))).into_response();
-    }
-
-    let result = if body.enable {
-        crate::cloudflare::enable_under_attack(&zone_id, &token).await
-    } else {
-        crate::cloudflare::disable_under_attack(&zone_id, &token).await
-    };
-
-    match result {
-        Ok(()) => {
-            let mut guard = state.cf_uam_triggered_at.lock().await;
-            *guard = if body.enable { Some(std::time::Instant::now()) } else { None };
-            drop(guard);
-            let ip = auth::client_ip(&headers, addr);
-            let actor = auth::session_username(&jar).unwrap_or_default();
-            let detail = if body.enable { "enabled" } else { "disabled" };
-            let _ = db::audit_log(&state.db, &actor, "panel.cf_uam_toggle", "manual", detail, &ip, &auth::user_agent(&headers)).await;
-            Json(serde_json::json!({"ok": true, "enabled": body.enable})).into_response()
-        }
-        Err(e) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }
 
@@ -4169,20 +4059,11 @@ pub async fn api_admin_db_integrity(
     .map(|r| r.rows_affected())
     .unwrap_or(0);
 
-    // 4. Remove orphaned dns_records whose container_id references non-existent server rows.
-    let orphan_dns = sqlx::query(
-        "DELETE FROM dns_records WHERE container_id IS NOT NULL AND container_id NOT IN (SELECT id FROM servers)"
-    )
-    .execute(&state.db)
-    .await
-    .map(|r| r.rows_affected())
-    .unwrap_or(0);
-
     let ip = auth::client_ip(&headers, addr);
     let _ = db::audit_log(
         &state.db, "admin", "panel.db_integrity",
         "check",
-        &format!("removed_servers={} orphan_ports={} orphan_dns={}", removed_servers, orphan_ports, orphan_dns),
+        &format!("removed_servers={} orphan_ports={}", removed_servers, orphan_ports),
         &ip,
         &auth::user_agent(&headers),
     ).await;
@@ -4191,8 +4072,7 @@ pub async fn api_admin_db_integrity(
         "ok": true,
         "removed_servers": removed_servers,
         "removed_orphan_ports": orphan_ports,
-        "removed_orphan_dns_records": orphan_dns,
-        "total_fixed": removed_servers + orphan_ports + orphan_dns,
+        "total_fixed": removed_servers + orphan_ports,
     })).into_response()
 }
 

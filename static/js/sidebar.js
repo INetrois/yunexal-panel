@@ -63,8 +63,7 @@ function closeSidebar() {
     function _isSharedBodyScriptSrc(abs) {
         return abs.includes('/static/js/sidebar.js')
             || abs.includes('/static/js/footer.js')
-            || abs.includes('bootstrap.bundle.min.js')
-            || abs.includes('static.cloudflareinsights.com/beacon.min.js');
+            || abs.includes('bootstrap.bundle.min.js');
     }
 
     async function _loadHeadAssets(doc) {

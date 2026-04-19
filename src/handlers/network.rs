@@ -57,7 +57,7 @@ pub async fn networking_page(
                 .into_iter()
                 .map(|((hp, cp), (tag, enabled, ufw_blocked))| PortRow { host_port: hp, container_port: cp, tag, enabled, ufw_blocked })
                 .collect();
-            render(NetworkingTemplate { id: db_id, container, bandwidth_mbit, is_admin, can_members, ports, active_tab: "networking", cf_token: state.cf_analytics_token.clone(), nonce, ufw_enabled, bandwidth_enabled }).into_response()
+            render(NetworkingTemplate { id: db_id, container, bandwidth_mbit, is_admin, can_members, ports, active_tab: "networking", nonce, ufw_enabled, bandwidth_enabled }).into_response()
         }
         Err(e) => format!("Error: {}", e).into_response(),
     }
