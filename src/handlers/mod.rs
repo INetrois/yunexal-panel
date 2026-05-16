@@ -179,8 +179,11 @@ use admin::{
     role_permissions_page,
 };
 use auth::{api_service_login, login_page, login_submit, logout};
-use create::{api_build_image_from_dockerfile, api_image_env, api_image_env_overrides, api_local_images, api_quota_check, api_xfs_check, create_server};
-use dashboard::{api_dashboard_json, dashboard, new_server_page, server_list_fragment};
+use create::{api_build_image_from_dockerfile, api_image_env, api_image_env_overrides, api_local_images, api_quota_check, create_server};
+use dashboard::{
+    api_dashboard_json, api_user_devices, api_user_logout_device, dashboard, new_server_page,
+    server_list_fragment,
+};
 use files::{bulk_delete, copy_file, create_archive, create_new_file, delete_file, edit_file_page, extract_archive, finalize_file_upload, list_files_api, list_files_json, move_file, rename_file, save_file_content, upload_file_chunk, upload_files};
 use network::{api_add_port, api_get_bandwidth, api_remove_port, api_set_bandwidth, api_tag_port, api_toggle_port, api_toggle_port_ufw, api_server_disk, networking_page};
 use servers::{
@@ -261,6 +264,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/manifest.json", get(serve_manifest))
         // Account (own user)
         .route("/api/user/change-password", post(admin_change_password))
+        .route("/api/user/devices", get(api_user_devices))
+        .route("/api/user/devices/logout", post(api_user_logout_device))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware::require_auth,
@@ -275,7 +280,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/image/build-dockerfile", post(api_build_image_from_dockerfile)
             .layer(axum::extract::DefaultBodyLimit::disable()))
         .route("/api/quota-check", get(api_quota_check))
-        .route("/api/xfs-check", get(api_xfs_check))
         .route("/admin", get(admin_page))
         .route("/admin/{tab}", get(admin_tab_page))
         .route("/admin/roles/{name}/edit", get(role_permissions_page))

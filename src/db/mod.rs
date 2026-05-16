@@ -1,5 +1,6 @@
 mod audit;
 mod users;
+mod sessions;
 mod roles;
 mod servers;
 mod ports;
@@ -8,6 +9,7 @@ mod settings;
 
 pub use audit::*;
 pub use users::*;
+pub use sessions::*;
 pub use roles::*;
 pub use servers::*;
 pub use ports::*;
@@ -82,6 +84,30 @@ pub async fn init_db() -> Result<Pool<Sqlite>> {
     .await
     .context("Failed to create users table")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            session_id   TEXT PRIMARY KEY,
+            user_id      INTEGER NOT NULL,
+            username     TEXT NOT NULL,
+            ip           TEXT NOT NULL DEFAULT '',
+            user_agent   TEXT NOT NULL DEFAULT '',
+            created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            revoked      INTEGER NOT NULL DEFAULT 0
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .context("Failed to create user_sessions table")?;
+
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_user_sessions_user_active ON user_sessions (user_id, revoked, last_seen_at)",
+    )
+    .execute(&pool)
+    .await;
+
     // Migration: add uid/nickname columns for legacy databases.
     let _ = sqlx::query("ALTER TABLE users ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
         .execute(&pool)
@@ -89,6 +115,19 @@ pub async fn init_db() -> Result<Pool<Sqlite>> {
     let _ = sqlx::query("ALTER TABLE users ADD COLUMN nickname TEXT NOT NULL DEFAULT ''")
         .execute(&pool)
         .await;
+
+    // Migration: keep user_sessions schema aligned for older databases.
+    let _ = sqlx::query("ALTER TABLE user_sessions ADD COLUMN last_seen_at TEXT NOT NULL DEFAULT ''")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE user_sessions ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query(
+        "UPDATE user_sessions SET last_seen_at = COALESCE(NULLIF(last_seen_at, ''), created_at, datetime('now'))",
+    )
+    .execute(&pool)
+    .await;
 
     // Backfill legacy rows.
     let _ = sqlx::query(

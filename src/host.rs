@@ -78,11 +78,6 @@ pub fn resolve_admin_tool(tool: &str) -> String {
         "cp" => resolve_command_path("cp", &["/usr/bin/cp", "/bin/cp"]),
         "mkdir" => resolve_command_path("mkdir", &["/usr/bin/mkdir", "/bin/mkdir"]),
         "mkfs.ext4" => resolve_command_path("mkfs.ext4", &["/usr/sbin/mkfs.ext4", "/sbin/mkfs.ext4"]),
-        "mkfs.xfs" => resolve_command_path("mkfs.xfs", &["/usr/sbin/mkfs.xfs", "/sbin/mkfs.xfs"]),
-        "mkfs.btrfs" => resolve_command_path("mkfs.btrfs", &["/usr/sbin/mkfs.btrfs", "/sbin/mkfs.btrfs"]),
-        "zfs" => resolve_command_path("zfs", &["/usr/sbin/zfs", "/sbin/zfs", "/usr/bin/zfs"]),
-        "zpool" => resolve_command_path("zpool", &["/usr/sbin/zpool", "/sbin/zpool", "/usr/bin/zpool"]),
-        "btrfs" => resolve_command_path("btrfs", &["/usr/bin/btrfs", "/sbin/btrfs"]),
         _ => resolve_command_path(tool, &[]),
     }
 }

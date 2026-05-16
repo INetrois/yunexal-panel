@@ -470,8 +470,6 @@ body > .stor-sel-panel { display: block; }
 .stor-opt-badge  { font-size: .6rem; font-weight: 700; padding: .08rem .32rem; border-radius: 4px; letter-spacing: .05em; text-transform: uppercase; }
 .stor-opt-badge.pq    { background: rgba(52,211,153,.14); color: #34d399; border: 1px solid rgba(52,211,153,.25); }
 .stor-opt-badge.nq    { background: rgba(239,68,68,.12);  color: #f87171; border: 1px solid rgba(239,68,68,.22); }
-.stor-opt-badge.zfs   { background: rgba(96,165,250,.12);  color: #60a5fa; border: 1px solid rgba(96,165,250,.22); }
-.stor-opt-badge.btrfs { background: rgba(251,191,36,.12);  color: #fbbf24; border: 1px solid rgba(251,191,36,.22); }
 .stor-opt-badge.ext4  { background: rgba(249,115,22,.12);  color: #fb923c; border: 1px solid rgba(249,115,22,.22); }
 .stor-opt-row2 { font-size: .7rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stor-opt-usage { display: flex; align-items: center; gap: .4rem; flex-shrink: 0; margin-left: auto; padding-left: .5rem; }

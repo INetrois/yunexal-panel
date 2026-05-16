@@ -562,8 +562,16 @@ pub async fn admin_change_password(
     match password::hash(&body.new_password) {
         Ok(hash) => match db::update_user_password(&state.db, user.id, &hash).await {
             Ok(_) => {
+                let _ = db::revoke_all_user_sessions(&state.db, user.id).await;
                 let _ = db::audit_log(&state.db, &session_user, "user.change_password", &session_user, "", &ip, &auth::user_agent(&headers)).await;
-                (StatusCode::OK, Json(serde_json::json!({"ok": true})))
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "ok": true,
+                        "force_logout": true,
+                        "redirect": "/login",
+                    })),
+                )
             }
             Err(e) => {
                 error!("admin_change_password: {}", e);
@@ -768,6 +776,11 @@ pub async fn api_set_user_password(
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
     let caller = auth::session_username(&jar).unwrap_or_default();
+    let caller_user_id = db::find_user_by_username(&state.db, &caller)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.id);
     if body.new_password.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -786,7 +799,18 @@ pub async fn api_set_user_password(
     };
     match db::update_user_password(&state.db, id, &hash).await {
         Ok(_) => {
+            let _ = db::revoke_all_user_sessions(&state.db, id).await;
             let _ = db::audit_log(&state.db, &caller, "user.set_password", &format!("uid:{}", id), "", &ip, &auth::user_agent(&headers)).await;
+            if caller_user_id == Some(id) {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "ok": true,
+                        "force_logout": true,
+                        "redirect": "/login",
+                    })),
+                );
+            }
             (StatusCode::OK, Json(serde_json::json!({"ok": true})))
         },
         Err(e) => {
@@ -1654,65 +1678,19 @@ async fn apply_server_disk_limit(
         let limit_bytes = docker::parse_disk_limit(limit_str)
             .ok_or_else(|| anyhow::anyhow!("Invalid disk_limit value: {}", limit_str))?;
 
-        if docker::xfs_pquota_mount(&volume_path).is_some() {
-            docker::apply_xfs_quota(&volume_path, server_id as u32, limit_bytes).await?;
-            return Ok(());
-        }
-        if docker::zfs_dataset_for(&volume_path).is_some() {
-            docker::apply_zfs_quota(&volume_path, limit_bytes).await?;
-            return Ok(());
-        }
-        if docker::btrfs_mount_for(&volume_path).is_some() {
-            docker::apply_btrfs_quota(&volume_path, limit_bytes).await?;
-            return Ok(());
-        }
         if docker::ext4_pquota_mount(&volume_path).is_some() {
             docker::apply_ext4_quota(&volume_path, server_id as u32, limit_bytes).await?;
             return Ok(());
         }
 
         return Err(anyhow::anyhow!(
-            "Filesystem for {} has no active quota support",
+            "Filesystem for {} is not ext4 with prjquota",
             volume_path.display()
         ));
     }
 
-    if docker::xfs_pquota_mount(&volume_path).is_some() {
-        docker::remove_xfs_quota(server_id as u32, &volume_path).await;
-        return Ok(());
-    }
-
     if docker::ext4_pquota_mount(&volume_path).is_some() {
         docker::remove_ext4_quota(server_id as u32, &volume_path).await;
-        return Ok(());
-    }
-
-    if let Some(dataset) = docker::zfs_dataset_for(&volume_path) {
-        let out = tokio::process::Command::new("zfs")
-            .args(["set", "refquota=none", &dataset])
-            .output()
-            .await?;
-        if !out.status.success() {
-            return Err(anyhow::anyhow!(
-                "Failed to clear ZFS refquota: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        return Ok(());
-    }
-
-    if docker::btrfs_mount_for(&volume_path).is_some() {
-        let volume_path_str = volume_path.to_string_lossy().to_string();
-        let out = tokio::process::Command::new("btrfs")
-            .args(["qgroup", "limit", "none", &volume_path_str])
-            .output()
-            .await?;
-        if !out.status.success() {
-            return Err(anyhow::anyhow!(
-                "Failed to clear Btrfs qgroup limit: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
     }
 
     Ok(())
@@ -2189,7 +2167,7 @@ pub async fn api_update_apply(
     };
 
     // Download to a temp file
-    let resp = match client.get(download_url).send().await {
+    let mut resp = match client.get(download_url).send().await {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => return Json(serde_json::json!({"ok": false, "error": format!("Download failed: HTTP {}", r.status())})),
         Err(e) => return Json(serde_json::json!({"ok": false, "error": e.to_string()})),
@@ -2204,13 +2182,60 @@ pub async fn api_update_apply(
     let tmp_archive = parent_dir.join(".yunexal-update.tar.gz");
     let tmp_extract = parent_dir.join(".yunexal-update-extract");
 
-    let bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => return Json(serde_json::json!({"ok": false, "error": format!("Download read failed: {e}")})),
+    // Stream to disk with a strict size cap to avoid memory spikes / abuse.
+    const MAX_UPDATE_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
+    if let Some(len) = resp.content_length() {
+        if len == 0 {
+            return Json(serde_json::json!({"ok": false, "error": "Downloaded archive is empty"}));
+        }
+        if len > MAX_UPDATE_ARCHIVE_BYTES {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": format!("Archive is too large ({} bytes > {} bytes)", len, MAX_UPDATE_ARCHIVE_BYTES)
+            }));
+        }
+    }
+
+    let mut archive_file = match tokio::fs::File::create(&tmp_archive).await {
+        Ok(f) => f,
+        Err(e) => return Json(serde_json::json!({"ok": false, "error": format!("Write failed: {e}")})),
     };
 
-    if let Err(e) = tokio::fs::write(&tmp_archive, &bytes).await {
-        return Json(serde_json::json!({"ok": false, "error": format!("Write failed: {e}")}));
+    use tokio::io::AsyncWriteExt;
+    let mut downloaded: u64 = 0;
+    loop {
+        let next = match resp.chunk().await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&tmp_archive).await;
+                return Json(serde_json::json!({"ok": false, "error": format!("Download read failed: {e}")}));
+            }
+        };
+        let Some(chunk) = next else { break; };
+
+        downloaded = downloaded.saturating_add(chunk.len() as u64);
+        if downloaded > MAX_UPDATE_ARCHIVE_BYTES {
+            let _ = tokio::fs::remove_file(&tmp_archive).await;
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": format!("Archive exceeds maximum allowed size ({} bytes)", MAX_UPDATE_ARCHIVE_BYTES)
+            }));
+        }
+
+        if let Err(e) = archive_file.write_all(&chunk).await {
+            let _ = tokio::fs::remove_file(&tmp_archive).await;
+            return Json(serde_json::json!({"ok": false, "error": format!("Write failed: {e}")}));
+        }
+    }
+
+    if downloaded == 0 {
+        let _ = tokio::fs::remove_file(&tmp_archive).await;
+        return Json(serde_json::json!({"ok": false, "error": "Downloaded archive is empty"}));
+    }
+
+    if let Err(e) = archive_file.flush().await {
+        let _ = tokio::fs::remove_file(&tmp_archive).await;
+        return Json(serde_json::json!({"ok": false, "error": format!("Flush failed: {e}")}));
     }
 
     // Extract tar.gz
@@ -2263,7 +2288,13 @@ pub async fn api_update_apply(
         return Json(serde_json::json!({"ok": false, "error": "yunexal-panel binary not found in archive"}));
     }
 
-    let new_bin_path = new_binary.unwrap();
+    let new_bin_path = match new_binary {
+        Some(path) => path,
+        None => {
+            let _ = tokio::fs::remove_dir_all(&tmp_extract).await;
+            return Json(serde_json::json!({"ok": false, "error": "yunexal-panel binary not found in archive"}));
+        }
+    };
 
     // Backup current binary (hard-link copy; not the running inode so no ETXTBSY)
     let backup_path = parent_dir.join("yunexal-panel.bak");
@@ -2330,7 +2361,8 @@ pub struct UpdateApplyForm {
 
 /// Walk a directory recursively to find a binary by name.
 async fn find_binary_in_dir(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-    let mut stack = vec![dir.to_path_buf()];
+    let root = tokio::fs::canonicalize(dir).await.ok()?;
+    let mut stack = vec![root.clone()];
     while let Some(d) = stack.pop() {
         let mut rd = match tokio::fs::read_dir(&d).await {
             Ok(r) => r,
@@ -2338,10 +2370,30 @@ async fn find_binary_in_dir(dir: &std::path::Path, name: &str) -> Option<std::pa
         };
         while let Ok(Some(entry)) = rd.next_entry().await {
             let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.file_name().and_then(|n| n.to_str()) == Some(name) {
-                return Some(path);
+            let meta = match tokio::fs::symlink_metadata(&path).await {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let file_type = meta.file_type();
+            if file_type.is_symlink() {
+                continue;
+            }
+
+            if file_type.is_dir() {
+                if let Ok(canon_dir) = tokio::fs::canonicalize(&path).await {
+                    if canon_dir.starts_with(&root) {
+                        stack.push(canon_dir);
+                    }
+                }
+                continue;
+            }
+
+            if file_type.is_file() && path.file_name().and_then(|n| n.to_str()) == Some(name) {
+                if let Ok(canon_file) = tokio::fs::canonicalize(&path).await {
+                    if canon_file.starts_with(&root) {
+                        return Some(path);
+                    }
+                }
             }
         }
     }
@@ -2747,12 +2799,10 @@ fn storage_sudo_fix_command() -> String {
         host::resolve_command_path("rsync", &["/usr/bin/rsync", "/bin/rsync"]),
         host::resolve_command_path("cp", &["/usr/bin/cp", "/bin/cp"]),
         host::resolve_command_path("mkdir", &["/usr/bin/mkdir", "/bin/mkdir"]),
+        host::resolve_command_path("stat", &["/usr/bin/stat", "/bin/stat"]),
+        host::resolve_command_path("chown", &["/usr/bin/chown", "/bin/chown"]),
+        host::resolve_command_path("chmod", &["/usr/bin/chmod", "/bin/chmod"]),
         host::resolve_command_path("mkfs.ext4", &["/usr/sbin/mkfs.ext4", "/sbin/mkfs.ext4"]),
-        host::resolve_command_path("mkfs.xfs", &["/usr/sbin/mkfs.xfs", "/sbin/mkfs.xfs"]),
-        host::resolve_command_path("mkfs.btrfs", &["/usr/sbin/mkfs.btrfs", "/sbin/mkfs.btrfs"]),
-        host::resolve_command_path("zfs", &["/usr/sbin/zfs", "/sbin/zfs", "/usr/bin/zfs"]),
-        host::resolve_command_path("zpool", &["/usr/sbin/zpool", "/sbin/zpool", "/usr/bin/zpool"]),
-        host::resolve_command_path("btrfs", &["/usr/bin/btrfs", "/sbin/btrfs"]),
     ];
     host::sudoers_fix_command(&user, "/etc/sudoers.d/yunexal-storage", &entries)
 }
@@ -2761,6 +2811,107 @@ fn looks_like_permission_issue(stderr: &str) -> bool {
     stderr.contains("password is required")
         || stderr.contains("Permission denied")
         || stderr.contains("not allowed")
+}
+
+async fn sync_volume_root_metadata(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let (uid, gid, mode) = match tokio::fs::metadata(source).await {
+        Ok(src_meta) => (
+            src_meta.uid(),
+            src_meta.gid(),
+            src_meta.permissions().mode() & 0o7777,
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            let source_str = source.to_string_lossy().to_string();
+            let stat_out = run_sudo_command(vec![
+                "stat".to_string(),
+                "-c".to_string(),
+                "%u:%g:%a".to_string(),
+                source_str,
+            ])
+            .await;
+
+            match stat_out {
+                Ok(o) if o.status.success() => {
+                    let raw = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    let parts: Vec<&str> = raw.split(':').collect();
+                    if parts.len() != 3 {
+                        return Err(format!(
+                            "Cannot parse source volume metadata '{}': {}",
+                            source.display(),
+                            raw
+                        ));
+                    }
+                    let uid = parts[0]
+                        .parse::<u32>()
+                        .map_err(|err| format!("Invalid uid from stat output '{}': {}", raw, err))?;
+                    let gid = parts[1]
+                        .parse::<u32>()
+                        .map_err(|err| format!("Invalid gid from stat output '{}': {}", raw, err))?;
+                    let mode = u32::from_str_radix(parts[2], 8)
+                        .map_err(|err| format!("Invalid mode from stat output '{}': {}", raw, err))?;
+                    (uid, gid, mode & 0o7777)
+                }
+                Ok(o) => {
+                    return Err(format!(
+                        "Cannot inspect source volume metadata '{}': {}",
+                        source.display(),
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    ));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(e) => {
+            return Err(format!(
+                "Cannot inspect source volume metadata '{}': {}",
+                source.display(),
+                e
+            ));
+        }
+    };
+
+    let target_str = target.to_string_lossy().to_string();
+
+    let chown_out = run_sudo_command(vec![
+        "chown".to_string(),
+        format!("{}:{}", uid, gid),
+        target_str.clone(),
+    ])
+    .await;
+
+    match chown_out {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            return Err(format!(
+                "Cannot set owner on migrated volume '{}': {}",
+                target.display(),
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        Err(e) => return Err(e),
+    }
+
+    let chmod_out = run_sudo_command(vec![
+        "chmod".to_string(),
+        format!("{:o}", mode),
+        target_str,
+    ])
+    .await;
+
+    match chmod_out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(format!(
+            "Cannot set mode on migrated volume '{}': {}",
+            target.display(),
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
+        Err(e) => Err(e),
+    }
 }
 
 fn is_critical_system_mount(mount: &str) -> bool {
@@ -2870,7 +3021,15 @@ async fn validate_storage_base_path(path: &std::path::Path) -> Result<(), String
         ));
     }
 
-    if fs_type == "ext4" && !(opts.contains("prjquota") || opts.contains("prjjquota")) {
+    if fs_type != "ext4" {
+        return Err(format!(
+            "Only ext4 with prjquota is supported for container storage (mount '{}' uses '{}')",
+            mount_point,
+            fs_type
+        ));
+    }
+
+    if !(opts.contains("prjquota") || opts.contains("prjjquota")) {
         return Err(format!(
             "ext4 without prjquota is forbidden for container storage (mount: '{}')",
             mount_point
@@ -2951,10 +3110,17 @@ async fn list_non_system_disk_candidates() -> Result<Vec<DiskCandidate>, String>
 }
 
 /// GET /api/admin/storage/mounts
-/// Returns a list of XFS-capable mount points available on the host.
+/// Returns a list of ext4 mount points available on the host.
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+pub struct StorageMountsQuery {
+    #[serde(default)]
+    pub include_all: bool,
+}
+
 pub async fn api_admin_storage_mounts(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
+    Query(query): Query<StorageMountsQuery>,
 ) -> impl IntoResponse {
     if !auth::is_root_session(&state, &jar).await {
         return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Root access required"}))).into_response();
@@ -2976,6 +3142,7 @@ pub async fn api_admin_storage_mounts(
     }
 
     let unsafe_override = db::get_panel_setting_bool(&state.db, "storage_unsafe_override").await;
+    let include_all = query.include_all;
 
     let mounts_raw = tokio::fs::read_to_string("/proc/mounts").await.unwrap_or_default();
     let mut mounts: Vec<serde_json::Value> = Vec::new();
@@ -2992,57 +3159,64 @@ pub async fn api_admin_storage_mounts(
         let fs_type     = parts[2];
         let opts        = parts[3];
 
-        // Accept real XFS block devices, ZFS datasets, or Btrfs block devices
-        let is_xfs   = fs_type == "xfs"   && device_path.starts_with("/dev/");
-        let is_zfs   = fs_type == "zfs";
-        let is_btrfs = fs_type == "btrfs" && device_path.starts_with("/dev/");
-        let is_ext4  = fs_type == "ext4"  && device_path.starts_with("/dev/");
-        let is_supported = is_xfs || is_zfs || is_btrfs || is_ext4;
-        if !is_supported { continue; }
+        if !device_path.starts_with("/dev/") { continue; }
         if !seen.insert(mount_point.to_string()) { continue; }
 
-        let device = if is_zfs {
-            // For ZFS the "device" field is the dataset name
-            device_path.to_string()
-        } else {
-            std::path::Path::new(device_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(device_path)
-                .to_string()
-        };
+        let is_ext4 = fs_type == "ext4";
 
-        let has_prjquota = (is_xfs && (opts.contains("prjquota") || opts.contains("pquota")))
-            || (is_ext4 && (opts.contains("prjquota") || opts.contains("prjjquota")));
+        let device = std::path::Path::new(device_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(device_path)
+            .to_string();
 
-        if !unsafe_override && is_critical_system_mount(mount_point) {
-            continue;
-        }
+        let has_prjquota = opts.contains("prjquota") || opts.contains("prjjquota") || opts.contains("pquota");
+        let is_critical_mount = is_critical_system_mount(mount_point);
 
-        // Hard policy: ext4 without project quota is not allowed for container storage.
-        if !unsafe_override && is_ext4 && !has_prjquota {
-            continue;
-        }
-
-        // Do not offer mount points on the same disk as system root.
-        if !unsafe_override && !root_source.is_empty() {
+        let mut same_root_disk = false;
+        if !root_source.is_empty() {
             if device_path == root_source {
-                continue;
-            }
-            if device_path.starts_with("/dev/") && !root_disk_kname.is_empty() {
+                same_root_disk = true;
+            } else if !root_disk_kname.is_empty() {
                 let top = device_top_parent_kname(device_path).await;
                 if !top.is_empty() && top == root_disk_kname {
-                    continue;
+                    same_root_disk = true;
                 }
+            }
+        }
+
+        let mut blocked_reason = String::new();
+        if !is_ext4 {
+            blocked_reason = format!(
+                "unsupported filesystem '{}' (only ext4 with prjquota is allowed)",
+                fs_type
+            );
+        } else if !has_prjquota {
+            blocked_reason = "missing prjquota/prjjquota mount option".to_string();
+        } else if is_critical_mount {
+            blocked_reason = format!("critical system mount '{}'", mount_point);
+        } else if same_root_disk {
+            blocked_reason = "mounted on system root disk".to_string();
+        }
+
+        let selectable = if unsafe_override {
+            is_ext4
+        } else {
+            blocked_reason.is_empty()
+        };
+
+        if !include_all {
+            if !is_ext4 {
+                continue;
+            }
+            if !unsafe_override && !selectable {
+                continue;
             }
         }
 
         let (free_gib, total_gib, used_pct) = df_stats(mount_point).await.unwrap_or((0.0, 0.0, 0));
 
-        let suggested_path = if is_zfs {
-            // For ZFS suggest using the dataset itself as the volumes parent
-            device_path.to_string()
-        } else if mount_point == "/var/lib/docker" {
+        let suggested_path = if mount_point == "/var/lib/docker" {
             "/var/lib/docker/yunexal-volumes".to_string()
         } else if mount_point == "/" {
             "/var/lib/docker/yunexal-volumes".to_string()
@@ -3055,14 +3229,14 @@ pub async fn api_admin_storage_mounts(
             "mount":          mount_point,
             "fs_type":        fs_type,
             "has_prjquota":   has_prjquota,
-            "has_zfs":        is_zfs,
-            "has_btrfs":      is_btrfs,
             "has_ext4":       is_ext4,
             "free_gib":       format!("{:.1}", free_gib),
             "total_gib":      format!("{:.1}", total_gib),
             "used_pct":       used_pct,
             "suggested_path": suggested_path,
             "prjquota_hint": String::new(),
+            "selectable": selectable,
+            "blocked_reason": blocked_reason,
         }));
     }
 
@@ -3160,7 +3334,7 @@ pub async fn api_admin_storage_disks(
 }
 
 /// POST /api/admin/storage/change-fs
-/// Reformats a non-system partition to ext4/xfs/btrfs, or creates a ZFS pool.
+/// Reformats a non-system partition to ext4.
 pub async fn api_admin_storage_change_fs(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
@@ -3173,35 +3347,13 @@ pub async fn api_admin_storage_change_fs(
     }
 
     let fs_type = body.fs_type.trim().to_lowercase();
-    enum FsAction {
-        Mkfs {
-            tool: &'static str,
-            force_arg: &'static str,
-        },
-        ZfsPool,
+    if fs_type != "ext4" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Unsupported filesystem. Only ext4 is supported."})),
+        )
+            .into_response();
     }
-    let action = match fs_type.as_str() {
-        "ext4" => FsAction::Mkfs {
-            tool: "mkfs.ext4",
-            force_arg: "-F",
-        },
-        "xfs" => FsAction::Mkfs {
-            tool: "mkfs.xfs",
-            force_arg: "-f",
-        },
-        "btrfs" => FsAction::Mkfs {
-            tool: "mkfs.btrfs",
-            force_arg: "-f",
-        },
-        "zfs" => FsAction::ZfsPool,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Unsupported filesystem. Use ext4, xfs, btrfs, or zfs."})),
-            )
-                .into_response();
-        }
-    };
 
     let disks = match list_non_system_disk_candidates().await {
         Ok(v) => v,
@@ -3271,75 +3423,18 @@ pub async fn api_admin_storage_change_fs(
         }
     }
 
-    let mut zfs_pool_name = String::new();
-    let mut zfs_mountpoint = String::new();
-    let format_result = match action {
-        FsAction::Mkfs { tool, force_arg } => {
-            run_sudo_command(vec![
-                tool.to_string(),
-                force_arg.to_string(),
-                disk.device.clone(),
-            ])
-            .await
-        }
-        FsAction::ZfsPool => {
-            let kname_part: String = disk
-                .kname
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-                .collect();
-            let kname_part = if kname_part.trim_matches('-').is_empty() {
-                "disk".to_string()
-            } else {
-                kname_part.trim_matches('-').to_string()
-            };
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            zfs_pool_name = format!("yunexal-{}-{}", kname_part, ts);
-            zfs_mountpoint = format!("/{}", zfs_pool_name);
-
-            let _ = run_sudo_command(vec![
-                "zpool".to_string(),
-                "labelclear".to_string(),
-                "-f".to_string(),
-                disk.device.clone(),
-            ])
-            .await;
-
-            run_sudo_command(vec![
-                "zpool".to_string(),
-                "create".to_string(),
-                "-f".to_string(),
-                "-O".to_string(),
-                "compression=lz4".to_string(),
-                "-O".to_string(),
-                "atime=off".to_string(),
-                "-O".to_string(),
-                format!("mountpoint={}", zfs_mountpoint),
-                zfs_pool_name.clone(),
-                disk.device.clone(),
-            ])
-            .await
-        }
-    };
+    let format_result = run_sudo_command(vec![
+        "mkfs.ext4".to_string(),
+        "-F".to_string(),
+        disk.device.clone(),
+    ])
+    .await;
 
     match format_result {
         Ok(out) if out.status.success() => {
             let ip = auth::client_ip(&headers, addr);
             let actor = auth::session_username(&jar).unwrap_or_else(|| "admin".to_string());
-            let detail = if fs_type == "zfs" {
-                format!(
-                    "{} -> {} (pool: {}, mount: {})",
-                    disk.fs_type,
-                    fs_type,
-                    zfs_pool_name,
-                    zfs_mountpoint
-                )
-            } else {
-                format!("{} -> {}", disk.fs_type, fs_type)
-            };
+            let detail = format!("{} -> {}", disk.fs_type, fs_type);
             let _ = db::audit_log(
                 &state.db,
                 &actor,
@@ -3351,33 +3446,15 @@ pub async fn api_admin_storage_change_fs(
             )
             .await;
 
-            let ext4_hint = if fs_type == "ext4" {
-                "Enable prjquota after mounting this partition to allow per-container disk limits (overlay2.size and ext4 project quotas).".to_string()
-            } else {
-                String::new()
-            };
-            let ext4_cmd = if fs_type == "ext4" {
-                "sudo mount -o remount,prjquota <mountpoint>".to_string()
-            } else {
-                String::new()
-            };
-
-            let msg = if fs_type == "zfs" {
-                format!(
-                    "{} converted to ZFS pool '{}' mounted at {}",
-                    disk.device, zfs_pool_name, zfs_mountpoint
-                )
-            } else {
-                format!("{} formatted as {}", disk.device, fs_type)
-            };
+            let ext4_hint = "Enable prjquota after mounting this partition to allow per-container disk limits (overlay2.size and ext4 project quotas).".to_string();
+            let ext4_cmd = "sudo mount -o remount,prjquota <mountpoint>".to_string();
+            let msg = format!("{} formatted as {}", disk.device, fs_type);
 
             Json(serde_json::json!({
                 "ok": true,
                 "message": msg,
                 "ext4_prjquota_hint": ext4_hint,
                 "ext4_prjquota_command": ext4_cmd,
-                "zfs_pool": zfs_pool_name,
-                "zfs_mountpoint": zfs_mountpoint,
             }))
             .into_response()
         }
@@ -3645,82 +3722,7 @@ pub async fn api_admin_storage_migrate(
             .into_response();
     }
 
-    if docker::zfs_dataset_for(&target_base).is_some() {
-        let parent_ds = docker::zfs_dataset_for(&target_base).unwrap_or_default();
-        let child_ds = format!("{}/{}", parent_ds, volume_key);
-        let out = run_sudo_command(vec![
-            "zfs".to_string(),
-            "create".to_string(),
-            child_ds,
-        ])
-        .await;
-        match out {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                if !stderr.contains("already exists") {
-                    if looks_like_permission_issue(&stderr) {
-                        return Json(serde_json::json!({
-                            "ok": false,
-                            "needs_permission": true,
-                            "fix_command": storage_sudo_fix_command(),
-                            "message": "Need sudo permission to create ZFS dataset",
-                        }))
-                        .into_response();
-                    }
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error": format!("ZFS prepare failed: {}", stderr)})),
-                    )
-                        .into_response();
-                }
-            }
-            Err(err) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": err})),
-                )
-                    .into_response();
-            }
-        }
-    } else if docker::btrfs_mount_for(&target_base).is_some() {
-        let out = run_sudo_command(vec![
-            "btrfs".to_string(),
-            "subvolume".to_string(),
-            "create".to_string(),
-            target_volume_path.to_string_lossy().to_string(),
-        ])
-        .await;
-        match out {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                if !stderr.contains("exists") {
-                    if looks_like_permission_issue(&stderr) {
-                        return Json(serde_json::json!({
-                            "ok": false,
-                            "needs_permission": true,
-                            "fix_command": storage_sudo_fix_command(),
-                            "message": "Need sudo permission to create Btrfs subvolume",
-                        }))
-                        .into_response();
-                    }
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error": format!("Btrfs prepare failed: {}", stderr)})),
-                    )
-                        .into_response();
-                }
-            }
-            Err(err) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": err})),
-                )
-                    .into_response();
-            }
-        }
-    } else if let Err(e) = tokio::fs::create_dir_all(&target_volume_path).await {
+    if let Err(e) = tokio::fs::create_dir_all(&target_volume_path).await {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             let out = run_sudo_command(vec![
                 "mkdir".to_string(),
@@ -3863,6 +3865,30 @@ pub async fn api_admin_storage_migrate(
             .into_response();
     }
 
+    if let Err(e) = sync_volume_root_metadata(&old_volume_path, &target_volume_path).await {
+        if was_running {
+            let _ = docker::start_container(&state.docker, &old_container_id).await;
+        }
+
+        if looks_like_permission_issue(&e) {
+            return Json(serde_json::json!({
+                "ok": false,
+                "needs_permission": true,
+                "fix_command": storage_sudo_fix_command(),
+                "message": "Need sudo permission to normalize migrated volume ownership/permissions",
+            }))
+            .into_response();
+        }
+
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("Failed to preserve source volume permissions: {}", e),
+            })),
+        )
+            .into_response();
+    }
+
     let docker_name = inspect
         .name
         .as_deref()
@@ -3897,6 +3923,10 @@ pub async fn api_admin_storage_migrate(
                 .into_response();
         }
     };
+
+    // The old container is gone after recreation; clear any quota assignment left
+    // on the previous source path before applying quota to the new location.
+    docker::remove_ext4_quota(body.server_id as u32, &old_volume_path).await;
 
     let owner_id = db::get_server_owner_by_db_id(&state.db, body.server_id)
         .await
@@ -3944,28 +3974,13 @@ pub async fn api_admin_storage_migrate(
         .filter(|v| !v.is_empty())
     {
         if let Some(limit_bytes) = docker::parse_disk_limit(limit_str) {
-            if docker::xfs_pquota_mount(&target_volume_path).is_some() {
-                match docker::apply_xfs_quota(&target_volume_path, body.server_id as u32, limit_bytes).await {
-                    Ok(_) => quota_note = format!("Reapplied XFS quota ({})", limit_str),
-                    Err(e) => quota_note = format!("Failed to reapply XFS quota: {}", e),
-                }
-            } else if docker::zfs_dataset_for(&target_volume_path).is_some() {
-                match docker::apply_zfs_quota(&target_volume_path, limit_bytes).await {
-                    Ok(_) => quota_note = format!("Reapplied ZFS refquota ({})", limit_str),
-                    Err(e) => quota_note = format!("Failed to reapply ZFS quota: {}", e),
-                }
-            } else if docker::btrfs_mount_for(&target_volume_path).is_some() {
-                match docker::apply_btrfs_quota(&target_volume_path, limit_bytes).await {
-                    Ok(_) => quota_note = format!("Reapplied Btrfs qgroup quota ({})", limit_str),
-                    Err(e) => quota_note = format!("Failed to reapply Btrfs quota: {}", e),
-                }
-            } else if docker::ext4_pquota_mount(&target_volume_path).is_some() {
+            if docker::ext4_pquota_mount(&target_volume_path).is_some() {
                 match docker::apply_ext4_quota(&target_volume_path, body.server_id as u32, limit_bytes).await {
                     Ok(_) => quota_note = format!("Reapplied ext4 project quota ({})", limit_str),
                     Err(e) => quota_note = format!("Failed to reapply ext4 quota: {}", e),
                 }
             } else {
-                quota_note = "Target filesystem has no active quota support (xfs/ext4 prjquota, zfs, btrfs)".to_string();
+                quota_note = "Target filesystem has no active quota support (ext4 with prjquota required)".to_string();
             }
         }
     }

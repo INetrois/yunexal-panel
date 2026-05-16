@@ -12,7 +12,7 @@ pub use images::*;
 pub use files::*;
 pub use network::*;
 pub use edit::*;
-pub use quota::{apply_btrfs_quota, apply_ext4_quota, apply_xfs_quota, apply_zfs_quota, btrfs_mount_for, ext4_pquota_mount, parse_disk_limit, remove_btrfs_quota, remove_ext4_quota, remove_xfs_quota, remove_zfs_quota, xfs_pquota_mount, zfs_dataset_for};
+pub use quota::{apply_ext4_quota, ext4_pquota_mount, parse_disk_limit, remove_ext4_quota};
 
 use bollard::Docker;
 use serde::{Deserialize, Serialize};

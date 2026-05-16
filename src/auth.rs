@@ -4,11 +4,144 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Redirect},
 };
-use axum_extra::extract::cookie::PrivateCookieJar;
+use axum_extra::extract::cookie::{Cookie, PrivateCookieJar};
+use base64::Engine;
+use rand::RngExt;
 use crate::{db, state::AppState};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 pub const SESSION_COOKIE: &str = "session";
+const SESSION_COOKIE_VERSION: &str = "v2";
+
+#[derive(Debug, Clone)]
+struct ParsedSessionCookie {
+    username: String,
+    stamp: Option<String>,
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SessionContext {
+    user: db::User,
+    session_id: String,
+}
+
+fn parse_session_cookie_value(raw: &str) -> Option<ParsedSessionCookie> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let prefix = format!("{}.", SESSION_COOKIE_VERSION);
+    if let Some(rest) = raw.strip_prefix(&prefix) {
+        let mut parts = rest.splitn(3, '.');
+        let username_part = parts.next()?;
+        let session_part = parts.next()?.trim();
+        let stamp_part = parts.next()?.trim();
+        if username_part.is_empty() || session_part.is_empty() || stamp_part.is_empty() {
+            return None;
+        }
+
+        let username_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(username_part)
+            .ok()?;
+        let username = String::from_utf8(username_bytes).ok()?;
+        if username.trim().is_empty() {
+            return None;
+        }
+
+        return Some(ParsedSessionCookie {
+            username,
+            stamp: Some(stamp_part.to_string()),
+            session_id: Some(session_part.to_string()),
+        });
+    }
+
+    // Previous stamped format fallback: v1.<b64(username)>.<stamp>
+    if let Some(rest) = raw.strip_prefix("v1.") {
+        let mut parts = rest.splitn(2, '.');
+        let username_part = parts.next()?;
+        let stamp_part = parts.next()?.trim();
+        if username_part.is_empty() || stamp_part.is_empty() {
+            return None;
+        }
+
+        let username_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(username_part)
+            .ok()?;
+        let username = String::from_utf8(username_bytes).ok()?;
+        if username.trim().is_empty() {
+            return None;
+        }
+
+        return Some(ParsedSessionCookie {
+            username,
+            stamp: Some(stamp_part.to_string()),
+            session_id: None,
+        });
+    }
+
+    // Legacy format fallback: username only.
+    Some(ParsedSessionCookie {
+        username: raw.to_string(),
+        stamp: None,
+        session_id: None,
+    })
+}
+
+fn session_stamp_from_password_hash(password_hash: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(password_hash.as_bytes())
+}
+
+pub fn generate_session_id() -> String {
+    let mut rng = rand::rng();
+    let bytes: [u8; 24] = rng.random();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub fn make_session_cookie_value(username: &str, password_hash: &str, session_id: &str) -> String {
+    let username_enc = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(username.as_bytes());
+    let stamp = session_stamp_from_password_hash(password_hash);
+    format!("{}.{}.{}.{}", SESSION_COOKIE_VERSION, username_enc, session_id, stamp)
+}
+
+fn login_redirect_with_cookie_clear(jar: PrivateCookieJar) -> axum::response::Response {
+    let updated_jar = jar.remove(Cookie::from(SESSION_COOKIE));
+    (updated_jar, Redirect::to("/login")).into_response()
+}
+
+async fn session_context(state: &AppState, jar: &PrivateCookieJar) -> Option<SessionContext> {
+    let raw = jar.get(SESSION_COOKIE)?.value().to_string();
+    let parsed = parse_session_cookie_value(&raw)?;
+    let user = db::find_user_by_username(&state.db, &parsed.username)
+        .await
+        .ok()
+        .flatten()?;
+
+    let session_id = parsed.session_id?.trim().to_string();
+    if session_id.is_empty() {
+        return None;
+    }
+
+    let expected_stamp = session_stamp_from_password_hash(&user.password_hash);
+    if parsed.stamp.as_deref() != Some(expected_stamp.as_str()) {
+        return None;
+    }
+
+    let active = db::is_user_session_active(&state.db, user.id, &session_id)
+        .await
+        .ok()
+        .unwrap_or(false);
+    if !active {
+        return None;
+    }
+
+    Some(SessionContext { user, session_id })
+}
+
+async fn session_user(state: &AppState, jar: &PrivateCookieJar) -> Option<db::User> {
+    session_context(state, jar).await.map(|ctx| ctx.user)
+}
 
 /// Maps admin tab names to permission keys.
 pub fn permission_for_admin_tab(tab: &str) -> &'static str {
@@ -37,7 +170,7 @@ fn required_admin_permission_for_path(path: &str, method: &Method) -> &'static s
         return permission_for_admin_tab(base);
     }
 
-    if path == "/servers/new" || path == "/api/quota-check" || path == "/api/xfs-check" {
+    if path == "/servers/new" || path == "/api/quota-check" {
         return "servers.create";
     }
     if path.starts_with("/api/image/") {
@@ -102,21 +235,34 @@ pub async fn role_has_read_permission(state: &AppState, role: &str, permission: 
 
 /// Extract client IP from X-Forwarded-For / X-Real-IP headers, falling back to socket address.
 pub fn client_ip(headers: &HeaderMap, addr: ConnectInfo<SocketAddr>) -> String {
-    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        if let Some(first) = xff.split(',').next() {
-            let ip = first.trim();
+    let remote_ip = addr.0.ip();
+
+    // Only honor forwarding headers when the direct peer is a trusted proxy.
+    // This prevents clients from spoofing X-Forwarded-For/X-Real-IP directly.
+    let trusted_proxy = match remote_ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local(),
+    };
+
+    if trusted_proxy {
+        if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            if let Some(first) = xff.split(',').next() {
+                let ip = first.trim();
+                if !ip.is_empty() {
+                    return ip.to_string();
+                }
+            }
+        }
+
+        if let Some(real) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+            let ip = real.trim();
             if !ip.is_empty() {
                 return ip.to_string();
             }
         }
     }
-    if let Some(real) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
-        let ip = real.trim();
-        if !ip.is_empty() {
-            return ip.to_string();
-        }
-    }
-    addr.0.ip().to_string()
+
+    remote_ip.to_string()
 }
 
 /// Extract User-Agent header as a string (truncated to 256 chars).
@@ -176,28 +322,28 @@ pub async fn is_service_api_request_authorized(state: &AppState, headers: &Heade
 /// Returns the username stored in the session cookie, if any.
 pub fn session_username(jar: &PrivateCookieJar) -> Option<String> {
     jar.get(SESSION_COOKIE)
-        .map(|c| c.value().to_string())
+        .and_then(|c| parse_session_cookie_value(c.value()))
+        .map(|v| v.username)
         .filter(|v| !v.is_empty())
+}
+
+/// Returns the current session id from cookie (if present).
+pub fn session_id(jar: &PrivateCookieJar) -> Option<String> {
+    jar.get(SESSION_COOKIE)
+        .and_then(|c| parse_session_cookie_value(c.value()))
+        .and_then(|v| v.session_id)
+        .filter(|v| !v.trim().is_empty())
 }
 
 /// Returns the DB user id for the current session, or None.
 pub async fn session_user_id(state: &AppState, jar: &PrivateCookieJar) -> Option<i64> {
-    let username = session_username(jar)?;
-    db::find_user_by_username(&state.db, &username)
-        .await
-        .ok()
-        .flatten()
-        .map(|u| u.id)
+    session_user(state, jar).await.map(|u| u.id)
 }
 
 /// Returns true if the current session belongs to an admin/root user.
 pub async fn is_admin_session(state: &AppState, jar: &PrivateCookieJar) -> bool {
-    let username = match session_username(jar) {
+    let user = match session_user(state, jar).await {
         Some(u) => u,
-        None => return false,
-    };
-    let user = match db::find_user_by_username(&state.db, &username).await {
-        Ok(Some(u)) => u,
         _ => return false,
     };
     role_has_permission(state, &user.role, "admin.access").await
@@ -205,14 +351,7 @@ pub async fn is_admin_session(state: &AppState, jar: &PrivateCookieJar) -> bool 
 
 /// Returns true if the current session belongs to the root user.
 pub async fn is_root_session(state: &AppState, jar: &PrivateCookieJar) -> bool {
-    let username = match session_username(jar) {
-        Some(u) => u,
-        None => return false,
-    };
-    matches!(
-        db::find_user_by_username(&state.db, &username).await,
-        Ok(Some(u)) if u.role == "root"
-    )
+    matches!(session_user(state, jar).await, Some(u) if u.role == "root")
 }
 
 /// Middleware: redirects to /login if not authenticated or if user was deleted.
@@ -222,25 +361,19 @@ pub async fn require_auth(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    let username = match session_username(&jar) {
-        Some(u) => u,
-        None => return Redirect::to("/login").into_response(),
-    };
-    // Confirm the user still exists in the DB — auto-logout if deleted.
-    match db::find_user_by_username(&state.db, &username).await {
-        Ok(Some(_)) => next.run(request).await.into_response(),
-        _ => Redirect::to("/login").into_response(),
+    match session_context(&state, &jar).await {
+        Some(ctx) => {
+            let _ = db::touch_user_session(&state.db, &ctx.session_id).await;
+            next.run(request).await.into_response()
+        }
+        None => login_redirect_with_cookie_clear(jar),
     }
 }
 
 /// Returns true if the session user is admin or owns the server with the given db_id.
 pub async fn can_access_server(state: &AppState, jar: &PrivateCookieJar, db_id: i64) -> bool {
-    let username = match session_username(jar) {
+    let user = match session_user(state, jar).await {
         Some(u) => u,
-        None => return false,
-    };
-    let user = match db::find_user_by_username(&state.db, &username).await {
-        Ok(Some(u)) => u,
         _ => return false,
     };
 
@@ -270,12 +403,8 @@ pub async fn can_access_server_permission(
     permission: &str,
     require_write: bool,
 ) -> bool {
-    let username = match session_username(jar) {
+    let user = match session_user(state, jar).await {
         Some(u) => u,
-        None => return false,
-    };
-    let user = match db::find_user_by_username(&state.db, &username).await {
-        Ok(Some(u)) => u,
         _ => return false,
     };
 
@@ -308,12 +437,10 @@ pub async fn require_admin(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    let username = match session_username(&jar) {
-        Some(u) => u,
-        None => return Redirect::to("/login").into_response(),
-    };
-    match db::find_user_by_username(&state.db, &username).await {
-        Ok(Some(u)) => {
+    match session_context(&state, &jar).await {
+        Some(ctx) => {
+            let _ = db::touch_user_session(&state.db, &ctx.session_id).await;
+            let u = ctx.user;
             if !role_has_permission(&state, &u.role, "admin.access").await {
                 return Redirect::to("/").into_response();
             }
@@ -326,6 +453,6 @@ pub async fn require_admin(
 
             next.run(request).await.into_response()
         }
-        _ => Redirect::to("/login").into_response(),        // user deleted or DB error
+        None => login_redirect_with_cookie_clear(jar), // invalid/legacy cookie or deleted user
     }
 }

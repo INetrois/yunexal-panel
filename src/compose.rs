@@ -60,7 +60,7 @@ impl ComposeService {
         // Resources
         let nano_cpus = self.cpus.map(|c| (c * 1_000_000_000.0) as i64);
         let memory = self.mem_limit.as_ref().map(|s| parse_bytes(s));
-        // Note: disk_limit is enforced via XFS project quotas after container creation,
+        // Note: disk_limit is enforced via ext4 project quotas after container creation,
         // not via Docker storage_opt (which requires devicemapper and rarely works).
 
         let host_config = HostConfig {

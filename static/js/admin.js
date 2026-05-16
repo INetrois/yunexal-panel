@@ -78,7 +78,7 @@ const SETTINGS_CATEGORY_META = {
     storage: {
         kicker: 'Storage',
         title: 'Storage & Docker Core',
-        text: 'Manage where containers live, enforce safe quota defaults, and prepare supported filesystems for new workloads.',
+        text: 'Manage where containers live and enforce ext4 + prjquota storage policy for new workloads.',
     },
     security: {
         kicker: 'Security',
@@ -262,7 +262,16 @@ function adminModalChangePw() {
         body: JSON.stringify({ current: cur, new_password: nw })
     }).then(async r => {
         const data = await r.json().catch(() => ({}));
-        if (r.ok) {
+        if (r.ok && data.ok) {
+            if (data.force_logout) {
+                show(true, 'Password updated. Redirecting to login…');
+                setTimeout(() => {
+                    fetch('/logout', { method: 'POST', credentials: 'same-origin' })
+                        .catch(() => {})
+                        .finally(() => window.location.replace(data.redirect || '/login'));
+                }, 700);
+                return;
+            }
             show(true, 'Password updated successfully.');
             setTimeout(() => {
                 document.getElementById('adminPwModal').style.display = 'none';
@@ -416,6 +425,15 @@ function submitSetPw() {
     }).then(async r => {
         const data = await r.json().catch(() => ({}));
         if (r.ok && data.ok) {
+            if (data.force_logout) {
+                show(true, 'Password updated. Redirecting to login…');
+                setTimeout(() => {
+                    fetch('/logout', { method: 'POST', credentials: 'same-origin' })
+                        .catch(() => {})
+                        .finally(() => window.location.replace(data.redirect || '/login'));
+                }, 700);
+                return;
+            }
             show(true, 'Password updated.');
             setTimeout(() => closeSetPwModal(), 1000);
         } else {
@@ -1931,7 +1949,7 @@ async function loadStorageMountsHint() {
     _adminStorLoading = true;
     _adminStorRenderTrigger();
     try {
-        const r = await fetch('/api/admin/storage/mounts', { credentials: 'same-origin' });
+        const r = await fetch('/api/admin/storage/mounts?include_all=true', { credentials: 'same-origin' });
         const d = await r.json();
         if (!d.ok) {
             _adminStorLoading = false;
@@ -2026,14 +2044,7 @@ async function changeDiskFilesystem() {
                     <code style="display:block;background:rgba(0,0,0,.35);padding:.38rem .6rem;border-radius:5px;color:#a5f3fc;word-break:break-all;">${escHtml(d.ext4_prjquota_command || '')}</code>
                 </div>`;
             }
-            let zfsInfo = '';
-            if (d.zfs_pool) {
-                zfsInfo = `<div style="margin-top:.4rem;padding:.55rem .7rem;border:1px solid rgba(96,165,250,.35);border-radius:8px;background:rgba(96,165,250,.08);color:#60a5fa;">
-                    <div style="font-weight:600;margin-bottom:.25rem;"><i class="bi bi-layers"></i> ZFS pool created</div>
-                    <div style="color:var(--muted);margin-bottom:.35rem;">Pool <code>${escHtml(d.zfs_pool)}</code> mounted at <code>${escHtml(d.zfs_mountpoint || '')}</code>.</div>
-                </div>`;
-            }
-            res.innerHTML = `<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> ${escHtml(d.message || 'Filesystem updated.')}</span>${zfsInfo}${hintHtml}`;
+            res.innerHTML = `<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> ${escHtml(d.message || 'Filesystem updated.')}</span>${hintHtml}`;
             confirmInp.value = '';
             loadStorageDiskCandidates();
             loadStorageStats();
@@ -2102,15 +2113,12 @@ function populateStorageMigrationTargets() {
     }
     const opts = ['<option value="">Select target path…</option>'];
     _adminStorMounts.forEach((m) => {
+        if (m && m.selectable === false) return;
         const path = _storageMountSuggestedPath(m);
         if (!path) return;
-        const fsLabel = m.has_zfs
-            ? 'ZFS'
-            : m.has_btrfs
-            ? 'Btrfs'
-            : m.has_ext4
+        const fsLabel = m.has_ext4
             ? (m.has_prjquota ? 'ext4+prjquota' : 'ext4 (no prjquota)')
-            : (m.has_prjquota ? 'XFS+prjquota' : (m.fs_type || 'fs'));
+            : (m.fs_type || 'fs');
         const label = `${path} • ${fsLabel}`;
         opts.push(`<option value="${escAttr(path)}">${escHtml(label)}</option>`);
     });
@@ -2414,8 +2422,14 @@ function _adminStorRenderTrigger() {
         }
     } else {
         const m = _adminStorMounts[_adminStorIdx];
+        const selectable = !m || m.selectable !== false;
         dev.textContent = m.device;
-        sub.textContent = m.has_zfs ? `ZFS • ${m.free_gib} GiB free` : m.has_btrfs ? `Btrfs • ${m.free_gib} GiB free` : m.has_ext4 ? `ext4 • ${m.free_gib} GiB free` : `${m.mount} • ${m.free_gib} GiB free`;
+        if (!selectable) {
+            const reason = m.blocked_reason || 'blocked by storage policy';
+            sub.textContent = `blocked • ${reason}`;
+        } else {
+            sub.textContent = m.has_ext4 ? `ext4 • ${m.free_gib} GiB free` : `${m.mount} • ${m.free_gib} GiB free`;
+        }
     }
 }
 
@@ -2439,23 +2453,27 @@ function _adminStorRenderPanel() {
         <div class="stor-opt-check">${defaultActive ? '<i class="bi bi-check-lg"></i>' : ''}</div>
     </div>`;
     _adminStorMounts.forEach((m, i) => {
+        const selectable = !m || m.selectable !== false;
         const isActive = i === _adminStorIdx;
-        const badge = m.has_zfs
-            ? '<span class="stor-opt-badge zfs">ZFS</span>'
-            : m.has_btrfs
-            ? '<span class="stor-opt-badge btrfs">Btrfs</span>'
-            : m.has_ext4
+        const disabledClass = selectable ? '' : ' stor-opt-disabled';
+        const clickAttr = selectable ? `onclick="adminStorSelPick(${i})"` : '';
+        const badge = m.has_ext4
             ? (m.has_prjquota ? '<span class="stor-opt-badge ext4">ext4</span>' : '<span class="stor-opt-badge nq">no prjquota</span>')
-            : (m.has_prjquota ? '<span class="stor-opt-badge pq">prjquota</span>' : '<span class="stor-opt-badge nq">no quota</span>');
-        html += `<div class="stor-opt${isActive ? ' active' : ''}" onclick="adminStorSelPick(${i})">
-            <div class="stor-opt-icon"><i class="bi bi-${m.has_zfs ? 'layers' : m.has_btrfs ? 'stack' : m.has_ext4 ? 'hdd-fill' : 'hdd'}"></i></div>
+            : `<span class="stor-opt-badge nq">${escHtml(m.fs_type || 'unsupported')}</span>`;
+        const blockedBadge = selectable ? '' : '<span class="stor-opt-badge nq">blocked</span>';
+        const row2Base = _storageMountSuggestedPath(m) || m.mount;
+        const row2Text = !selectable && m.blocked_reason
+            ? `${row2Base} • ${m.blocked_reason}`
+            : row2Base;
+        html += `<div class="stor-opt${isActive ? ' active' : ''}${disabledClass}" ${clickAttr}>
+            <div class="stor-opt-icon"><i class="bi bi-${m.has_ext4 ? 'hdd-fill' : 'hdd'}"></i></div>
             <div class="stor-opt-body">
                 <div class="stor-opt-row1">
                     <span class="stor-opt-device">${escHtml(m.device)}</span>
-                    ${(m.has_zfs || m.has_btrfs) ? '' : `<span class="stor-opt-mount">${escHtml(m.mount)}</span>`}
-                    ${badge}
+                    <span class="stor-opt-mount">${escHtml(m.mount)}</span>
+                    ${badge}${blockedBadge}
                 </div>
-                <div class="stor-opt-row2">${escHtml(_storageMountSuggestedPath(m) || m.mount)}</div>
+                <div class="stor-opt-row2">${escHtml(row2Text)}</div>
             </div>
             <div class="stor-opt-usage">
                 <div class="stor-opt-bar">${_adminStorBarFill(m.used_pct)}</div>
@@ -2521,6 +2539,18 @@ async function adminStorSelPick(idx) {
         }
         return;
     }
+
+    if (idx >= 0) {
+        const picked = _adminStorMounts[idx];
+        if (picked && picked.selectable === false) {
+            const res = document.getElementById('storage-path-result');
+            if (res) {
+                res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(picked.blocked_reason || 'Selected mount is blocked by storage policy.')}</span>`;
+            }
+            return;
+        }
+    }
+
     _adminStorIdx = idx;
     _adminStorClose();
     _adminStorRenderTrigger();

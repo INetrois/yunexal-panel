@@ -494,7 +494,7 @@
                     <!-- Default container storage path -->
                     <div style="padding-top:1rem;border-top:1px solid var(--bdr);margin-top:1rem;">
                         <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Default container storage location</p>
-                        <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Choose which mounted disk to use for new container volumes. Leave blank to use <code style="font-size:.78rem;">volumes/</code> relative to the panel working directory.</p>
+                        <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Choose which mounted disk to use for new container volumes. The list also shows mounted disks blocked by policy (read-only in selector). Leave blank to use <code style="font-size:.78rem;">volumes/</code> relative to the panel working directory.</p>
 
                         <!-- Custom disk picker -->
                         <div style="max-width:440px;position:relative;" id="admin-stor-wrap">
@@ -532,7 +532,7 @@
                         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
                             <div>
                                 <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;color:#fbbf24;">Unsafe storage override (at your own risk)</p>
-                                <p style="font-size:.825rem;color:var(--muted);margin:0;max-width:640px;">Disables storage safety validation (critical mount/root/ext4-no-prjquota checks) for custom paths and migrations. Dropdown lists still show only recommended volumes/disks. This can break the host or corrupt system data.</p>
+                                <p style="font-size:.825rem;color:var(--muted);margin:0;max-width:640px;">Disables storage safety validation (critical mount/root/ext4-no-prjquota checks) for custom paths and migrations. The dropdown shows all mounted disks; blocked entries include the reason. This can break the host or corrupt system data.</p>
                             </div>
                             <label class="yu-toggle" title="Bypass storage safety protections">
                                 <input type="checkbox" id="setting-storage-unsafe-override" {% if settings_storage_unsafe_override %}checked{% endif %}
@@ -546,7 +546,7 @@
                     <!-- Disk filesystem change -->
                     <div style="padding-top:1rem;border-top:1px solid var(--bdr);margin-top:1rem;">
                         <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Disk filesystem conversion</p>
-                        <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Formats a selected partition to <strong>ext4</strong>, <strong>xfs</strong>, <strong>btrfs</strong>, or creates a new <strong>zfs</strong> pool on it. This erases all data on that partition.</p>
+                        <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Formats a selected partition to <strong>ext4</strong>. This erases all data on that partition. After mounting, enable <strong>prjquota</strong> so per-container disk limits are enforced.</p>
 
                         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.6rem;align-items:end;">
                             <div>
@@ -559,9 +559,6 @@
                                 <label class="yu-label" style="font-size:.76rem;">New filesystem</label>
                                 <select id="storage-fs-type-select" class="yu-input" style="font-size:.82rem;">
                                     <option value="ext4">ext4</option>
-                                    <option value="xfs">xfs</option>
-                                    <option value="btrfs">btrfs</option>
-                                    <option value="zfs">zfs</option>
                                 </select>
                             </div>
                             <div>
@@ -584,106 +581,42 @@
                 <div class="yu-panel-hd" style="color:#a78bfa;font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;"><i class="bi bi-info-circle"></i> Storage Architecture</div>
                 <div class="yu-panel-bd" style="font-size:.8rem;color:var(--muted);line-height:1.7;">
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem 1.5rem;margin-bottom:1.25rem;">
-                        <div><i class="bi bi-device-ssd" style="color:#60a5fa;"></i> <strong style="color:var(--txt);">sda1</strong> — System partition (XFS)<br><span style="padding-left:1.3rem;">OS, panel binary, SQLite DB</span></div>
-                        <div><i class="bi bi-nvme" style="color:#34d399;"></i> <strong style="color:var(--txt);">nvme0n1p2</strong> — Container partition (XFS + prjquota)<br><span style="padding-left:1.3rem;">/var/lib/docker — images, volumes, overlay2</span></div>
-                        <div><i class="bi bi-layers" style="color:#f59e0b;"></i> <strong style="color:var(--txt);">Storage driver</strong>: overlay2<br><span style="padding-left:1.3rem;">XFS project quotas enforce per-container limits</span></div>
-                        <div><i class="bi bi-shield-check" style="color:#a78bfa;"></i> <strong style="color:var(--txt);">prjquota</strong> active on NVMe<br><span style="padding-left:1.3rem;">overlay2.size applies to each new container</span></div>
+                        <div><i class="bi bi-device-ssd" style="color:#60a5fa;"></i> <strong style="color:var(--txt);">System partition</strong> — host OS and panel data<br><span style="padding-left:1.3rem;">Keep system files separate from container payloads</span></div>
+                        <div><i class="bi bi-hdd-fill" style="color:#fb923c;"></i> <strong style="color:var(--txt);">Container partition</strong> — ext4 + prjquota<br><span style="padding-left:1.3rem;">/var/lib/docker and volume data with enforced disk limits</span></div>
+                        <div><i class="bi bi-box" style="color:#f59e0b;"></i> <strong style="color:var(--txt);">Storage driver</strong>: overlay2<br><span style="padding-left:1.3rem;">Per-container quota is backed by ext4 project quotas</span></div>
+                        <div><i class="bi bi-shield-check" style="color:#a78bfa;"></i> <strong style="color:var(--txt);">Required mount option</strong>: prjquota<br><span style="padding-left:1.3rem;">Without it, disk_limit policy is blocked or unsafe-only</span></div>
                     </div>
-                    <!-- XFS vs ZFS vs Btrfs vs ext4 comparison -->
+
                     <div style="border-top:1px solid var(--bdr);padding-top:.85rem;">
-                        <p style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:.6rem;">XFS vs ZFS vs Btrfs vs ext4 — Quota Method Comparison</p>
+                        <p style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:.6rem;">ext4 + prjquota policy reference</p>
                         <div style="overflow-x:auto;">
                             <table style="width:100%;border-collapse:collapse;font-size:.78rem;">
                                 <thead>
                                     <tr style="border-bottom:1px solid var(--bdr);">
-                                        <th style="text-align:left;padding:.35rem .6rem;color:var(--muted);font-weight:600;"></th>
-                                        <th style="text-align:center;padding:.35rem .6rem;color:#60a5fa;font-weight:600;"><i class="bi bi-hdd"></i> XFS (prjquota)</th>
-                                        <th style="text-align:center;padding:.35rem .6rem;color:#34d399;font-weight:600;"><i class="bi bi-layers"></i> ZFS (refquota)</th>
-                                        <th style="text-align:center;padding:.35rem .6rem;color:#fbbf24;font-weight:600;"><i class="bi bi-stack"></i> Btrfs (qgroup)</th>
-                                        <th style="text-align:center;padding:.35rem .6rem;color:#fb923c;font-weight:600;"><i class="bi bi-hdd-fill"></i> ext4 (prjquota)</th>
+                                        <th style="text-align:left;padding:.35rem .6rem;color:var(--muted);font-weight:600;">Check</th>
+                                        <th style="text-align:left;padding:.35rem .6rem;color:#fb923c;font-weight:600;"><i class="bi bi-hdd-fill"></i> Expected value</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Quota method</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Project quotas per directory tree</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">refquota per child dataset</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">qgroup limit per subvolume</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Project quotas (<code>chattr +P</code> + <code>setquota</code>)</td>
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Filesystem type</td>
+                                        <td style="padding:.3rem .6rem;">ext4 on target mount</td>
                                     </tr>
                                     <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Overhead</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Low</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#fbbf24;">Medium</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Low</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Very low</span></td>
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Mount options</td>
+                                        <td style="padding:.3rem .6rem;">Contains <code>prjquota</code> (or <code>prjjquota</code>)</td>
                                     </tr>
                                     <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Data integrity</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">None</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Checksums + self-healing</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#fbbf24;">Checksums (no self-healing)</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Journaling only</td>
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Runtime behavior</td>
+                                        <td style="padding:.3rem .6rem;">disk_limit applies via ext4 project quota IDs</td>
                                     </tr>
                                     <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Snapshots</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">No</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Yes (<code>zfs snapshot</code>)</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Yes (<code>btrfs subvolume snapshot</code>)</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">No (requires LVM)</td>
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Provisioning</td>
+                                        <td style="padding:.3rem .6rem;">Use panel disk formatter (ext4 only), then remount with <code>prjquota</code></td>
                                     </tr>
                                     <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Compression</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">No</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Yes (lz4 / zstd)</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Yes (zstd / lzo / zlib)</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">No</td>
-                                    </tr>
-                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Setup</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Mount with <code>prjquota</code> option</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><code>zfs create</code> parent dataset</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Format as Btrfs; panel auto-enables quotas</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Mount with <code>prjquota</code>; install <code>quota</code> package</td>
-                                    </tr>
-                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Best for</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">High performance / existing NVMe</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Data integrity + snapshots</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Linux-native CoW + snapshots</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Legacy systems / maximum compatibility</td>
-                                    </tr>
-                                    <!-- Hardware recommendations -->
-                                    <tr style="border-bottom:1px solid var(--bdr);">
-                                        <td colspan="5" style="padding:.45rem .6rem;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:rgba(255,255,255,.02);">Hardware Recommendations</td>
-                                    </tr>
-                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Min RAM</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Any (512 MiB+)</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#fbbf24;">8 GiB+</span> <span style="color:var(--muted);font-size:.7rem;">(ARC cache)</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Any (512 MiB+)</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Any (256 MiB+)</td>
-                                    </tr>
-                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Storage type</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">NVMe / SSD</span> preferred</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">SSD / NVMe</span> + optional L2ARC</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">SSD or HDD</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Any (HDD, SSD, NVMe)</td>
-                                    </tr>
-                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">ECC RAM</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Not required</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#fbbf24;">Recommended</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Not required</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Not required</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Ideal workload</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Game servers, DBs, high IOPS</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Storage servers, critical data</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Dev servers, general-purpose</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Any workload, max compatibility</td>
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Operational note</td>
+                                        <td style="padding:.3rem .6rem;">Use storage migration to move existing server data onto ext4 + prjquota targets</td>
                                     </tr>
                                 </tbody>
                             </table>

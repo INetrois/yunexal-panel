@@ -99,6 +99,12 @@ pub async fn delete_user(pool: &Pool<Sqlite>, id: i64) -> Result<()> {
         .await
         .context("Failed to delete server_user_permissions for user")?;
 
+    sqlx::query("DELETE FROM user_sessions WHERE user_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("Failed to delete user_sessions for user")?;
+
     sqlx::query("DELETE FROM users WHERE id = ?")
         .bind(id)
         .execute(pool)

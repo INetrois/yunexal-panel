@@ -479,7 +479,7 @@ fbInit();
 // ── Eager initial load (fixes SPA navigation delay) ───────────────────────────
 // hx-trigger="load" only fires after htmx.process() which runs *after* all scripts.
 // We trigger the first listing immediately from JS instead.
-(function fbEagerLoad() {
+function fbEagerLoad() {
     const fb = document.getElementById('file-browser');
     if (!fb) return;
     const sid = getServerId();
@@ -501,7 +501,7 @@ fbInit();
         target: '#file-browser',
         swap: 'outerHTML',
     });
-})();
+}
 
 // ── Auto-refresh: JSON diff (dashboard-style, no flicker) ────────────────────
 
@@ -630,12 +630,38 @@ async function fbPollJson() {
     fbUpdateSelBar();
 }
 
-const _fbRefreshTimer = setInterval(fbPollJson, 5000);
+let _fbRefreshTimer = null;
+
+function fbStartPolling() {
+    if (_fbRefreshTimer) clearInterval(_fbRefreshTimer);
+    _fbRefreshTimer = setInterval(fbPollJson, 5000);
+}
+
+function fbStopPolling() {
+    if (_fbRefreshTimer) {
+        clearInterval(_fbRefreshTimer);
+        _fbRefreshTimer = null;
+    }
+}
+
+function fbOnPageShown(path) {
+    const p = String(path || window.location.pathname || '');
+    if (!/^\/servers\/\d+\/files$/.test(p)) return;
+    fbEagerLoad();
+    fbStartPolling();
+    window._yuPageCleanup = fbStopPolling;
+}
+
+fbOnPageShown(window.location.pathname);
+
+window.addEventListener('yu:page-shown', (ev) => {
+    const path = String(ev?.detail?.path || '');
+    fbOnPageShown(path);
+});
 
 // ── Cleanup (SPA navigation teardown) ────────────────────────────────────────
 window._yuPageCleanup = function () {
-    clearInterval(_fbRefreshTimer);
-    window._yuPageCleanup = undefined;
+    fbStopPolling();
 };
 
 // ── Selection bar ──────────────────────────────────────────────────────────────────────

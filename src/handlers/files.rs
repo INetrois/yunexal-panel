@@ -844,20 +844,52 @@ fn resolve_path(
     rel: &str,
 ) -> Option<std::path::PathBuf> {
     let rel = rel.trim_start_matches('/');
+
+    // Canonical root gives us a stable confinement boundary for symlink checks.
+    let volume_root = volume_path
+        .canonicalize()
+        .unwrap_or_else(|_| volume_path.to_path_buf());
+
     if rel.is_empty() {
         return Some(volume_path.to_path_buf());
     }
-    let joined = volume_path.join(rel);
-    // Normalize: resolve `.` and `..` without touching the filesystem.
-    let mut normalized = std::path::PathBuf::new();
-    for component in joined.components() {
+
+    // Normalize `.` / `..` as relative components only.
+    let mut normalized_rel = std::path::PathBuf::new();
+    for component in std::path::Path::new(rel).components() {
         match component {
-            std::path::Component::ParentDir => { normalized.pop(); },
-            std::path::Component::CurDir    => {},
-            c => normalized.push(c),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized_rel.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::Normal(c) => normalized_rel.push(c),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return None,
         }
     }
-    if normalized.starts_with(volume_path) { Some(normalized) } else { None }
+
+    let normalized = volume_path.join(&normalized_rel);
+    if !normalized.starts_with(volume_path) {
+        return None;
+    }
+
+    // Symlink-aware guard: if target exists, verify its canonical path; otherwise
+    // verify the canonical parent directory where the target would be created.
+    let guard_target = if normalized.exists() {
+        normalized.clone()
+    } else {
+        normalized.parent()?.to_path_buf()
+    };
+
+    let guard_canon = guard_target
+        .canonicalize()
+        .unwrap_or(guard_target);
+    if !guard_canon.starts_with(&volume_root) {
+        return None;
+    }
+
+    Some(normalized)
 }
 
 // ── DELETE a file or directory ────────────────────────────────────────────────
@@ -1737,4 +1769,49 @@ pub async fn move_file(
             axum::http::HeaderValue::from_static("file-created"),
         )]),
     ).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_path;
+
+    fn temp_path(prefix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
+
+    #[test]
+    fn resolve_path_blocks_parent_traversal() {
+        let root = temp_path("yunexal-files-test");
+        let volume = root.join("volume");
+        std::fs::create_dir_all(&volume).expect("create test volume");
+
+        let resolved = resolve_path(&volume, "../../etc/passwd");
+        assert!(resolved.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_path_blocks_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_path("yunexal-files-test-symlink");
+        let volume = root.join("volume");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&volume).expect("create volume");
+        std::fs::create_dir_all(&outside).expect("create outside dir");
+
+        let link_path = volume.join("escape");
+        symlink(&outside, &link_path).expect("create symlink");
+
+        let resolved = resolve_path(&volume, "escape/secret.txt");
+        assert!(resolved.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -86,7 +86,9 @@ function updateYaml() {
     }
     saveFormState();
     // Keep port select in sync
-    _refreshSrvPortSelect();
+    if (typeof window._refreshSrvPortSelect === 'function') {
+        window._refreshSrvPortSelect();
+    }
 }
 
 function copyYaml(btn) {
@@ -250,7 +252,7 @@ function _setCreateButtonsBlocked(blocked) {
 
 function _guardQuotaBeforeCreate() {
     if (!_quotaCreationBlocked) return true;
-    const banner = document.getElementById('xfs-warn-banner');
+    const banner = document.getElementById('quota-warn-banner');
     if (banner) {
         banner.style.display = '';
         banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -259,7 +261,7 @@ function _guardQuotaBeforeCreate() {
 }
 
 function renderQuotaPreflightBanner(d) {
-    const banner = document.getElementById('xfs-warn-banner');
+    const banner = document.getElementById('quota-warn-banner');
     const text = document.getElementById('quota-warn-text');
     if (!banner || !text) return;
 
@@ -280,7 +282,7 @@ function renderQuotaPreflightBanner(d) {
         return;
     }
 
-    let msg = 'No quota-capable filesystem detected (XFS/ext4 with prjquota, ZFS, or Btrfs). Server creation is blocked until quota support is configured.';
+    let msg = 'No quota-capable filesystem detected (ext4 with prjquota). Server creation is blocked until quota support is configured.';
     if (d && d.ext4_without_prjquota) {
         msg = 'ext4 detected without prjquota/prjjquota. Server creation is blocked. Enable prjquota in mount options and remount before creating containers.';
     }
@@ -297,11 +299,7 @@ async function loadQuotaPreflight() {
         const d = await fetch('/api/quota-check').then(r => r.json());
         renderQuotaPreflightBanner(d);
     } catch {
-        // Backward-compatible fallback for older server routes.
-        fetch('/api/xfs-check')
-            .then(r => r.json())
-            .then(renderQuotaPreflightBanner)
-            .catch(() => renderQuotaPreflightBanner({ ok: false }));
+        renderQuotaPreflightBanner({ ok: false });
     }
 }
 
@@ -410,17 +408,11 @@ function _storRenderPanel() {
         const icon    = _storIconClass(m);
         const badge = m.is_default
             ? ''
-            : m.has_zfs
-            ? `<span class="stor-opt-badge zfs">zfs</span>`
-            : m.has_btrfs
-            ? `<span class="stor-opt-badge btrfs">btrfs</span>`
             : m.has_ext4
             ? (m.has_prjquota
                 ? `<span class="stor-opt-badge ext4">ext4+prjquota</span>`
                 : `<span class="stor-opt-badge nq">ext4 no quota</span>`)
-            : (m.has_prjquota
-                ? `<span class="stor-opt-badge pq">xfs+prjquota</span>`
-                : `<span class="stor-opt-badge nq">no quota</span>`);
+            : `<span class="stor-opt-badge nq">no quota</span>`;
         const row2    = m.path2 ? `<div class="stor-opt-row2">${esc(m.path2)}</div>` : '';
         const barFill = m.total > 0
             ? `<div class="stor-opt-usage">
@@ -448,14 +440,8 @@ function _storRenderNote(m) {
     const note = document.getElementById('storage-path-note');
     if (!note) return;
     if (!m || m.is_default) { note.innerHTML = ''; return; }
-    if (m.has_zfs) {
-        note.innerHTML = `<span style="color:#60a5fa;"><i class="bi bi-check-circle"></i> ZFS dataset <code style="font-size:.78em;">${esc(m.device)}</code> supports native quotas — disk limits enforced.</span>`;
-    } else if (m.has_btrfs) {
-        note.innerHTML = `<span style="color:#fbbf24;"><i class="bi bi-check-circle"></i> Btrfs on <code style="font-size:.78em;">${esc(m.device)}</code> supports qgroup quotas — disk limits enforced.</span>`;
-    } else if (m.has_ext4 && m.has_prjquota) {
+    if (m.has_ext4 && m.has_prjquota) {
         note.innerHTML = `<span style="color:#fb923c;"><i class="bi bi-check-circle"></i> ext4 prjquota active on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits enforced.</span>`;
-    } else if (m.has_prjquota) {
-        note.innerHTML = `<span style="color:#34d399;"><i class="bi bi-check-circle"></i> XFS prjquota active on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits enforced.</span>`;
     } else if (m.has_ext4) {
         if (_storUnsafeOverride) {
             note.innerHTML = `<span style="color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> ext4 without prjquota on <code style="font-size:.78em;">${esc(m.device)}</code> — allowed only because unsafe override is enabled.</span>`;
@@ -513,7 +499,7 @@ document.addEventListener('click', e => {
         _storMounts = [{
             device: 'Default', mount: '', sub: hint || 'volumes/ in panel directory',
             path2: '', value: '', is_default: true, has_prjquota: false,
-            has_zfs: false, has_btrfs: false, has_ext4: false,
+            has_ext4: false,
             free: '--', total: 0, pct: 0,
         }];
         _storIdx = 0;
@@ -532,7 +518,7 @@ document.addEventListener('click', e => {
                 device: 'Default', mount: '',
                 sub: cp ? `panel default → ${cp}` : 'panel default  (volumes/)',
                 path2: '', value: '', is_default: true, has_prjquota: false,
-                has_zfs: false, has_btrfs: false, has_ext4: false,
+                has_ext4: false,
                 free: '--', total: 0, pct: 0,
             }];
             (d.mounts || []).forEach(m => {
@@ -545,8 +531,6 @@ document.addEventListener('click', e => {
                     value:        sp,
                     is_default:   false,
                     has_prjquota: !!m.has_prjquota,
-                    has_zfs:      !!m.has_zfs,
-                    has_btrfs:    !!m.has_btrfs,
                     has_ext4:     !!m.has_ext4,
                     free:         `${m.free_gib} GiB`,
                     total:        parseFloat(m.total_gib) || 0,

@@ -133,7 +133,15 @@ async fn validate_container_storage_base(path: &std::path::Path) -> Result<(), S
         ));
     }
 
-    if fs_type == "ext4" && !(opts.contains("prjquota") || opts.contains("prjjquota")) {
+    if fs_type != "ext4" {
+        return Err(format!(
+            "Only ext4 with prjquota is supported for container storage (mount '{}' uses '{}')",
+            mount_point,
+            fs_type
+        ));
+    }
+
+    if !(opts.contains("prjquota") || opts.contains("prjjquota")) {
         return Err(format!(
             "ext4 without prjquota is forbidden for container storage (mount: '{}')",
             mount_point
@@ -386,29 +394,7 @@ pub async fn create_server(
 
     let volume_host_path = volumes_base.join(&volume_key);
 
-    // For ZFS mounts: create a child dataset (which creates its own mountpoint).
-    // For Btrfs mounts: create a subvolume (apply_btrfs_quota handles creation).
-    // For all others: create the directory normally.
-    if docker::zfs_dataset_for(&volumes_base).is_some() {
-        // Pre-create the child ZFS dataset so the bind mount path exists before container launch.
-        // Quota/refquota is set later once db_id is known.
-        if let Err(e) = tokio::process::Command::new("zfs")
-            .args(["create", &format!("{}/{}", docker::zfs_dataset_for(&volumes_base).unwrap(), &volume_key)])
-            .status()
-            .await
-        {
-            return format!("Failed to create ZFS dataset for volume: {}", e).into_response();
-        }
-    } else if docker::btrfs_mount_for(&volumes_base).is_some() {
-        // Pre-create a Btrfs subvolume; quota will be applied after db_id is known.
-        if let Err(e) = tokio::process::Command::new("btrfs")
-            .args(["subvolume", "create", &volume_host_path.to_string_lossy().to_string()])
-            .status()
-            .await
-        {
-            return format!("Failed to create Btrfs subvolume for volume: {}", e).into_response();
-        }
-    } else if let Err(e) = tokio::fs::create_dir_all(&volume_host_path).await {
+    if let Err(e) = tokio::fs::create_dir_all(&volume_host_path).await {
         let fix_cmd = if e.raw_os_error() == Some(13) {
             // EACCES — either the volumes dir doesn't exist, its parent isn't traversable
             // (e.g. /var/lib/docker is 710), or it's not owned by the panel user.
@@ -431,20 +417,17 @@ pub async fn create_server(
         }).into_response();
     }
 
-    let storage_has_quota = docker::xfs_pquota_mount(&volumes_base).is_some()
-        || docker::zfs_dataset_for(&volumes_base).is_some()
-        || docker::btrfs_mount_for(&volumes_base).is_some()
-        || docker::ext4_pquota_mount(&volumes_base).is_some();
+    let storage_has_quota = docker::ext4_pquota_mount(&volumes_base).is_some();
 
     if !storage_has_quota {
         if service.disk_limit.is_some() && !storage_unsafe_override {
             err!(format!(
-                "Storage path '{}' has no quota support. Configure XFS/ext4 with prjquota, ZFS, or Btrfs before creating containers with disk_limit.",
+                "Storage path '{}' has no quota support. Configure ext4 with prjquota before creating containers with disk_limit.",
                 volumes_base.display()
             ));
         }
         warn!(
-            "Volumes directory '{}' is not on XFS+prjquota, ext4+prjquota, ZFS, or Btrfs — disk_limit will have no effect",
+            "Volumes directory '{}' is not on ext4+prjquota — disk_limit will have no effect",
             volume_host_path.display()
         );
     }
@@ -549,30 +532,16 @@ pub async fn create_server(
     };
 
     if db_id > 0 {
-        // ── Disk quota (XFS / ZFS / Btrfs) ───────────────────────────────────
+        // ── Disk quota (ext4 + prjquota) ─────────────────────────────────────
         if let Some(ref limit_str) = service.disk_limit {
             if let Some(limit_bytes) = docker::parse_disk_limit(limit_str) {
-                if docker::xfs_pquota_mount(&volume_host_path).is_some() {
-                    if let Err(e) = docker::apply_xfs_quota(&volume_host_path, db_id as u32, limit_bytes).await {
-                        warn!("Server #{}: failed to apply XFS quota (disk_limit='{}'): {}", db_id, limit_str, e);
-                    }
-                } else if docker::zfs_dataset_for(&volume_host_path).is_some() {
-                    // Dataset was pre-created; set refquota only (apply_zfs_quota handles "already exists")
-                    if let Err(e) = docker::apply_zfs_quota(&volume_host_path, limit_bytes).await {
-                        warn!("Server #{}: failed to apply ZFS quota (disk_limit='{}'): {}", db_id, limit_str, e);
-                    }
-                } else if docker::btrfs_mount_for(&volume_host_path).is_some() {
-                    // Subvolume was pre-created; apply_btrfs_quota sets the qgroup limit.
-                    if let Err(e) = docker::apply_btrfs_quota(&volume_host_path, limit_bytes).await {
-                        warn!("Server #{}: failed to apply Btrfs quota (disk_limit='{}'): {}", db_id, limit_str, e);
-                    }
-                } else if docker::ext4_pquota_mount(&volume_host_path).is_some() {
+                if docker::ext4_pquota_mount(&volume_host_path).is_some() {
                     if let Err(e) = docker::apply_ext4_quota(&volume_host_path, db_id as u32, limit_bytes).await {
                         warn!("Server #{}: failed to apply ext4 quota (disk_limit='{}'): {}", db_id, limit_str, e);
                     }
                 } else {
                     warn!(
-                        "Server #{}: disk_limit='{}' specified but the volumes directory is not on XFS+prjquota, ZFS, Btrfs, or ext4+prjquota — quota will not be enforced",
+                        "Server #{}: disk_limit='{}' specified but the volumes directory is not on ext4+prjquota — quota will not be enforced",
                         db_id, limit_str
                     );
                 }
@@ -782,21 +751,12 @@ pub async fn api_local_images(State(state): State<AppState>) -> impl IntoRespons
     Json(serde_json::json!({ "tags": tags }))
 }
 
-/// Returns whether any host filesystem supports quota enforcement for containers.
-///
-/// Supported capabilities:
-/// - XFS with pquota/prjquota
-/// - ext4 with prjquota/prjjquota
-/// - ZFS (native dataset quotas)
-/// - Btrfs (native qgroup quotas)
+/// Returns whether host storage supports ext4 project quotas for containers.
 pub async fn api_quota_check(State(state): State<AppState>) -> impl IntoResponse {
     let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
     let unsafe_override = db::get_panel_setting_bool(&state.db, "storage_unsafe_override").await;
 
-    let mut has_xfs_prjquota = false;
     let mut has_ext4_prjquota = false;
-    let mut has_zfs = false;
-    let mut has_btrfs = false;
     let mut ext4_without_prjquota = false;
 
     for line in mounts.lines() {
@@ -806,34 +766,20 @@ pub async fn api_quota_check(State(state): State<AppState>) -> impl IntoResponse
         let fstype = parts.next().unwrap_or("");
         let opts   = parts.next().unwrap_or("");
 
-        if fstype == "xfs" && dev.starts_with("/dev/") {
-            has_xfs_prjquota = opts.split(',').any(|o| o == "pquota" || o == "prjquota");
-        } else if fstype == "ext4" && dev.starts_with("/dev/") {
+        if fstype == "ext4" && dev.starts_with("/dev/") {
             let has_prj = opts.split(',').any(|o| o == "prjquota" || o == "prjjquota");
             has_ext4_prjquota |= has_prj;
             ext4_without_prjquota |= !has_prj;
-        } else if fstype == "zfs" {
-            has_zfs = true;
-        } else if fstype == "btrfs" && dev.starts_with("/dev/") {
-            has_btrfs = true;
         }
     }
 
-    let has_quota = has_xfs_prjquota || has_ext4_prjquota || has_zfs || has_btrfs;
+    let has_quota = has_ext4_prjquota;
     let ok = if unsafe_override { true } else { has_quota };
     Json(serde_json::json!({
         "ok": ok,
         "has_quota": has_quota,
-        "has_xfs_prjquota": has_xfs_prjquota,
         "has_ext4_prjquota": has_ext4_prjquota,
-        "has_zfs": has_zfs,
-        "has_btrfs": has_btrfs,
         "ext4_without_prjquota": ext4_without_prjquota,
         "unsafe_override": unsafe_override,
     }))
-}
-
-/// Backward-compatible alias used by older frontend code.
-pub async fn api_xfs_check(State(state): State<AppState>) -> impl IntoResponse {
-    api_quota_check(State(state)).await
 }

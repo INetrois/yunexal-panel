@@ -93,6 +93,29 @@
         _initRouteHashAnnotation();
     }
 
+    // ── Global fetch auth expiry guard ─────────────────────────────────────
+    // If backend redirects an API call to /login (expired/invalid session),
+    // promote that redirect to a top-level navigation for this tab.
+    if (typeof window.fetch === 'function') {
+        const _origFetch = window.fetch.bind(window);
+        window.fetch = async function(input, init) {
+            const res = await _origFetch(input, init);
+            try {
+                if (res && res.redirected) {
+                    const resUrl = new URL(res.url, window.location.origin);
+                    if (
+                        resUrl.origin === window.location.origin
+                        && resUrl.pathname === '/login'
+                        && window.location.pathname !== '/login'
+                    ) {
+                        window.location.replace('/login');
+                    }
+                }
+            } catch (_) {}
+            return res;
+        };
+    }
+
     // ── Global confirm dialog ─────────────────────────────────────────────────
     // Inject once into body (available on every page since footer.js is universal)
     const _cm = document.createElement('div');

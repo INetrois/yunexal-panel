@@ -7,7 +7,7 @@ use axum::{
 use axum_extra::extract::cookie::{Cookie, PrivateCookieJar, SameSite};
 use time::Duration as TimeDuration;
 use std::net::SocketAddr;
-use tracing::warn;
+use tracing::{error, warn};
 use crate::{auth, db, password};
 use crate::state::AppState;
 use super::templates::{render, LoginForm, LoginTemplate};
@@ -46,13 +46,43 @@ pub async fn login_submit(
         .unwrap_or(false);
 
     if ok {
-        let session_username = found_user
-            .as_ref()
-            .map(|u| u.username.clone())
-            .unwrap_or_else(|| form.username.trim().to_string());
+        let user = match found_user {
+            Some(u) => u,
+            None => {
+                return render(LoginTemplate {
+                    error: Some("Invalid username or password.".to_string()),
+                })
+                .into_response();
+            }
+        };
+
+        let session_username = user.username.clone();
+        let session_id = auth::generate_session_id();
+
+        if let Err(e) = db::create_user_session(
+            &state.db,
+            &session_id,
+            user.id,
+            &session_username,
+            &ip,
+            &auth::user_agent(&headers),
+        )
+        .await
+        {
+            error!("login_submit: failed to create session: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                render(LoginTemplate {
+                    error: Some("Cannot create login session. Please try again.".to_string()),
+                }),
+            )
+                .into_response();
+        }
+
+        let session_cookie_value = auth::make_session_cookie_value(&session_username, &user.password_hash, &session_id);
         state.clear_login_attempts(&ip);
         let _ = db::audit_log(&state.db, &session_username, "auth.login", "", "", &ip, &auth::user_agent(&headers)).await;
-        let mut cookie = Cookie::new(auth::SESSION_COOKIE, session_username);
+        let mut cookie = Cookie::new(auth::SESSION_COOKIE, session_cookie_value);
         cookie.set_http_only(true);
         cookie.set_same_site(SameSite::Strict);
         cookie.set_secure(true);
@@ -81,6 +111,9 @@ pub async fn logout(
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
     let actor = auth::session_username(&jar).unwrap_or_default();
+    if let Some(sid) = auth::session_id(&jar) {
+        let _ = db::revoke_session_by_id(&state.db, &sid).await;
+    }
     let _ = db::audit_log(&state.db, &actor, "auth.logout", "", "", &ip, &auth::user_agent(&headers)).await;
     let updated_jar = jar.remove(Cookie::from(auth::SESSION_COOKIE));
     (updated_jar, Redirect::to("/login")).into_response()
@@ -142,7 +175,29 @@ pub async fn api_service_login(
             .into_response();
     }
 
-    let mut cookie = Cookie::new(auth::SESSION_COOKIE, username.clone());
+    let session_id = auth::generate_session_id();
+    if let Err(e) = db::create_user_session(
+        &state.db,
+        &session_id,
+        user.id,
+        &username,
+        &ip,
+        &auth::user_agent(&headers),
+    )
+    .await
+    {
+        error!("api_service_login: failed to create session: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Cannot create session"})),
+        )
+            .into_response();
+    }
+
+    let mut cookie = Cookie::new(
+        auth::SESSION_COOKIE,
+        auth::make_session_cookie_value(&username, &user.password_hash, &session_id),
+    );
     cookie.set_http_only(true);
     cookie.set_same_site(SameSite::Strict);
     cookie.set_secure(true);

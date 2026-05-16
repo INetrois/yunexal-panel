@@ -1,6 +1,6 @@
 [package]
 name = "yunexal-panel"
-version = "0.0.0-snapshot-26m04d19a"
+version = "0.0.0-snapshot-26m05d03a"
 edition = "2021"
 default-run = "yunexal-panel"
 
@@ -17,7 +17,7 @@ tokio = { version = "1.52.1", features = ["full"] }
 axum = { version = "0.8.9", features = ["ws", "multipart"] }
 sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio", "tls-native-tls"] }
 bollard = "0.20.2"
-askama = "0.15.6"
+askama = "0.16.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.18"    
@@ -38,7 +38,7 @@ tower-http = { version = "0.6.8", features = ["fs"] }
 argon2 = { version = "0.5.3", features = ["std"] }
 rust-embed = { version = "8.11.0", features = ["include-exclude"] }
 axum-embed = "0.1.0"
-reqwest = { version = "0.13.2", features = ["json"] }
+reqwest = { version = "0.13.3", features = ["json"] }
 flate2 = "1.1.9"
 tar = "0.4.45"
-rpassword = "7.4.0"
+rpassword = "7.5.1"

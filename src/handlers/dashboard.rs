@@ -1,5 +1,6 @@
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Extension, Json,
 };
@@ -7,6 +8,7 @@ use axum_extra::extract::cookie::PrivateCookieJar;
 use serde_json::json;
 use crate::{auth, db, docker};
 use crate::state::AppState;
+use std::net::SocketAddr;
 use tracing::error;
 use super::CspNonce;
 use super::templates::{render, IndexTemplate, NewServerTemplate, ServerListTemplate};
@@ -135,6 +137,132 @@ pub async fn api_dashboard_json(
         "status": c.status,
     })).collect();
     Json(json!({"ok": true, "is_admin": is_admin, "containers": items})).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct LogoutDeviceBody {
+    pub session_id: String,
+}
+
+/// GET /api/user/devices
+/// Returns active authenticated device sessions for the current user.
+pub async fn api_user_devices(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+) -> impl IntoResponse {
+    let user_id = match auth::session_user_id(&state, &jar).await {
+        Some(v) => v,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"ok": false, "error": "Not authenticated"})),
+            )
+                .into_response();
+        }
+    };
+
+    let current_session_id = auth::session_id(&jar).unwrap_or_default();
+    let sessions = match db::list_user_sessions(&state.db, user_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            error!("api_user_devices: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": "Failed to load devices"})),
+            )
+                .into_response();
+        }
+    };
+
+    let devices: Vec<serde_json::Value> = sessions
+        .into_iter()
+        .map(|s| {
+            json!({
+                "session_id": s.session_id,
+                "ip": s.ip,
+                "user_agent": s.user_agent,
+                "created_at": s.created_at,
+                "last_seen_at": s.last_seen_at,
+                "is_current": s.session_id == current_session_id,
+            })
+        })
+        .collect();
+
+    Json(json!({
+        "ok": true,
+        "current_session_id": current_session_id,
+        "devices": devices,
+    }))
+    .into_response()
+}
+
+/// POST /api/user/devices/logout
+/// Revokes one active session for the current user, excluding current device.
+pub async fn api_user_logout_device(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    addr: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<LogoutDeviceBody>,
+) -> impl IntoResponse {
+    let user_id = match auth::session_user_id(&state, &jar).await {
+        Some(v) => v,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"ok": false, "error": "Not authenticated"})),
+            )
+                .into_response();
+        }
+    };
+
+    let session_id = body.session_id.trim();
+    if session_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "session_id is required"})),
+        )
+            .into_response();
+    }
+
+    if auth::session_id(&jar).as_deref() == Some(session_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "Cannot logout current device"})),
+        )
+            .into_response();
+    }
+
+    match db::revoke_user_session(&state.db, user_id, session_id).await {
+        Ok(0) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "Device session not found"})),
+        )
+            .into_response(),
+        Ok(_) => {
+            let actor = auth::session_username(&jar).unwrap_or_default();
+            let ip = auth::client_ip(&headers, addr);
+            let _ = db::audit_log(
+                &state.db,
+                &actor,
+                "auth.device_logout",
+                session_id,
+                "settings.devices",
+                &ip,
+                &auth::user_agent(&headers),
+            )
+            .await;
+            Json(json!({"ok": true})).into_response()
+        }
+        Err(e) => {
+            error!("api_user_logout_device: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": "Failed to revoke device session"})),
+            )
+                .into_response()
+        }
+    }
 }
 
 pub async fn new_server_page(

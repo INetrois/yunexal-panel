@@ -229,16 +229,29 @@ function closeSidebar() {
             const currentMain = _pageCache.get(_activePath)
                 || Array.from(layout.querySelectorAll('.yu-main')).find(m => m.style.display !== 'none')
                 || document.querySelector('.yu-main');
-            if (currentMain) _detachMain(currentMain);
 
             let targetMain = _pageCache.get(target);
+            let loadedDoc = null;
             if (!targetMain) {
                 const loaded = await _fetchPage(target);
                 targetMain = loaded.nextMain;
-                _attachMain(targetMain);
-                await _runPageBodyScripts(loaded.doc);
-            } else {
-                _attachMain(targetMain);
+                loadedDoc = loaded.doc;
+            }
+
+            // Tear down previous page side effects before swapping views.
+            if (typeof window._yuPageCleanup === 'function') {
+                try { window._yuPageCleanup(); }
+                catch (cleanupErr) { console.warn('Sidebar SPA cleanup failed:', cleanupErr); }
+                window._yuPageCleanup = undefined;
+            }
+
+            if (currentMain && currentMain !== targetMain) {
+                _detachMain(currentMain);
+            }
+            _attachMain(targetMain);
+
+            if (loadedDoc) {
+                await _runPageBodyScripts(loadedDoc);
             }
 
             const title = _pageTitles.get(target);
