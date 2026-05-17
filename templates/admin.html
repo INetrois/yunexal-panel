@@ -4,9 +4,9 @@
     {% include "_head_common.html" %}
     <title>Admin — Yunexal Panel</title>
     <link href="/static/css/base.css?v=2" rel="stylesheet">
-    <link href="/static/css/admin.css?v=6" rel="stylesheet">
+    <link href="/static/css/admin.css?v=8" rel="stylesheet">
 </head>
-<body>
+<body data-auth-role="{{ auth_role }}" data-auth-role-color="{{ auth_role_color }}">
     {% include "_admin_header.html" %}
 
     <div class="yu-shell">
@@ -242,12 +242,84 @@
                 <p style="font-size:.825rem;color:var(--muted);margin:0;">Manage panel accounts and passwords</p>
             </div>
             <div class="row g-3">
+                <!-- Users table -->
+                <div class="col-md-8 order-2 order-md-1">
+                    <div class="yu-card">
+                        <div class="yu-card-hd">
+                            <span><i class="bi bi-people me-2 text-muted"></i>All Users</span>
+                            <span style="font-size:.75rem;color:var(--muted);" id="user-count-lbl">{{ users_count }} total</span>
+                        </div>
+                        <div class="search-wrap">
+                            <div class="yu-search-bar">
+                                <i class="bi bi-search"></i>
+                                <input id="users-search" type="text" placeholder="Search by nickname, uid, username or role…" oninput="filterTableRows(this.value, 'users-tbody')">
+                            </div>
+                        </div>
+                        <div style="overflow-x:auto;">
+                            <table class="yu-table" id="users-table">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>UID</th>
+                                        <th>Nickname</th>
+                                        <th>Username</th>
+                                        <th>Role</th>
+                                        <th>Created</th>
+                                        <th style="text-align:right;">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="users-tbody">
+                                    {% for u in users %}
+                                    <tr id="user-row-{{ u.id }}" data-user-display="{{ u.nickname }} {{ u.uid }}">
+                                        <td class="mono">{{ u.id }}</td>
+                                        <td class="mono">{{ u.uid }}</td>
+                                        <td style="font-weight:600;">{{ u.nickname }}</td>
+                                        <td style="font-weight:600;">{{ u.username }}</td>
+                                        <td>
+                                            {% if u.role == "root" %}
+                                            <span class="pill" style="background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.25);"><span class="pill-dot"></span>root</span>
+                                            {% else %}
+                                            <select class="yu-input yu-user-role-select"
+                                                    data-user-id="{{ u.id }}"
+                                                    data-user-display="{{ u.nickname }} {{ u.uid }}"
+                                                    data-current-role="{{ u.role }}"
+                                                    onchange="setUserRole(this)"
+                                                    style="min-width:130px;padding:.3rem .55rem;font-size:.78rem;cursor:pointer;">
+                                                <option value="{{ u.role }}">{{ u.role }}</option>
+                                            </select>
+                                            {% endif %}
+                                        </td>
+                                        <td style="font-size:.8rem;color:var(--muted);">{{ u.created_at }}</td>
+                                        <td style="text-align:right;">
+                                            <div style="display:flex;gap:.4rem;justify-content:flex-end;">
+                                                <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="openSetPwModal({{ u.id }})"><i class="bi bi-key"></i></button>
+                                                {% if u.role != "root" %}
+                                                <button class="btn-yu btn-danger-yu btn-sm-yu" onclick="deleteUser({{ u.id }}, this)"><i class="bi bi-trash"></i></button>
+                                                {% endif %}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
                 <!-- Create user form -->
-                <div class="col-md-4">
+                <div class="col-md-4 order-1 order-md-2 users-side-col">
                     <div class="yu-card">
                         <div class="yu-card-hd"><i class="bi bi-person-plus me-2 text-muted"></i>Create User</div>
                         <div class="yu-card-bd">
                             <div id="cu-alert" style="display:none;"></div>
+                            <div class="yu-form-group">
+                                <label class="yu-label">#UID</label>
+                                <input type="text" class="yu-input" id="cu-uid" placeholder="#g7k2n9xq" minlength="9" maxlength="16" autocomplete="off">
+                                <div style="font-size:.72rem;color:var(--muted);margin-top:.35rem;">Auto-generated. UID length: 9-16 characters.</div>
+                            </div>
+                            <div class="yu-form-group">
+                                <label class="yu-label">Nickname</label>
+                                <input type="text" class="yu-input" id="cu-nickname" placeholder="PlayerOne" maxlength="24" autocomplete="off">
+                            </div>
                             <div class="yu-form-group">
                                 <label class="yu-label">Username</label>
                                 <input type="text" class="yu-input" id="cu-username" placeholder="john_doe" autocomplete="off">
@@ -259,343 +331,87 @@
                             <div class="yu-form-group">
                                 <label class="yu-label">Role</label>
                                 <select class="yu-input" id="cu-role" style="cursor:pointer;">
-                                    <option value="user">User</option>
-                                    <option value="admin">Admin</option>
+                                    <option value="user">user</option>
                                 </select>
+                                <div id="cu-role-hint" style="font-size:.72rem;color:var(--muted);margin-top:.35rem;">Roles are loaded from Roles tab.</div>
                             </div>
                             <button class="btn-yu btn-primary-yu" onclick="createUser()"><i class="bi bi-person-plus"></i> Create</button>
                         </div>
                     </div>
                 </div>
-                <!-- Users table -->
-                <div class="col-md-8">
-                    <div class="yu-card">
-                        <div class="yu-card-hd">
-                            <span><i class="bi bi-people me-2 text-muted"></i>All Users</span>
-                            <span style="font-size:.75rem;color:var(--muted);" id="user-count-lbl">{{ users_count }} total</span>
-                        </div>
-                        <div class="search-wrap">
-                            <div class="yu-search-bar">
-                                <i class="bi bi-search"></i>
-                                <input id="users-search" type="text" placeholder="Search by username or role…" oninput="filterTableRows(this.value, 'users-tbody')">
-                            </div>
-                        </div>
-                        <div style="overflow-x:auto;">
-                            <table class="yu-table" id="users-table">
-                                <thead>
-                                    <tr>
-                                        <th>#</th>
-                                        <th>Username</th>
-                                        <th>Role</th>
-                                        <th>Created</th>
-                                        <th style="text-align:right;">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="users-tbody">
-                                    {% for u in users %}
-                                    <tr id="user-row-{{ u.id }}">
-                                        <td class="mono">{{ u.id }}</td>
-                                        <td style="font-weight:600;">{{ u.username }}</td>
-                                        <td>
-                                            {% if u.role == "root" %}
-                                            <span class="pill" style="background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.25);"><span class="pill-dot"></span>root</span>
-                                            {% else if u.role == "admin" %}
-                                            <span class="pill" style="background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.2);"><span class="pill-dot"></span>admin</span>
-                                            {% else %}
-                                            <span class="pill pill-other"><span class="pill-dot"></span>user</span>
-                                            {% endif %}
-                                        </td>
-                                        <td style="font-size:.8rem;color:var(--muted);">{{ u.created_at }}</td>
-                                        <td style="text-align:right;">
-                                            <div style="display:flex;gap:.4rem;justify-content:flex-end;">
-                                                <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="openSetPwModal({{ u.id }}, '{{ u.username }}')"><i class="bi bi-key"></i></button>
-                                                {% if u.role != "root" %}
-                                                <button class="btn-yu btn-danger-yu btn-sm-yu" onclick="deleteUser({{ u.id }}, '{{ u.username }}', this)"><i class="bi bi-trash"></i></button>
-                                                {% endif %}
-                                            </div>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
 
-        <!-- ─── PANEL: DNS ─── -->
-        <div id="tab-dns" class="yu-tab-panel{% if tab == "dns" %} active{% endif %}">
+        <!-- ─── PANEL: Roles ─── -->
+        <div id="tab-roles" class="yu-tab-panel{% if tab == "roles" %} active{% endif %}">
             <div class="yu-page-hd">
-                <div style="font-size:1.2rem;font-weight:700;letter-spacing:-.03em;margin-bottom:.2rem;">DNS Management</div>
-                <p style="font-size:.825rem;color:var(--muted);margin:0;">Manage DNS providers, records and dynamic DNS rules</p>
+                <div style="font-size:1.2rem;font-weight:700;letter-spacing:-.03em;margin-bottom:.2rem;">Roles &amp; Permissions</div>
+                <p style="font-size:.825rem;color:var(--muted);margin:0;">Create custom roles and update access rights across admin features.</p>
             </div>
-
-            <!-- DNS inner sub-tabs -->
-            <div class="yu-inner-tabs" id="dns-inner-tabs">
-                <button class="yu-inner-tab active" onclick="dnsSwitchTab('providers', this)">Providers</button>
-                <button class="yu-inner-tab" onclick="dnsSwitchTab('records', this)">Records</button>
-                <button class="yu-inner-tab" onclick="dnsSwitchTab('ddns', this)">DDNS</button>
-            </div>
-
-            <!-- ── SUB-TAB: Providers ── -->
-            <div id="dns-tab-providers" class="dns-subtab active">
-                <div class="row g-3 mb-3" id="dns-providers-list">
-                    <!-- Provider cards injected by JS -->
-                </div>
-                <div class="yu-card">
-                    <div class="yu-card-hd"><i class="bi bi-plus-circle me-2 text-muted"></i>Add Provider</div>
-                    <div class="yu-card-bd">
-                        <div id="dns-add-alert" style="display:none;"></div>
-                        <div class="row g-3">
-                            <div class="col-md-4">
-                                <label class="yu-label">Display Name</label>
-                                <input type="text" class="yu-input" id="dns-add-name" placeholder="My Cloudflare">
+            <div class="roles-studio">
+                <aside class="roles-studio-side">
+                    <div class="yu-card roles-card">
+                        <div class="yu-card-hd"><i class="bi bi-person-badge me-2 text-muted"></i>Create Role</div>
+                        <div class="yu-card-bd">
+                            <div id="role-create-alert" style="display:none;"></div>
+                            <div class="yu-form-group">
+                                <label class="yu-label">Role name</label>
+                                <input type="text" class="yu-input" id="role-create-name" placeholder="support_operator" autocomplete="off">
+                                <div style="font-size:.72rem;color:var(--muted);margin-top:.35rem;">Allowed: lowercase letters, digits, <code>_</code>, <code>-</code>.</div>
                             </div>
-                            <div class="col-md-4">
-                                <label class="yu-label">Provider Type</label>
-                                <select class="yu-input" id="dns-add-type" onchange="dnsOnTypeChange(this.value,'dns-add-creds')" style="cursor:pointer;">
-                                    <option value="cloudflare">Cloudflare</option>
-                                    <option value="duckdns">DuckDNS</option>
-                                    <option value="godaddy">GoDaddy</option>
-                                    <option value="namecheap">Namecheap</option>
-                                    <option value="generic">Generic Webhook</option>
-                                </select>
+                            <div class="yu-form-group">
+                                <label class="yu-label">Description</label>
+                                <input type="text" class="yu-input" id="role-create-description" placeholder="Can manage users and audit log" autocomplete="off">
+                            </div>
+                            {% if auth_role == "root" %}
+                            <div class="yu-form-group" style="padding-top:.55rem;border-top:1px dashed rgba(255,255,255,.08);margin-top:.55rem;">
+                                <label class="yu-label">Root badge color</label>
+                                <div style="display:flex;align-items:center;gap:.5rem;">
+                                    <input type="color" class="yu-input" id="root-role-color" value="{{ root_role_color }}" style="width:44px;height:34px;padding:.2rem;cursor:pointer;">
+                                    <button type="button" class="btn-yu btn-ghost-yu btn-sm-yu" onclick="saveRootRoleColor()"><i class="bi bi-palette"></i> Save Root Color</button>
+                                </div>
+                                <div style="font-size:.72rem;color:var(--muted);margin-top:.35rem;">Only root role color can be changed here.</div>
+                            </div>
+                            {% endif %}
+                            <button class="btn-yu btn-primary-yu" onclick="createRole()"><i class="bi bi-plus-circle"></i> Create Role</button>
+                        </div>
+                    </div>
+
+                    <div class="yu-card roles-card" style="margin-top:.9rem;">
+                        <div class="yu-card-hd" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;">
+                            <span><i class="bi bi-collection me-2 text-muted"></i>Role Directory</span>
+                            <span id="roles-count-badge" class="pill pill-other" style="font-size:.66rem;padding:.15rem .5rem;">0 roles</span>
+                        </div>
+                        <div class="yu-card-bd" style="padding:.75rem;">
+                            <div id="roles-nav-list" class="roles-nav-list">
+                                <div style="text-align:center;color:var(--muted);padding:1rem 0;">
+                                    <span class="spinner-border spinner-border-sm"></span> Loading roles...
+                                </div>
                             </div>
                         </div>
-                        <div id="dns-add-creds" class="mt-3"></div>
-                        <button class="btn-yu btn-primary-yu mt-3" onclick="dnsAddProvider()"><i class="bi bi-plus-lg"></i> Add Provider</button>
                     </div>
-                </div>
-            </div>
+                </aside>
 
-            <!-- ── SUB-TAB: Records ── -->
-            <div id="dns-tab-records" class="dns-subtab">
-                <div class="yu-card mb-3">
-                    <div class="yu-card-bd" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-end;">
-                        <div style="flex:1;min-width:160px;">
-                            <label class="yu-label">Provider</label>
-                            <select class="yu-input" id="dns-rec-provider" onchange="dnsLoadZones()" style="cursor:pointer;">
-                                <option value="">— select provider —</option>
-                            </select>
+                <section class="roles-studio-main">
+                    <div class="yu-card roles-card roles-editor-card">
+                        <div class="yu-card-hd roles-editor-head">
+                            <div class="roles-editor-title">
+                                <span><i class="bi bi-shield-check me-2 text-muted"></i>Role Editor</span>
+                                <small id="roles-editor-subtitle">Select a role to edit permissions and color.</small>
+                            </div>
+                            <div class="roles-editor-tools">
+                                <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="rolesLoad()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                            </div>
                         </div>
-                        <div style="flex:1;min-width:160px;">
-                            <label class="yu-label">Zone / Domain</label>
-                            <select class="yu-input" id="dns-rec-zone" onchange="dnsLoadRemoteRecords()" style="cursor:pointer;">
-                                <option value="">— select zone —</option>
-                            </select>
-                        </div>
-                        <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="dnsLoadRemoteRecords()" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
-                        <button class="btn-yu btn-primary-yu btn-sm-yu" onclick="dnsOpenAddRecordModal()"><i class="bi bi-plus-lg"></i> Add Record</button>
-                    </div>
-                    <div class="yu-card-bd" style="border-top:1px solid var(--bdr);display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;">
-                        <div style="position:relative;flex:1;min-width:180px;">
-                            <i class="bi bi-search" style="position:absolute;left:.75rem;top:50%;transform:translateY(-50%);color:var(--muted);font-size:.8rem;pointer-events:none;"></i>
-                            <input type="text" class="yu-input" id="dns-rec-search" placeholder="Search name or value…" oninput="dnsFilterRecords()" style="padding-left:2.2rem;">
-                        </div>
-                        <div class="dns-filter-chips">
-                            <button class="dns-chip dns-chip-all active" onclick="dnsSetTypeFilter('',this)">All</button>
-                            <button class="dns-chip dns-chip-a"     onclick="dnsSetTypeFilter('A',this)">A</button>
-                            <button class="dns-chip dns-chip-aaaa"  onclick="dnsSetTypeFilter('AAAA',this)">AAAA</button>
-                            <button class="dns-chip dns-chip-cname" onclick="dnsSetTypeFilter('CNAME',this)">CNAME</button>
-                            <button class="dns-chip dns-chip-txt"   onclick="dnsSetTypeFilter('TXT',this)">TXT</button>
-                            <button class="dns-chip dns-chip-mx"    onclick="dnsSetTypeFilter('MX',this)">MX</button>
-                            <button class="dns-chip dns-chip-ns"    onclick="dnsSetTypeFilter('NS',this)">NS</button>
-                            <button class="dns-chip dns-chip-srv"   onclick="dnsSetTypeFilter('SRV',this)">SRV</button>
-                            <button class="dns-chip dns-chip-caa"   onclick="dnsSetTypeFilter('CAA',this)">CAA</button>
+                        <div class="yu-card-bd">
+                            <div id="roles-list">
+                                <div style="text-align:center;color:var(--muted);padding:1.2rem 0;">
+                                    <span class="spinner-border spinner-border-sm"></span> Loading editor...
+                                </div>
+                            </div>
                         </div>
                     </div>
-                </div>
-                <!-- Panel-tracked records -->
-                <div class="yu-card mb-3">
-                    <div class="yu-card-hd">
-                        <span><i class="bi bi-patch-check-fill me-2" style="color:var(--primary);"></i>Panel-tracked records</span>
-                        <div style="display:flex;align-items:center;gap:.75rem;">
-                            <span id="dns-local-count" style="font-size:.75rem;color:var(--muted);"></span>
-                            <button id="dns-sync-btn" class="btn-yu btn-ghost-yu btn-sm-yu" onclick="dnsSyncRecords()" title="Sync tracked records from provider API" style="display:none;">
-                                <i class="bi bi-arrow-repeat"></i> Sync
-                            </button>
-                        </div>
-                    </div>
-                    <div style="overflow-x:auto;">
-                        <table class="yu-table">
-                            <thead>
-                                <tr>
-                                    <th>Name</th>
-                                    <th>Type</th>
-                                    <th>Value / Target</th>
-                                    <th>TTL</th>
-                                    <th>Proxy</th>
-                                    <th>DDNS</th>
-                                    <th>Remote ID</th>
-                                    <th style="text-align:right;">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="dns-local-tbody">
-                                <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem;">Select a provider and zone to view tracked records.</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- All provider records -->
-                <div class="yu-card">
-                    <div class="yu-card-hd">
-                        <span><i class="bi bi-cloud me-2 text-muted"></i>All provider records</span>
-                    </div>
-                    <div style="overflow-x:auto;">
-                        <table class="yu-table">
-                            <thead>
-                                <tr>
-                                    <th>Name</th>
-                                    <th>Type</th>
-                                    <th>Value / Target</th>
-                                    <th>TTL</th>
-                                    <th>Proxy</th>
-                                    <th>DDNS</th>
-                                    <th><i class="bi bi-patch-check-fill" style="color:var(--primary);" title="Panel-managed"></i></th>
-                                    <th style="text-align:right;">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="dns-records-tbody">
-                                <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem;">Select a provider and zone to view records.</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ── SUB-TAB: DDNS ── -->
-            <div id="dns-tab-ddns" class="dns-subtab">
-                <div class="yu-card mb-3">
-                    <div class="yu-card-hd">
-                        <span><i class="bi bi-arrow-repeat me-2 text-muted"></i>Dynamic DNS</span>
-                        <div style="display:flex;align-items:center;gap:.75rem;">
-                            <span style="font-size:.78rem;color:var(--muted);">Public IP: <code id="dns-pub-ip" style="color:var(--txt);">—</code></span>
-                            <button class="btn-yu btn-primary-yu btn-sm-yu" onclick="dnsSyncAll()"><i class="bi bi-arrow-repeat"></i> Sync Now</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="yu-card">
-                    <div style="overflow-x:auto;">
-                        <table class="yu-table">
-                            <thead>
-                                <tr>
-                                    <th>Provider</th>
-                                    <th>Zone</th>
-                                    <th>Host</th>
-                                    <th>Last IP</th>
-                                    <th>Last Synced</th>
-                                    <th>Interval</th>
-                                    <th style="text-align:right;">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="dns-ddns-tbody">
-                                <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:2rem;"><span class="spinner-border spinner-border-sm"></span> Loading…</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-        </div><!-- /tab-dns -->
-
-        <!-- ── DNS: Add/Edit Record Modal ── -->
-        <div id="dnsRecordModal" class="yu-modal" style="display:none;">
-            <div class="yu-modal-inner" style="max-width:520px;width:96%;">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem;">
-                    <div style="font-size:1rem;font-weight:700;"><i class="bi bi-diagram-3 me-2"></i><span id="dns-rec-modal-title">Add Record</span></div>
-                    <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="closeModal('dnsRecordModal')"><i class="bi bi-x-lg"></i></button>
-                </div>
-                <div id="dns-rec-alert" style="display:none;" class="yu-alert mb-3"></div>
-                <div class="row g-3">
-                    <div class="col-6">
-                        <label class="yu-label">Record Type</label>
-                        <select class="yu-input" id="drm-type" onchange="dnsOnModalTypeChange()" style="cursor:pointer;">
-                            <option>A</option><option>AAAA</option><option>CNAME</option>
-                            <option>TXT</option><option>MX</option><option>NS</option>
-                            <option>SRV</option><option>CAA</option><option>HTTPS</option>
-                            <option>PTR</option><option>CERT</option><option>TLSA</option>
-                        </select>
-                    </div>
-                    <div class="col-6">
-                        <label class="yu-label">Name / Host</label>
-                        <input type="text" class="yu-input" id="drm-name" placeholder="@ or subdomain">
-                    </div>
-                    <div class="col-12">
-                        <label class="yu-label">Value / Target</label>
-                        <input type="text" class="yu-input" id="drm-value" placeholder="1.2.3.4 or target hostname">
-                    </div>
-                    <div class="col-4">
-                        <label class="yu-label">TTL</label>
-                        <select class="yu-input" id="drm-ttl" onchange="dnsOnTtlChange()" style="cursor:pointer;">
-                            <option value="1" selected>Auto</option>
-                            <option value="60">1 min</option>
-                            <option value="120">2 min</option>
-                            <option value="300">5 min</option>
-                            <option value="600">10 min</option>
-                            <option value="1800">30 min</option>
-                            <option value="3600">1 hr</option>
-                            <option value="7200">2 hr</option>
-                            <option value="43200">12 hr</option>
-                            <option value="86400">1 day</option>
-                            <option value="custom">Custom…</option>
-                        </select>
-                        <input type="number" class="yu-input mt-1" id="drm-ttl-custom" placeholder="seconds" min="60" style="display:none;">
-                    </div>
-                    <div class="col-4" id="drm-priority-wrap">
-                        <label class="yu-label">Priority</label>
-                        <input type="number" class="yu-input" id="drm-priority" value="0" min="0">
-                    </div>
-                    <div class="col-4" id="drm-proxied-wrap">
-                        <label class="yu-label">Cloudflare Proxy</label>
-                        <select class="yu-input" id="drm-proxied" style="cursor:pointer;">
-                            <option value="false">DNS only ☁</option>
-                            <option value="true">Proxied 🟠 (orange cloud)</option>
-                        </select>
-                    </div>
-                    <div class="col-12">
-                        <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;font-size:.85rem;">
-                            <input type="checkbox" id="drm-ddns" style="width:16px;height:16px;cursor:pointer;"> Enable DDNS (auto-update with public IP)
-                        </label>
-                    </div>
-                    <div class="col-6" id="drm-interval-wrap" style="display:none;">
-                        <label class="yu-label">DDNS Interval (s)</label>
-                        <input type="number" class="yu-input" id="drm-interval" value="300" min="60">
-                    </div>
-                    <div class="col-6" id="drm-push-wrap">
-                        <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;font-size:.85rem;">
-                            <input type="checkbox" id="drm-push" checked style="width:16px;height:16px;cursor:pointer;"> Push to provider API
-                        </label>
-                    </div>
-                </div>
-                <div style="display:flex;justify-content:flex-end;gap:.6rem;margin-top:1.5rem;">
-                    <button class="btn-yu btn-ghost-yu" onclick="closeModal('dnsRecordModal')">Cancel</button>
-                    <button id="drm-save-btn" class="btn-yu btn-primary-yu" onclick="dnsSaveRecord()"><i class="bi bi-check-lg"></i> Save</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- ── DNS: Edit Provider Modal ── -->
-        <div id="dnsProviderModal" class="yu-modal" style="display:none;">
-            <div class="yu-modal-inner" style="max-width:480px;width:96%;">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem;">
-                    <div style="font-size:1rem;font-weight:700;"><i class="bi bi-pencil me-2"></i>Edit Provider</div>
-                    <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="closeModal('dnsProviderModal')"><i class="bi bi-x-lg"></i></button>
-                </div>
-                <div id="dns-ep-alert" style="display:none;" class="yu-alert mb-3"></div>
-                <div style="margin-bottom:1rem;">
-                    <label class="yu-label">Display Name</label>
-                    <input type="text" class="yu-input" id="dep-name">
-                </div>
-                <div id="dep-creds"></div>
-                <div style="display:flex;align-items:center;gap:.5rem;margin-top:.75rem;">
-                    <input type="checkbox" id="dep-enabled" style="width:15px;height:15px;cursor:pointer;"> <label style="font-size:.85rem;cursor:pointer;" for="dep-enabled">Enabled</label>
-                </div>
-                <div style="display:flex;justify-content:flex-end;gap:.6rem;margin-top:1.5rem;">
-                    <button class="btn-yu btn-ghost-yu" onclick="closeModal('dnsProviderModal')">Cancel</button>
-                    <button class="btn-yu btn-primary-yu" onclick="dnsSaveProvider()"><i class="bi bi-check-lg"></i> Save</button>
-                </div>
+                </section>
             </div>
         </div>
 
@@ -609,7 +425,51 @@
                 <p style="font-size:.825rem;color:var(--muted);margin:0;">System-wide configuration for this panel instance. <span style="color:#f87171;">Root only.</span></p>
             </div>
 
-            <div class="yu-panel" style="margin-top:1.5rem;">
+            <div class="settings-shell">
+                <nav class="settings-nav" aria-label="Settings categories">
+                    <p class="settings-nav-label">Settings Categories</p>
+                    <button type="button" class="settings-nav-btn active" data-settings-nav="storage" onclick="settingsSwitchCategory('storage')">
+                        <span class="settings-nav-icon"><i class="bi bi-hdd-stack"></i></span>
+                        <span class="settings-nav-copy">
+                            <strong>Storage</strong>
+                            <small>Volumes, Docker quota, filesystem conversion</small>
+                        </span>
+                    </button>
+                    <button type="button" class="settings-nav-btn" data-settings-nav="security" onclick="settingsSwitchCategory('security')">
+                        <span class="settings-nav-icon"><i class="bi bi-shield-shaded"></i></span>
+                        <span class="settings-nav-copy">
+                            <strong>Security</strong>
+                            <small>Host firewall controls and security hardening</small>
+                        </span>
+                    </button>
+                    <button type="button" class="settings-nav-btn" data-settings-nav="operations" onclick="settingsSwitchCategory('operations')">
+                        <span class="settings-nav-icon"><i class="bi bi-tools"></i></span>
+                        <span class="settings-nav-copy">
+                            <strong>Operations</strong>
+                            <small>Database integrity and update channel controls</small>
+                        </span>
+                    </button>
+                    <button type="button" class="settings-nav-btn" data-settings-nav="interface" onclick="settingsSwitchCategory('interface')">
+                        <span class="settings-nav-icon"><i class="bi bi-layout-sidebar"></i></span>
+                        <span class="settings-nav-copy">
+                            <strong>Interface</strong>
+                            <small>Panel feature visibility and traffic tooling</small>
+                        </span>
+                    </button>
+                    <div class="settings-nav-note">
+                        <i class="bi bi-lightning-charge"></i>
+                        Changes apply instantly for all panel users.
+                    </div>
+                </nav>
+
+                <div class="settings-main">
+                    <div class="settings-category-intro" id="settings-category-intro">
+                        <p class="settings-category-kicker" id="settings-category-kicker">Storage</p>
+                        <h3 class="settings-category-title" id="settings-category-title">Storage &amp; Docker Core</h3>
+                        <p class="settings-category-text" id="settings-category-text">Manage where containers live, enforce safe quota defaults, and prepare supported filesystems for new workloads.</p>
+                    </div>
+
+                    <div class="yu-panel settings-cat-item" data-settings-cat="storage" style="margin-top:0;">
                 <div class="yu-panel-hd"><i class="bi bi-hdd-stack text-muted"></i> Storage &amp; Docker Daemon</div>
                 <div class="yu-panel-bd">
                     <!-- Disk bars -->
@@ -634,7 +494,7 @@
                     <!-- Default container storage path -->
                     <div style="padding-top:1rem;border-top:1px solid var(--bdr);margin-top:1rem;">
                         <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Default container storage location</p>
-                        <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Choose which mounted disk to use for new container volumes. Leave blank to use <code style="font-size:.78rem;">volumes/</code> relative to the panel working directory.</p>
+                        <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Choose which mounted disk to use for new container volumes. The list also shows mounted disks blocked by policy (read-only in selector). Leave blank to use <code style="font-size:.78rem;">volumes/</code> relative to the panel working directory.</p>
 
                         <!-- Custom disk picker -->
                         <div style="max-width:440px;position:relative;" id="admin-stor-wrap">
@@ -666,113 +526,97 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Disk filesystem change (non-system partitions only) -->
+                    <div style="padding-top:1rem;border-top:1px solid var(--bdr);margin-top:1rem;">
+                        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
+                            <div>
+                                <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;color:#fbbf24;">Unsafe storage override (at your own risk)</p>
+                                <p style="font-size:.825rem;color:var(--muted);margin:0;max-width:640px;">Disables storage safety validation (critical mount/root/ext4-no-prjquota checks) for custom paths and migrations. The dropdown shows all mounted disks; blocked entries include the reason. This can break the host or corrupt system data.</p>
+                            </div>
+                            <label class="yu-toggle" title="Bypass storage safety protections">
+                                <input type="checkbox" id="setting-storage-unsafe-override" {% if settings_storage_unsafe_override %}checked{% endif %}
+                                       onchange="toggleStorageUnsafeOverride(this)">
+                                <span class="yu-toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div id="storage-unsafe-result" style="margin-top:.6rem;font-size:.82rem;color:var(--muted);"></div>
+                    </div>
+
+                    <!-- Disk filesystem change -->
+                    <div style="padding-top:1rem;border-top:1px solid var(--bdr);margin-top:1rem;">
+                        <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Disk filesystem conversion</p>
+                        <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Formats a selected partition to <strong>ext4</strong>. This erases all data on that partition. After mounting, enable <strong>prjquota</strong> so per-container disk limits are enforced.</p>
+
+                        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.6rem;align-items:end;">
+                            <div>
+                                <label class="yu-label" style="font-size:.76rem;">Target partition</label>
+                                <select id="storage-fs-disk-select" class="yu-input" style="font-size:.82rem;">
+                                    <option value="">Loading partitions…</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="yu-label" style="font-size:.76rem;">New filesystem</label>
+                                <select id="storage-fs-type-select" class="yu-input" style="font-size:.82rem;">
+                                    <option value="ext4">ext4</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="yu-label" style="font-size:.76rem;">Safety confirm phrase</label>
+                                <input id="storage-fs-confirm" class="yu-input" type="text" style="font-size:.82rem;font-family:monospace;" placeholder="FORMAT /dev/sdb1">
+                            </div>
+                            <div>
+                                <button class="btn-yu" id="storage-fs-btn" onclick="changeDiskFilesystem()" style="font-size:.8rem;padding:.45rem .9rem;border-color:rgba(239,68,68,.45);color:#f87171;">
+                                    <i class="bi bi-exclamation-triangle"></i> Format Partition
+                                </button>
+                            </div>
+                        </div>
+                        <div id="storage-fs-result" style="margin-top:.65rem;font-size:.82rem;"></div>
+                    </div>
+
                 </div>
             </div>
 
-            <div class="yu-panel" style="border:1px solid rgba(139,92,246,.15);margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="storage" style="border:1px solid rgba(139,92,246,.15);margin-top:1rem;">
                 <div class="yu-panel-hd" style="color:#a78bfa;font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;"><i class="bi bi-info-circle"></i> Storage Architecture</div>
                 <div class="yu-panel-bd" style="font-size:.8rem;color:var(--muted);line-height:1.7;">
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem 1.5rem;margin-bottom:1.25rem;">
-                        <div><i class="bi bi-device-ssd" style="color:#60a5fa;"></i> <strong style="color:var(--txt);">sda1</strong> — System partition (XFS)<br><span style="padding-left:1.3rem;">OS, panel binary, SQLite DB</span></div>
-                        <div><i class="bi bi-nvme" style="color:#34d399;"></i> <strong style="color:var(--txt);">nvme0n1p2</strong> — Container partition (XFS + prjquota)<br><span style="padding-left:1.3rem;">/var/lib/docker — images, volumes, overlay2</span></div>
-                        <div><i class="bi bi-layers" style="color:#f59e0b;"></i> <strong style="color:var(--txt);">Storage driver</strong>: overlay2<br><span style="padding-left:1.3rem;">XFS project quotas enforce per-container limits</span></div>
-                        <div><i class="bi bi-shield-check" style="color:#a78bfa;"></i> <strong style="color:var(--txt);">prjquota</strong> active on NVMe<br><span style="padding-left:1.3rem;">overlay2.size applies to each new container</span></div>
+                        <div><i class="bi bi-device-ssd" style="color:#60a5fa;"></i> <strong style="color:var(--txt);">System partition</strong> — host OS and panel data<br><span style="padding-left:1.3rem;">Keep system files separate from container payloads</span></div>
+                        <div><i class="bi bi-hdd-fill" style="color:#fb923c;"></i> <strong style="color:var(--txt);">Container partition</strong> — ext4 + prjquota<br><span style="padding-left:1.3rem;">/var/lib/docker and volume data with enforced disk limits</span></div>
+                        <div><i class="bi bi-box" style="color:#f59e0b;"></i> <strong style="color:var(--txt);">Storage driver</strong>: overlay2<br><span style="padding-left:1.3rem;">Per-container quota is backed by ext4 project quotas</span></div>
+                        <div><i class="bi bi-shield-check" style="color:#a78bfa;"></i> <strong style="color:var(--txt);">Required mount option</strong>: prjquota<br><span style="padding-left:1.3rem;">Without it, disk_limit policy is blocked or unsafe-only</span></div>
                     </div>
-                    <!-- XFS vs ZFS vs Btrfs vs ext4 comparison -->
+
                     <div style="border-top:1px solid var(--bdr);padding-top:.85rem;">
-                        <p style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:.6rem;">XFS vs ZFS vs Btrfs vs ext4 — Quota Method Comparison</p>
+                        <p style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:.6rem;">ext4 + prjquota policy reference</p>
                         <div style="overflow-x:auto;">
                             <table style="width:100%;border-collapse:collapse;font-size:.78rem;">
                                 <thead>
                                     <tr style="border-bottom:1px solid var(--bdr);">
-                                        <th style="text-align:left;padding:.35rem .6rem;color:var(--muted);font-weight:600;"></th>
-                                        <th style="text-align:center;padding:.35rem .6rem;color:#60a5fa;font-weight:600;"><i class="bi bi-hdd"></i> XFS (prjquota)</th>
-                                        <th style="text-align:center;padding:.35rem .6rem;color:#34d399;font-weight:600;"><i class="bi bi-layers"></i> ZFS (refquota)</th>
-                                        <th style="text-align:center;padding:.35rem .6rem;color:#fbbf24;font-weight:600;"><i class="bi bi-stack"></i> Btrfs (qgroup)</th>
-                                        <th style="text-align:center;padding:.35rem .6rem;color:#fb923c;font-weight:600;"><i class="bi bi-hdd-fill"></i> ext4 (prjquota)</th>
+                                        <th style="text-align:left;padding:.35rem .6rem;color:var(--muted);font-weight:600;">Check</th>
+                                        <th style="text-align:left;padding:.35rem .6rem;color:#fb923c;font-weight:600;"><i class="bi bi-hdd-fill"></i> Expected value</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Quota method</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Project quotas per directory tree</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">refquota per child dataset</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">qgroup limit per subvolume</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Project quotas (<code>chattr +P</code> + <code>setquota</code>)</td>
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Filesystem type</td>
+                                        <td style="padding:.3rem .6rem;">ext4 on target mount</td>
                                     </tr>
                                     <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Overhead</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Low</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#fbbf24;">Medium</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Low</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Very low</span></td>
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Mount options</td>
+                                        <td style="padding:.3rem .6rem;">Contains <code>prjquota</code> (or <code>prjjquota</code>)</td>
                                     </tr>
                                     <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Data integrity</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">None</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Checksums + self-healing</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#fbbf24;">Checksums (no self-healing)</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Journaling only</td>
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Runtime behavior</td>
+                                        <td style="padding:.3rem .6rem;">disk_limit applies via ext4 project quota IDs</td>
                                     </tr>
                                     <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Snapshots</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">No</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Yes (<code>zfs snapshot</code>)</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Yes (<code>btrfs subvolume snapshot</code>)</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">No (requires LVM)</td>
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Provisioning</td>
+                                        <td style="padding:.3rem .6rem;">Use panel disk formatter (ext4 only), then remount with <code>prjquota</code></td>
                                     </tr>
                                     <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Compression</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">No</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Yes (lz4 / zstd)</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">Yes (zstd / lzo / zlib)</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">No</td>
-                                    </tr>
-                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Setup</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Mount with <code>prjquota</code> option</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><code>zfs create</code> parent dataset</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Format as Btrfs; panel auto-enables quotas</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Mount with <code>prjquota</code>; install <code>quota</code> package</td>
-                                    </tr>
-                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Best for</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">High performance / existing NVMe</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Data integrity + snapshots</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Linux-native CoW + snapshots</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Legacy systems / maximum compatibility</td>
-                                    </tr>
-                                    <!-- Hardware recommendations -->
-                                    <tr style="border-bottom:1px solid var(--bdr);">
-                                        <td colspan="5" style="padding:.45rem .6rem;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:rgba(255,255,255,.02);">Hardware Recommendations</td>
-                                    </tr>
-                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Min RAM</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Any (512 MiB+)</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#fbbf24;">8 GiB+</span> <span style="color:var(--muted);font-size:.7rem;">(ARC cache)</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Any (512 MiB+)</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Any (256 MiB+)</td>
-                                    </tr>
-                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Storage type</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">NVMe / SSD</span> preferred</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#34d399;">SSD / NVMe</span> + optional L2ARC</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">SSD or HDD</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Any (HDD, SSD, NVMe)</td>
-                                    </tr>
-                                    <tr style="border-bottom:1px solid rgba(255,255,255,.04);">
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">ECC RAM</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Not required</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;"><span style="color:#fbbf24;">Recommended</span></td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Not required</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Not required</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Ideal workload</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Game servers, DBs, high IOPS</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Storage servers, critical data</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Dev servers, general-purpose</td>
-                                        <td style="text-align:center;padding:.3rem .6rem;">Any workload, max compatibility</td>
+                                        <td style="padding:.3rem .6rem;color:var(--txt);font-weight:500;">Operational note</td>
+                                        <td style="padding:.3rem .6rem;">Use storage migration to move existing server data onto ext4 + prjquota targets</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -782,11 +626,11 @@
             </div>
 
             <!-- DB Integrity Check -->
-            <div class="yu-panel" style="margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="operations" style="margin-top:1rem;">
                 <div class="yu-panel-hd"><i class="bi bi-database-check text-muted"></i> Database Integrity</div>
                 <div class="yu-panel-bd">
                     <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Cleanup orphaned records</p>
-                    <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Scans the database and removes server entries that no longer have a matching Docker container, as well as orphaned port bindings and DNS records linked to deleted servers.</p>
+                    <p style="font-size:.825rem;color:var(--muted);margin-bottom:.75rem;">Scans the database and removes server entries that no longer have a matching Docker container, as well as orphaned port bindings linked to deleted servers.</p>
                     <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;">
                         <button class="btn-yu" style="font-size:.8rem;padding:.4rem .9rem;border-color:rgba(239,68,68,.4);color:#f87171;" id="db-integrity-btn" onclick="runDbIntegrity()">
                             <i class="bi bi-database-check"></i> Run Integrity Check
@@ -796,7 +640,7 @@
                 </div>
             </div>
 
-            <div class="yu-panel" style="margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="security" style="margin-top:1rem;">
                 <div class="yu-panel-hd"><i class="bi bi-shield-shaded text-muted"></i> Firewall (UFW)</div>
                 <div class="yu-panel-bd">
                     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
@@ -826,7 +670,7 @@
                 </div>
             </div>
 
-            <div class="yu-panel" style="margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="interface" style="margin-top:1rem;">
                 <div class="yu-panel-hd"><i class="bi bi-speedometer2 text-muted"></i> Bandwidth Control</div>
                 <div class="yu-panel-bd">
                     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
@@ -843,7 +687,7 @@
                 </div>
             </div>
 
-            <div class="yu-panel" style="margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="interface" style="margin-top:1rem;">
                 <div class="yu-panel-hd"><i class="bi bi-eye text-muted"></i> Sidebar Visibility</div>
                 <div class="yu-panel-bd">
                     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
@@ -858,7 +702,7 @@
                 </div>
             </div>
 
-            <div class="yu-panel" style="margin-top:1rem;">
+            <div class="yu-panel settings-cat-item" data-settings-cat="operations" style="margin-top:1rem;">
                 <div class="yu-panel-hd"><i class="bi bi-arrow-repeat text-muted"></i> Panel Updates</div>
                 <div class="yu-panel-bd">
                     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;">
@@ -880,102 +724,6 @@
                 </div>
             </div>
 
-            <div class="yu-panel" style="margin-top:1rem;">
-                <div class="yu-panel-hd"><i class="bi bi-cloud-slash text-muted"></i> Cloudflare Under Attack Mode</div>
-                <div class="yu-panel-bd">
-
-                    <!-- ── Setup instructions ──────────────────────────── -->
-                    <div style="margin-bottom:1.1rem;">
-                        <button type="button" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.querySelector('i').className='bi bi-'+(this.nextElementSibling.style.display==='none'?'info-circle':'chevron-up')" style="background:none;border:1px solid var(--bdr);color:var(--muted);font-size:.8rem;padding:.35rem .75rem;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:.4rem;">
-                            <i class="bi bi-info-circle"></i> How to set up
-                        </button>
-                        <div style="display:none;margin-top:.75rem;padding:.85rem 1rem;background:rgba(255,255,255,.03);border:1px solid var(--bdr);border-radius:8px;font-size:.8rem;line-height:1.65;">
-                            <p style="margin:0 0 .5rem;font-weight:600;">1. Find your Zone ID</p>
-                            <p style="margin:0 0 .85rem;color:var(--muted);">Log in to the <a href="https://dash.cloudflare.com" target="_blank" rel="noopener" style="color:var(--accent);">Cloudflare Dashboard</a>, select your domain. On the <strong>Overview</strong> page, scroll down to the right-hand <em>API</em> section — copy the <strong>Zone ID</strong>.</p>
-                            <p style="margin:0 0 .5rem;font-weight:600;">2. Create an API Token</p>
-                            <p style="margin:0 0 .4rem;color:var(--muted);">Go to <strong>My Profile → API Tokens → Create Token</strong>.</p>
-                            <p style="margin:0 0 .4rem;color:var(--muted);">Use the <em>"Edit zone DNS"</em> template as a starting point, then change the permission to:</p>
-                            <code style="display:block;background:rgba(0,0,0,.3);padding:.4rem .65rem;border-radius:5px;margin:.35rem 0 .75rem;font-size:.78rem;color:#a5f3fc;">Zone &rarr; Security Level &rarr; Edit</code>
-                            <p style="margin:0 0 .4rem;color:var(--muted);">Restrict <strong>Zone Resources</strong> to the specific zone if you prefer. Click <em>Create Token</em> and copy the token — it is shown only once.</p>
-                            <p style="margin:0 0 .5rem;font-weight:600;">3. Enter values above and save</p>
-                            <p style="margin:0;color:var(--muted);">Paste the Zone ID and API Token into the fields below, then click <i class="bi bi-floppy"></i>. The panel will confirm the token is stored (it is never displayed again).</p>
-                        </div>
-                    </div>
-
-                    <!-- ── Brute-force (multi-IP login) toggle ─────────── -->
-                    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.1rem;">
-                        <div>
-                            <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Auto Under Attack Mode — Brute Force</p>
-                            <p style="font-size:.825rem;color:var(--muted);margin:0;">When multiple distinct IPs fail authentication simultaneously, automatically enables Cloudflare Under Attack Mode, then disables it once the storm calms.</p>
-                        </div>
-                        <label class="yu-toggle" title="Toggle CF UAM auto">
-                            <input type="checkbox" id="setting-cf-uam-enabled" {% if settings_cf_uam_enabled %}checked{% endif %}
-                                   onchange="adminSetSetting('cf_uam_enabled', this.checked ? '1' : '0')">
-                            <span class="yu-toggle-slider"></span>
-                        </label>
-                    </div>
-
-                    <!-- ── L7 HTTP-flood toggle ────────────────────────── -->
-                    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;padding:.85rem 1rem;background:rgba(255,255,255,.025);border:1px solid var(--bdr);border-radius:8px;margin-bottom:1.1rem;">
-                        <div>
-                            <p style="font-size:.875rem;font-weight:600;margin-bottom:.25rem;">Auto Under Attack Mode — L7 HTTP Flood</p>
-                            <p style="font-size:.825rem;color:var(--muted);margin:0;">Tracks every HTTP request per IP. When several IPs exceed the per-minute threshold simultaneously (volumetric flood), UAM is triggered the same way as on brute force. Both conditions are checked independently when deciding to auto-disable.</p>
-                        </div>
-                        <label class="yu-toggle" title="Toggle L7 detection">
-                            <input type="checkbox" id="setting-cf-l7-enabled" {% if settings_cf_l7_enabled %}checked{% endif %}
-                                   onchange="adminSetSetting('cf_l7_enabled', this.checked ? '1' : '0')">
-                            <span class="yu-toggle-slider"></span>
-                        </label>
-                    </div>
-
-                    <!-- ── Credentials ────────────────────────────────── -->
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem;">
-                        <div>
-                            <label style="font-size:.8rem;font-weight:600;display:block;margin-bottom:.35rem;">Zone ID</label>
-                            <div style="display:flex;gap:.4rem;">
-                                <input type="text" id="cf-zone-id-input" class="yu-input" placeholder="abc123…" value="{{ cf_zone_id }}" style="font-size:.8rem;">
-                                <button class="btn-yu btn-yu-ghost" style="padding:.4rem .65rem;font-size:.8rem;" onclick="saveCfCreds()" title="Save"><i class="bi bi-floppy"></i></button>
-                            </div>
-                        </div>
-                        <div>
-                            <label style="font-size:.8rem;font-weight:600;display:block;margin-bottom:.35rem;">API Token</label>
-                            <div style="display:flex;gap:.4rem;">
-                                <input type="password" id="cf-api-token-input" class="yu-input" placeholder="{% if cf_api_token_set %}Stored — enter to replace{% else %}CF API token…{% endif %}" style="font-size:.8rem;">
-                                <button class="btn-yu btn-yu-ghost" style="padding:.4rem .65rem;font-size:.8rem;" onclick="saveCfCreds()" title="Save"><i class="bi bi-floppy"></i></button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- ── Thresholds ─────────────────────────────────── -->
-                    <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
-                        <div>
-                            <label style="font-size:.8rem;font-weight:600;display:block;margin-bottom:.35rem;">Brute-force trigger (distinct IPs)</label>
-                            <input type="number" id="cf-threshold-input" class="yu-input" min="2" max="50" value="{{ cf_uam_threshold }}" style="width:90px;font-size:.8rem;" onchange="adminSetSetting('cf_uam_threshold', this.value)">
-                        </div>
-                        <div>
-                            <label style="font-size:.8rem;font-weight:600;display:block;margin-bottom:.35rem;">L7 req/min per IP trigger</label>
-                            <input type="number" id="cf-l7-threshold-input" class="yu-input" min="10" max="10000" value="{{ cf_l7_threshold }}" style="width:110px;font-size:.8rem;" onchange="adminSetSetting('cf_l7_threshold', this.value)">
-                        </div>
-                        <div>
-                            <label style="font-size:.8rem;font-weight:600;display:block;margin-bottom:.35rem;">L7 min. flooding IPs</label>
-                            <input type="number" id="cf-l7-ips-input" class="yu-input" min="1" max="50" value="{{ cf_l7_ips_min }}" style="width:90px;font-size:.8rem;" onchange="adminSetSetting('cf_l7_ips_min', this.value)">
-                        </div>
-                        <div>
-                            <label style="font-size:.8rem;font-weight:600;display:block;margin-bottom:.35rem;">Cooldown (minutes before auto-disable)</label>
-                            <input type="number" id="cf-cooldown-input" class="yu-input" min="1" max="120" value="{{ cf_uam_cooldown_mins }}" style="width:90px;font-size:.8rem;" onchange="adminSetSetting('cf_uam_cooldown_mins', this.value)">
-                        </div>
-                    </div>
-
-                    <!-- ── Status + manual toggle ─────────────────────── -->
-                    <div style="padding-top:.75rem;border-top:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;">
-                        <div style="display:flex;align-items:center;gap:.6rem;">
-                            <span style="font-size:.8rem;color:var(--muted);">CF Security:</span>
-                            <span id="cf-uam-badge" style="font-size:.75rem;font-weight:600;padding:.25rem .6rem;border-radius:6px;background:rgba(255,255,255,.05);color:var(--muted);">checking…</span>
-                        </div>
-                        <button class="btn-yu btn-yu-warning" style="font-size:.8rem;padding:.4rem .9rem;" id="cf-uam-toggle-btn" onclick="cfUamToggle()" disabled>
-                            <i class="bi bi-cloud-slash" id="cf-uam-icon"></i> <span id="cf-uam-label">Enable UAM</span>
-                        </button>
-                    </div>
                 </div>
             </div>
         {% else %}
@@ -1020,18 +768,6 @@
                             <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="user.delete" onchange="auditFilterApply()"> User delete</label>
                             <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="user.change_password" onchange="auditFilterApply()"> Password change</label>
                             <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="user.set_password" onchange="auditFilterApply()"> Password set</label>
-                            <div style="padding:.25rem .75rem;font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:.3rem;">DNS</div>
-                            <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.provider_add" onchange="auditFilterApply()"> Provider add</label>
-                            <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.provider_edit" onchange="auditFilterApply()"> Provider edit</label>
-                            <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.provider_delete" onchange="auditFilterApply()"> Provider delete</label>
-                            <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.record_add" onchange="auditFilterApply()"> Record add</label>
-                            <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.record_edit" onchange="auditFilterApply()"> Record edit</label>
-                            <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.record_delete" onchange="auditFilterApply()"> Record delete</label>
-                            <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.proxy_toggle" onchange="auditFilterApply()"> Proxy toggle</label>
-                            <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.sync" onchange="auditFilterApply()"> DDNS sync</label>
-                            <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.sync_records" onchange="auditFilterApply()"> Sync records</label>
-                            <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.server_record_add" onchange="auditFilterApply()"> Server DNS add</label>
-                            <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="dns.server_record_delete" onchange="auditFilterApply()"> Server DNS delete</label>
                             <div style="padding:.25rem .75rem;font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:.3rem;">Network</div>
                             <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="net.bandwidth" onchange="auditFilterApply()"> Bandwidth</label>
                             <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;cursor:pointer;font-size:.82rem;"><input type="checkbox" value="net.port_add" onchange="auditFilterApply()"> Port add</label>
@@ -1097,7 +833,7 @@
     {% include "_admin_modals.html" %}
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous" nonce="{{nonce}}"></script>
-    <script src="/static/js/admin.js?v=15" nonce="{{nonce}}"></script>
+    <script src="/static/js/admin.js?v=24" nonce="{{nonce}}"></script>
     <script nonce="{{nonce}}">
     async function adminSetSetting(key, value) {
         const r = await fetch('/api/admin/settings', {
@@ -1108,6 +844,39 @@
         const d = await r.json();
         if (r.ok) showToast('success', d.message || 'Setting saved');
         else showToast('danger', d.error || 'Failed to save setting');
+        return { ok: r.ok, data: d };
+    }
+
+    async function toggleStorageUnsafeOverride(el) {
+        const next = !!el.checked;
+        const res = document.getElementById('storage-unsafe-result');
+        if (next) {
+            const proceed = confirm('Enable UNSAFE storage override?\n\nThis bypasses storage safety validation for custom paths/migrations (including system/root/ext4-no-prjquota). Recommended dropdown lists stay filtered. Continue at your own risk.');
+            if (!proceed) {
+                el.checked = false;
+                return;
+            }
+        }
+
+        if (res) res.innerHTML = '<span style="color:var(--muted);"><span class="spinner-border spinner-border-sm" style="width:.8rem;height:.8rem;"></span> Saving…</span>';
+        const out = await adminSetSetting('storage_unsafe_override', next ? '1' : '0');
+        if (!out.ok) {
+            el.checked = !next;
+            if (res) res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(out?.data?.error || 'Failed to save setting')}</span>`;
+            return;
+        }
+
+        if (res) {
+            if (next) {
+                res.innerHTML = '<span style="color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> Unsafe override enabled. Storage safety validation is bypassed for custom paths/migrations.</span>';
+            } else {
+                res.innerHTML = '<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> Unsafe override disabled. Safety checks are active again.</span>';
+            }
+        }
+
+        if (typeof loadStorageMountsHint === 'function') loadStorageMountsHint();
+        if (typeof loadStorageDiskCandidates === 'function') loadStorageDiskCandidates();
+        if (typeof loadStorageStats === 'function') loadStorageStats();
     }
 
     let _ufwActive = false;
@@ -1216,99 +985,8 @@
 
     document.addEventListener('DOMContentLoaded', function() {
         ufwCheckStatus();
-        cfCheckStatus();
         applySoonVisibility();
     });
-
-    // ── Cloudflare UAM ────────────────────────────────────────────────────────
-    let _cfUamActive = false;
-
-    function cfUpdateBadge(level, autoActive) {
-        _cfUamActive = (level === 'under_attack');
-        const badge = document.getElementById('cf-uam-badge');
-        const btn   = document.getElementById('cf-uam-toggle-btn');
-        const icon  = document.getElementById('cf-uam-icon');
-        const lbl   = document.getElementById('cf-uam-label');
-        if (badge) {
-            if (_cfUamActive) {
-                badge.textContent = 'UNDER ATTACK' + (autoActive ? ' (auto)' : '');
-                badge.style.background = 'rgba(239,68,68,.12)';
-                badge.style.color = '#f87171';
-            } else {
-                badge.textContent = level || 'NORMAL';
-                badge.style.background = 'rgba(16,185,129,.12)';
-                badge.style.color = '#10b981';
-            }
-        }
-        if (btn) {
-            btn.disabled = false;
-            if (_cfUamActive) {
-                btn.className = 'btn-yu btn-yu-success';
-                btn.style.cssText = 'font-size:.8rem;padding:.4rem .9rem;';
-                if (icon) icon.className = 'bi bi-cloud-check';
-                if (lbl) lbl.textContent = 'Disable UAM';
-            } else {
-                btn.className = 'btn-yu btn-yu-danger';
-                btn.style.cssText = 'font-size:.8rem;padding:.4rem .9rem;';
-                if (icon) icon.className = 'bi bi-cloud-slash';
-                if (lbl) lbl.textContent = 'Enable UAM';
-            }
-        }
-    }
-
-    function cfCheckStatus() {
-        fetch('/api/admin/cf/status', { credentials: 'same-origin' })
-            .then(r => r.json())
-            .then(d => {
-                const badge = document.getElementById('cf-uam-badge');
-                if (!d.ok) {
-                    if (badge) { badge.textContent = d.error || 'CF Error'; badge.style.color = '#f87171'; }
-                    return;
-                }
-                if (!d.configured) {
-                    if (badge) { badge.textContent = 'Not configured'; badge.style.color = 'var(--muted)'; }
-                    const btn = document.getElementById('cf-uam-toggle-btn');
-                    if (btn) btn.disabled = true;
-                    return;
-                }
-                cfUpdateBadge(d.level, d.auto_active);
-            })
-            .catch(() => {});
-    }
-
-    async function cfUamToggle() {
-        const btn = document.getElementById('cf-uam-toggle-btn');
-        if (btn) { btn.disabled = true; btn.style.opacity = '.5'; }
-        try {
-            const r = await fetch('/api/admin/cf/uam', {
-                method: 'POST',
-                headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({enable: !_cfUamActive})
-            });
-            const d = await r.json();
-            if (r.ok && d.ok) {
-                showToast('success', !_cfUamActive ? 'Under Attack Mode enabled' : 'Under Attack Mode disabled');
-                setTimeout(cfCheckStatus, 800);
-            } else {
-                showToast('danger', d.error || 'CF request failed');
-            }
-        } catch(e) { showToast('danger', 'Network error'); }
-        if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
-    }
-
-    async function saveCfCreds() {
-        const zoneId = document.getElementById('cf-zone-id-input')?.value.trim() || '';
-        const token  = document.getElementById('cf-api-token-input')?.value.trim() || '';
-        const saves = [];
-        if (zoneId) saves.push(adminSetSetting('cf_zone_id', zoneId));
-        if (token)  saves.push(adminSetSetting('cf_api_token', token));
-        if (saves.length) {
-            await Promise.all(saves);
-            document.getElementById('cf-api-token-input').value = '';
-            document.getElementById('cf-api-token-input').placeholder = 'Stored — enter to replace';
-            setTimeout(cfCheckStatus, 300);
-        }
-    }
 
     // ── SOON visibility toggle ────────────────────────────────────────────────
     function applySoonVisibility() {

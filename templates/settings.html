@@ -194,7 +194,11 @@
         if (btn) { btn.disabled = false; btn.innerHTML = orig; }
     }
 
-    document.addEventListener('DOMContentLoaded', envRenderList);
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', envRenderList, { once: true });
+    } else {
+        envRenderList();
+    }
 
     async function doFactoryReset() {
         const pw = document.getElementById('reset-password').value;
@@ -225,6 +229,7 @@
         btn.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i> Reset Server';
     }
     </script>
+    <script nonce="{{nonce}}">window.YU_SERVER_ID = '{{id}}';</script>
     {% include "_script_footer.html" %}
 </body>
 </html>

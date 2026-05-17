@@ -77,7 +77,21 @@ term.loadAddon(fitAddon);
 term.open(document.getElementById('terminal'));
 setTimeout(() => fitAddon.fit(), 100);
 const _resizeHandler = () => fitAddon.fit();
-window.addEventListener('resize', _resizeHandler);
+let _resizeAttached = false;
+
+function _attachConsoleResize() {
+    if (_resizeAttached) return;
+    window.addEventListener('resize', _resizeHandler);
+    _resizeAttached = true;
+}
+
+function _detachConsoleResize() {
+    if (!_resizeAttached) return;
+    window.removeEventListener('resize', _resizeHandler);
+    _resizeAttached = false;
+}
+
+_attachConsoleResize();
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 let ws = null;
@@ -133,6 +147,25 @@ function connectConsole() {
 term.attachCustomKeyEventHandler(function () { return false; });
 
 connectConsole();
+
+function _consoleOnPageShown(path) {
+    const p = String(path || window.location.pathname || '');
+    if (!/^\/servers\/\d+\/console$/.test(p)) return;
+
+    _attachConsoleResize();
+    setTimeout(() => {
+        try { fitAddon.fit(); } catch (_) {}
+    }, 40);
+
+    if (!ws || ws.readyState === WebSocket.CLOSED) {
+        connectConsole();
+    }
+}
+
+window.addEventListener('yu:page-shown', (ev) => {
+    const path = String(ev?.detail?.path || '');
+    _consoleOnPageShown(path);
+});
 
 // ── Disk space (one-shot fetch on page load) ──────────────────────────────────
 fetch(`/api/servers/${YU_SERVER_ID}/disk`)
@@ -206,9 +239,17 @@ function updateControls(state) {
         btnStop.disabled = true; btnKill.disabled = true;
         badge.className = 'sb-status sb-stopped';
     }
+
+    if (!window.YU_CAN_POWER) {
+        btnStart.disabled = true;
+        btnRestart.disabled = true;
+        btnStop.disabled = true;
+        btnKill.disabled = true;
+    }
 }
 
 function sendAction(action) {
+    if (!window.YU_CAN_POWER) return;
     fetch(`/api/servers/${YU_SERVER_ID}/${action}`, { method: 'POST' })
         .then(r => console.log(action, r.status))
         .catch(e => console.error(e));
@@ -216,6 +257,7 @@ function sendAction(action) {
 }
 
 function confirmKill() {
+    if (!window.YU_CAN_POWER) return;
     new bootstrap.Modal(document.getElementById('killModal')).show();
 }
 
@@ -304,8 +346,13 @@ function handleStats(stats) {
 // ── Cleanup (called by SPA navigation before leaving this page) ───────────────
 window._yuPageCleanup = function () {
     if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
-    ws?.close(); ws = null;
-    try { cpuChart.destroy(); ramChart.destroy(); netChart.destroy(); diskChart.destroy(); } catch (_) {}
-    window.removeEventListener('resize', _resizeHandler);
-    window._yuPageCleanup = undefined;
+    if (ws) {
+        try { ws.close(); } catch (_) {}
+        ws = null;
+    }
+    _detachConsoleResize();
+    _prevRx = null;
+    _prevTx = null;
+    _prevBlkRead = null;
+    _prevBlkWrite = null;
 };

@@ -1,9 +1,8 @@
 pub mod state;
 pub mod db;
 pub mod docker;
-pub mod dns;
+pub mod host;
 pub mod compose;
 pub mod auth;
 pub mod password;
 pub mod handlers;
-pub mod cloudflare;

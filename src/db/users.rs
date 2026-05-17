@@ -13,13 +13,17 @@ pub async fn user_count(pool: &Pool<Sqlite>) -> Result<i64> {
 
 pub async fn create_user(
     pool: &Pool<Sqlite>,
+    uid: &str,
+    nickname: &str,
     username: &str,
     password_hash: &str,
     role: &str,
 ) -> Result<i64> {
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?) RETURNING id",
+        "INSERT INTO users (uid, nickname, username, password_hash, role) VALUES (?, ?, ?, ?, ?) RETURNING id",
     )
+    .bind(uid)
+    .bind(nickname)
     .bind(username)
     .bind(password_hash)
     .bind(role)
@@ -31,7 +35,7 @@ pub async fn create_user(
 
 pub async fn list_users(pool: &Pool<Sqlite>) -> Result<Vec<User>> {
     let users = sqlx::query_as::<_, User>(
-        "SELECT id, username, password_hash, role, created_at FROM users ORDER BY id ASC",
+        "SELECT id, uid, nickname, username, password_hash, role, created_at FROM users ORDER BY id ASC",
     )
     .fetch_all(pool)
     .await
@@ -44,7 +48,7 @@ pub async fn find_user_by_username(
     username: &str,
 ) -> Result<Option<User>> {
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, username, password_hash, role, created_at FROM users WHERE username = ?",
+        "SELECT id, uid, nickname, username, password_hash, role, created_at FROM users WHERE username = ?",
     )
     .bind(username)
     .fetch_optional(pool)
@@ -53,9 +57,33 @@ pub async fn find_user_by_username(
     Ok(user)
 }
 
+pub async fn find_user_by_uid(
+    pool: &Pool<Sqlite>,
+    uid: &str,
+) -> Result<Option<User>> {
+    let user = sqlx::query_as::<_, User>(
+        "SELECT id, uid, nickname, username, password_hash, role, created_at FROM users WHERE uid = ?",
+    )
+    .bind(uid)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to find user by uid")?;
+    Ok(user)
+}
+
+pub async fn find_user_by_username_or_uid(
+    pool: &Pool<Sqlite>,
+    login: &str,
+) -> Result<Option<User>> {
+    if let Some(user) = find_user_by_username(pool, login).await? {
+        return Ok(Some(user));
+    }
+    find_user_by_uid(pool, login).await
+}
+
 pub async fn find_user_by_id(pool: &Pool<Sqlite>, id: i64) -> Result<Option<User>> {
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, username, password_hash, role, created_at FROM users WHERE id = ?",
+        "SELECT id, uid, nickname, username, password_hash, role, created_at FROM users WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -65,6 +93,18 @@ pub async fn find_user_by_id(pool: &Pool<Sqlite>, id: i64) -> Result<Option<User
 }
 
 pub async fn delete_user(pool: &Pool<Sqlite>, id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM server_user_permissions WHERE user_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("Failed to delete server_user_permissions for user")?;
+
+    sqlx::query("DELETE FROM user_sessions WHERE user_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("Failed to delete user_sessions for user")?;
+
     sqlx::query("DELETE FROM users WHERE id = ?")
         .bind(id)
         .execute(pool)
@@ -84,5 +124,19 @@ pub async fn update_user_password(
         .execute(pool)
         .await
         .context("Failed to update password")?;
+    Ok(())
+}
+
+pub async fn update_user_role(
+    pool: &Pool<Sqlite>,
+    id: i64,
+    role: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE users SET role = ? WHERE id = ?")
+        .bind(role)
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("Failed to update user role")?;
     Ok(())
 }

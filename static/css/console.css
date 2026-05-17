@@ -206,7 +206,90 @@ button.con-btn-kill:hover:not(:disabled)    { background: rgba(239,68,68,.2); }
 }
 .chart-container { position: relative; height: 44px; width: 100%; }
 
-/* ── DNS panel ── */
+.con-access-card {
+    padding-bottom: .75rem;
+}
+
+.con-access-add {
+    display: flex;
+    gap: .45rem;
+    margin-top: .35rem;
+}
+
+.con-access-select {
+    flex: 1;
+    min-width: 0;
+    background: var(--surface2);
+    border: 1px solid rgba(255,255,255,.12);
+    color: var(--txt);
+    border-radius: 8px;
+    font-size: .75rem;
+    padding: .38rem .45rem;
+    outline: none;
+}
+
+.con-access-select:focus {
+    border-color: rgba(124,58,237,.5);
+}
+
+.con-member-list {
+    display: flex;
+    flex-direction: column;
+    gap: .45rem;
+    margin-top: .55rem;
+}
+
+.con-member-item {
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 8px;
+    padding: .45rem;
+    background: rgba(255,255,255,.02);
+}
+
+.con-member-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .45rem;
+    margin-bottom: .35rem;
+}
+
+.con-member-name {
+    font-size: .76rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.con-member-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: .3rem;
+}
+
+.con-member-perm {
+    display: grid;
+    grid-template-columns: 72px 1fr;
+    align-items: center;
+    gap: .4rem;
+}
+
+.con-member-perm label {
+    font-size: .68rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+}
+
+.con-member-empty {
+    font-size: .73rem;
+    color: var(--muted);
+    text-align: center;
+    padding: .45rem;
+}
+
+/* ── Generic panel block ── */
 .yu-panel { background: var(--surface); border: 1px solid var(--bdr); border-radius: 10px; overflow: hidden; }
 .yu-panel-hd { padding: .7rem .85rem; border-bottom: 1px solid var(--bdr); font-size: .82rem; font-weight: 600; display: flex; align-items: center; gap: .4rem; }
 .yu-panel-bd { padding: .85rem; }

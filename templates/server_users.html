@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    {% include "_head_common.html" %}
+    <title>{{ container.name }} - Users</title>
+    <link href="/static/css/base.css?v=2" rel="stylesheet">
+    <link href="/static/css/server_users.css?v=3" rel="stylesheet">
+</head>
+<body>
+    <div class="yu-layout">
+        {% include "_server_sidebar.html" %}
+        <main class="yu-main">
+            {% include "_mobile_topbar.html" %}
+            <div class="yu-content">
+                <div class="su-page-head">
+                    <div>
+                        <h1>Users</h1>
+                        <p>Container access editor with member directory and UID lookup.</p>
+                    </div>
+                </div>
+
+                <div class="su-studio">
+                    <aside class="su-studio-side">
+                        <div class="yu-panel su-panel">
+                            <div class="yu-panel-hd su-panel-hd">
+                                <span><i class="bi bi-search me-2 text-muted"></i>Add Member</span>
+                            </div>
+                            <div class="yu-panel-bd">
+                                <div class="su-add-row">
+                                    <div class="su-search-wrap">
+                                        <input
+                                            id="su-member-search"
+                                            class="form-input"
+                                            type="text"
+                                            list="su-member-user-list"
+                                            placeholder="Enter UID (for example: #u00000000000001)"
+                                            {% if !can_members_write %}disabled{% endif %}
+                                            autocomplete="off"
+                                        >
+                                        <datalist id="su-member-user-list"></datalist>
+                                        <div class="form-hint">Type full UID and press Enter or Add.</div>
+                                    </div>
+                                    <button id="su-add-member-btn" type="button" class="btn-yu btn-yu-primary" onclick="suAddMember()" {% if !can_members_write %}disabled{% endif %}>
+                                        <i class="bi bi-person-plus"></i> Add
+                                    </button>
+                                </div>
+
+                                <div id="su-readonly-note" class="su-readonly-note" {% if can_members_write %}hidden{% endif %}>
+                                    Read-only access: you can view members and permissions, but cannot change them.
+                                </div>
+
+                                <div id="su-feedback" class="su-feedback" hidden></div>
+                            </div>
+                        </div>
+
+                        <div class="yu-panel su-panel su-members-panel">
+                            <div class="yu-panel-hd su-panel-hd">
+                                <span><i class="bi bi-people me-2 text-muted"></i>Members</span>
+                                <span id="su-member-count" class="su-count-badge">0 members</span>
+                            </div>
+                            <div class="yu-panel-bd su-members-bd">
+                                <div id="su-member-list" class="su-nav-list">
+                                    <div class="su-member-empty">Loading...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </aside>
+
+                    <section class="su-studio-main">
+                        <div class="yu-panel su-panel su-editor-panel">
+                            <div class="yu-panel-hd su-editor-head">
+                                <div class="su-editor-title">
+                                    <strong id="su-editor-name">Select a member</strong>
+                                    <button id="su-editor-uid" type="button" class="su-editor-uid" hidden></button>
+                                    <small id="su-editor-subtitle">Pick a user from the directory to edit permissions.</small>
+                                </div>
+                                <button id="su-remove-selected" type="button" class="btn-yu btn-yu-danger" onclick="suRemoveSelected()" hidden {% if !can_members_write %}disabled{% endif %}>
+                                    <i class="bi bi-person-dash"></i> Remove Member
+                                </button>
+                            </div>
+                            <div class="yu-panel-bd">
+                                <div id="su-editor-empty" class="su-member-empty">Select a member to edit access policies.</div>
+                                <div id="su-editor-grid" class="su-editor-grid" hidden></div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    {% include "_scripts_server.html" %}
+    <script nonce="{{nonce}}">window.YU_SERVER_ID = '{{id}}'; window.YU_CAN_MEMBERS_WRITE = {% if can_members_write %}true{% else %}false{% endif %};</script>
+    {% include "_script_footer.html" %}
+    <script src="/static/js/server_users.js?v=3" nonce="{{nonce}}"></script>
+</body>
+</html>

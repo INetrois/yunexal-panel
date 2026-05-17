@@ -2,327 +2,997 @@
 <html lang="en" data-bs-theme="dark">
 <head>
     {% include "_head_common.html" %}
-    <title>Edit {{ container.name }} – Admin</title>
+    <title>Edit {{ container.name }} — Yunexal Panel</title>
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js" nonce="{{nonce}}"></script>
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js" integrity="sha384-SF/kPhqG3NMxqsYAbQqHkdF53WQx8yTkY0Ys+M+ayeC20QNujPyyxIuUEdEf0eG/" crossorigin="anonymous" nonce="{{nonce}}"></script>
+    <link href="/static/css/new_server.css?v=1" rel="stylesheet">
     <style>
-        :root{--bg:#0b0b12;--surface:#111119;--surface2:#17171f;--bdr:rgba(255,255,255,.07);--txt:#e0e0f0;--muted:#6a6a8a;--accent:#7c3aed;}
-        *,*::before,*::after{box-sizing:border-box;}
-        body{background:var(--bg);color:var(--txt);font-family:'Inter',sans-serif;min-height:100vh;margin:0;}
-        a{text-decoration:none;color:inherit;}
-        .yu-topbar{height:56px;background:#0e0e18;border-bottom:1px solid var(--bdr);display:flex;align-items:center;padding:0 1.75rem;gap:1rem;position:sticky;top:0;z-index:100;}
-        .yu-back{display:flex;align-items:center;gap:.4rem;font-size:.8rem;color:var(--muted);transition:color .15s;}
-        .yu-back:hover{color:var(--txt);}
-        .yu-brand{font-size:.9rem;font-weight:700;letter-spacing:-.02em;display:flex;align-items:center;gap:.45rem;}
-        .yu-brand .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);}
-        .yu-page{padding:2rem 1.5rem;max-width:900px;margin:0 auto;}
-        .yu-form-card{background:var(--surface);border:1px solid var(--bdr);border-radius:12px;overflow:hidden;}
-        .yu-form-hd{padding:1rem 1.5rem;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;gap:1rem;}
-        .yu-form-bd{padding:1.5rem;}
-        h5{font-size:.95rem;font-weight:600;letter-spacing:-.01em;color:var(--txt)!important;}
-        .form-control,.form-select{background:var(--surface2)!important;border:1px solid rgba(255,255,255,.1)!important;color:var(--txt)!important;border-radius:8px!important;font-size:.875rem;font-family:'Inter',sans-serif;}
-        .form-control:focus,.form-select:focus{background:var(--surface2)!important;border-color:rgba(124,58,237,.5)!important;box-shadow:0 0 0 3px rgba(124,58,237,.12)!important;color:var(--txt)!important;}
-        .form-control::placeholder{color:var(--muted);}
-        .input-group-text{background:var(--surface2)!important;border:1px solid rgba(255,255,255,.1)!important;color:var(--muted)!important;}
-        .form-label{color:var(--muted);font-size:.8rem;font-weight:500;}
-        .form-text{color:var(--muted)!important;font-size:.75rem;}
-        .btn-primary{background:#7c3aed!important;border-color:#7c3aed!important;font-family:'Inter',sans-serif;}
-        .btn-primary:hover{background:#6d28d9!important;border-color:#6d28d9!important;}
-        .btn-secondary{background:rgba(255,255,255,.05)!important;border-color:rgba(255,255,255,.1)!important;color:var(--txt)!important;font-family:'Inter',sans-serif;}
-        .btn-secondary:hover{background:rgba(255,255,255,.09)!important;}
-        .btn-outline-primary{border-color:rgba(124,58,237,.4)!important;color:#a78bfa!important;background:transparent!important;font-size:.8rem;}
-        .btn-outline-primary:hover{background:rgba(124,58,237,.1)!important;color:#a78bfa!important;}
-        .btn-outline-danger{border-color:rgba(239,68,68,.25)!important;color:#ef4444!important;background:transparent!important;}
-        .btn-outline-danger:hover{background:rgba(239,68,68,.1)!important;}
-        .alert-danger{background:rgba(239,68,68,.1)!important;border-color:rgba(239,68,68,.2)!important;color:#ef4444!important;border-radius:8px;}
-        .alert-info{background:rgba(96,165,250,.06)!important;border-color:rgba(96,165,250,.2)!important;color:#93c5fd!important;border-radius:8px;font-size:.8rem;}
-        hr{border-color:rgba(255,255,255,.07)!important;}
-        .pill-run{display:inline-flex;align-items:center;gap:.35rem;font-size:.72rem;font-weight:600;padding:.2rem .6rem;border-radius:99px;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.2);}
-        .pill-stop{display:inline-flex;align-items:center;gap:.35rem;font-size:.72rem;font-weight:600;padding:.2rem .6rem;border-radius:99px;background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.2);}
-        .pill-dot{width:5px;height:5px;border-radius:50%;background:currentColor;}
-        .remove-row-btn{min-width:38px;}
-        #ae-feedback{font-size:.83rem;}
-        ::-webkit-scrollbar{width:6px;} ::-webkit-scrollbar-track{background:transparent;} ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:4px;}
+        .edit-state-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: .35rem;
+            font-size: .72rem;
+            font-weight: 600;
+            padding: .22rem .62rem;
+            border-radius: 999px;
+            border: 1px solid transparent;
+        }
+        .edit-state-badge.run {
+            background: rgba(16,185,129,.12);
+            color: #10b981;
+            border-color: rgba(16,185,129,.24);
+        }
+        .edit-state-badge.stop {
+            background: rgba(239,68,68,.1);
+            color: #ef4444;
+            border-color: rgba(239,68,68,.2);
+        }
+        .edit-state-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+        .edit-id {
+            margin-top: .3rem;
+            color: var(--muted);
+            font-size: .74rem;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            word-break: break-all;
+        }
+        #ae-feedback, #ae-migrate-feedback {
+            font-size: .78rem;
+            min-height: 1rem;
+        }
+        #ae-migrate-feedback code {
+            display: block;
+            margin-top: .35rem;
+            background: rgba(0,0,0,.35);
+            border: 1px solid rgba(255,255,255,.08);
+            border-radius: 6px;
+            padding: .35rem .5rem;
+            color: #a5f3fc;
+            word-break: break-all;
+        }
+        .save-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            margin-top: .5rem;
+        }
     </style>
 </head>
 <body>
-    <header class="yu-topbar">
-        <a href="/admin/containers" class="yu-back"><i class="bi bi-arrow-left"></i> Admin</a>
-        <div class="yu-brand"><span class="dot"></span>Yunexal Panel</div>
-    </header>
+<header class="yu-topbar">
+    <div class="yu-brand"><span class="dot"></span>Yunexal Panel</div>
+    <div class="topbar-divider"></div>
+    <nav class="yu-breadcrumb">
+        <a href="/admin/containers"><i class="bi bi-arrow-left" style="font-size:.8rem;"></i> Back</a>
+        <span class="sep">/</span>
+        <span class="cur">Edit Server</span>
+    </nav>
+</header>
 
-    <div class="yu-page">
-        <div class="yu-form-card">
-            <div class="yu-form-hd">
-                <div>
-                    <div style="font-size:1.1rem;font-weight:700;letter-spacing:-.02em;">Edit: {{ container.name }}</div>
-                    <div style="font-size:.72rem;color:var(--muted);margin-top:.15rem;font-family:monospace;">{{ container.id }}</div>
+<div class="yu-page">
+    <div class="page-hd">
+        <div class="page-hd-icon"><i class="bi bi-pencil-square"></i></div>
+        <div>
+            <div class="page-hd-title">Edit {{ container.name }}</div>
+            <div class="page-hd-sub">Update image, resources, ports, env, and storage location for this server.</div>
+            <div class="edit-id">Container ID: {{ container.id }}</div>
+        </div>
+        {% if container.state == "running" %}
+        <span class="edit-state-badge run"><span class="edit-state-dot"></span> running</span>
+        {% else %}
+        <span class="edit-state-badge stop"><span class="edit-state-dot"></span> {{ container.state }}</span>
+        {% endif %}
+    </div>
+
+    {% if let Some(err) = error %}
+    <div class="yu-alert-err">
+        <i class="bi bi-exclamation-triangle-fill"></i>
+        <span>{{ err }}</span>
+    </div>
+    {% endif %}
+
+    <div class="yu-alert-warn" id="quota-warn-banner" style="display:none;">
+        <i class="bi bi-exclamation-triangle-fill"></i>
+        <span id="quota-warn-text">Filesystem quota support is unavailable — <strong>disk_limit</strong> may have no effect.</span>
+    </div>
+
+    <div class="form-grid">
+        <div class="form-col">
+            <div class="sec-card">
+                <div class="sec-hd" style="cursor:pointer;user-select:none;" onclick="toggleSecCard(this)">
+                    <div class="sec-hd-icon"><i class="bi bi-tag-fill"></i></div>
+                    <div class="sec-hd-title">Basic Info</div>
+                    <i class="bi bi-chevron-down sec-chev" style="margin-left:auto;color:var(--muted);transition:transform .2s;"></i>
                 </div>
-                {% if container.state == "running" %}
-                <span class="pill-run"><span class="pill-dot"></span>running</span>
-                {% else %}
-                <span class="pill-stop"><span class="pill-dot"></span>{{ container.state }}</span>
-                {% endif %}
+                <div class="sec-bd">
+                    <div class="row g-3">
+                        <div class="col-12 col-md-6">
+                            <label class="field-label" for="ae-name">Server Name</label>
+                            <input type="text" class="form-control" id="ae-name" value="{{ container.name }}" autocomplete="off" oninput="updateYaml()">
+                            <div class="field-note">Display name in panel and server list.</div>
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <label class="field-label" for="ae-owner">Owner</label>
+                            <select class="form-select" id="ae-owner">
+                                <option value="0" {% if edit.owner_id == 0 %}selected{% endif %}>— None —</option>
+                                {% for u in users %}
+                                <option value="{{ u.id }}" {% if u.id == edit.owner_id %}selected{% endif %}>{{ u.nickname }} {{ u.uid }} ({{ u.role }})</option>
+                                {% endfor %}
+                            </select>
+                            <div class="field-note">User who owns this container.</div>
+                        </div>
+                        <div class="col-12">
+                            <label class="field-label" for="ae-image">Docker Image</label>
+                            <div class="image-combo-wrap">
+                                <input type="text" class="form-control" id="ae-image" value="{{ edit.image }}" list="local-images-list" oninput="updateYaml()" placeholder="nginx:latest" autocomplete="off">
+                                <datalist id="local-images-list"></datalist>
+                            </div>
+                            <div class="field-note" style="display:flex;align-items:center;justify-content:space-between;margin-top:.4rem;">
+                                <span>Changing image can trigger recreate.</span>
+                                <button type="button" class="btn-fetch" id="fetch-env-btn" onclick="fetchImageEnv()">
+                                    <i class="bi bi-cloud-download"></i> Fetch ENV
+                                </button>
+                            </div>
+                            <div id="fetch-env-status" style="font-size:.7rem;margin-top:.25rem;min-height:1rem;"></div>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="yu-form-bd">
 
-                {% if let Some(err) = error %}
-                <div class="alert alert-danger d-flex align-items-center mb-3" role="alert">
-                    <span class="me-2">⚠️</span><div>{{ err }}</div>
+            <div class="sec-card">
+                <div class="sec-hd" style="cursor:pointer;user-select:none;" onclick="toggleSecCard(this)">
+                    <div class="sec-hd-icon"><i class="bi bi-cpu-fill"></i></div>
+                    <div class="sec-hd-title">Resources &amp; Limits</div>
+                    <i class="bi bi-chevron-down sec-chev" style="margin-left:auto;color:var(--muted);transition:transform .2s;"></i>
                 </div>
-                {% endif %}
-
-                <div class="alert alert-info d-flex align-items-start gap-2 mb-4" role="alert">
-                    <i class="bi bi-info-circle-fill mt-1" style="flex-shrink:0;"></i>
-                    <span>Name, owner, and resources are applied in-place without restart.
-                    Changing the <strong>image</strong>, <strong>ports</strong>, or <strong>environment</strong>
-                    will stop, recreate, and restart the container — volumes are preserved.</span>
-                </div>
-
-                <!-- General -->
-                <div class="row mb-4">
-                    <div class="col-md-6">
-                        <label for="ae-name" class="form-label">Container Name</label>
-                        <input type="text" class="form-control" id="ae-name" value="{{ container.name }}" autocomplete="off">
-                    </div>
-                    <div class="col-md-6">
-                        <label for="ae-image" class="form-label">Docker Image</label>
-                        <input type="text" class="form-control" id="ae-image" value="{{ edit.image }}" placeholder="e.g. itzg/minecraft-server" autocomplete="off">
-                        <div class="form-text">Changing image will recreate the container.</div>
-                    </div>
-                </div>
-
-                <!-- Owner -->
-                <div class="row mb-4">
-                    <div class="col-md-6">
-                        <label for="ae-owner" class="form-label">Owner</label>
-                        <select class="form-select" id="ae-owner">
-                            <option value="0" {% if edit.owner_id == 0 %}selected{% endif %}>(none)</option>
-                            {% for u in users %}
-                            <option value="{{ u.id }}" {% if u.id == edit.owner_id %}selected{% endif %}>
-                                {{ u.username }} ({{ u.role }})
-                            </option>
-                            {% endfor %}
-                        </select>
-                        <div class="form-text">User who owns this container.</div>
-                    </div>
-                </div>
-
-                <hr>
-
-                <h5 class="mb-3">Resources &amp; Limits</h5>
-                <div class="row mb-4">
-                    <div class="col-md-3">
-                        <label class="form-label">CPU Limit (cores)</label>
-                        <div class="input-group">
-                            <input type="number" class="form-control" id="ae-cpu" step="0.1" min="0" value="{{ edit.cpu }}" placeholder="Unlimited">
-                            <span class="input-group-text">cores</span>
+                <div class="sec-bd" style="display:none;">
+                    <div class="res-grid">
+                        <div>
+                            <label class="field-label">CPU Limit</label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="ae-cpu" step="0.1" min="0" value="{{ edit.cpu }}" placeholder="Unlimited" oninput="updateYaml()">
+                                <span class="input-group-text">cores</span>
+                            </div>
+                            <div class="field-note">0 means unlimited.</div>
                         </div>
-                        <div class="form-text small">e.g. 1.5 = 1.5 cores. 0 = no limit.</div>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Memory Limit</label>
-                        <div class="input-group">
-                            <input type="number" class="form-control" id="ae-mem" min="0" value="{{ edit.memory_mb }}" placeholder="Unlimited">
-                            <span class="input-group-text">MB</span>
+                        <div>
+                            <label class="field-label">Memory Limit</label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="ae-mem" min="0" value="{{ edit.memory_mb }}" placeholder="Unlimited" oninput="updateYaml()">
+                                <span class="input-group-text">MB</span>
+                            </div>
+                            <div class="field-note">0 means unlimited.</div>
                         </div>
-                        <div class="form-text small">e.g. 2048 = 2 GB. 0 = no limit.</div>
+                        <div>
+                            <label class="field-label">Disk Limit</label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="ae-disk-val" min="0" step="0.1" placeholder="Unlimited" oninput="updateYaml()">
+                                <select class="form-select" id="ae-disk-unit" style="max-width:72px;" onchange="updateYaml()">
+                                    <option value="gb" selected>GB</option>
+                                    <option value="mb">MB</option>
+                                </select>
+                            </div>
+                            <div class="field-note">Blank means unlimited.</div>
+                        </div>
+                        <div>
+                            <label class="field-label">Bandwidth Limit</label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="ae-bandwidth" min="1" placeholder="Unlimited" value="{{ edit.bandwidth_mbit }}">
+                                <span class="input-group-text">Mbit/s</span>
+                            </div>
+                            <div class="field-note">Blank means unlimited.</div>
+                        </div>
+                        <div style="grid-column:span 2;">
+                            <label class="field-label">Storage Location <span style="font-size:.69rem;color:var(--muted);">target base path for migration</span></label>
+                            <input type="hidden" id="storage-path-hidden" value="">
+                            <input type="hidden" id="ae-current-storage-base" value="{{ current_storage_base }}">
+                            <div class="stor-sel" id="stor-sel" tabindex="0"
+                                 onclick="storSelToggle(event)"
+                                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();storSelToggle(event);}else if(event.key==='Escape'){storSelClose();}">
+                                <div class="stor-sel-val">
+                                    <div class="stor-sel-icon"><i class="bi bi-hdd-fill" id="stor-sel-icon"></i></div>
+                                    <div class="stor-sel-info">
+                                        <span class="stor-sel-device" id="stor-sel-device">Loading…</span>
+                                        <span class="stor-sel-sub" id="stor-sel-sub"></span>
+                                    </div>
+                                    <i class="bi bi-chevron-down stor-sel-chev" id="stor-sel-chev"></i>
+                                </div>
+                                <div class="stor-sel-panel" id="stor-sel-panel"></div>
+                            </div>
+                            <div id="storage-path-note" style="margin-top:.45rem;font-size:.73rem;min-height:1.1rem;"></div>
+                            <div style="font-size:.73rem;color:var(--muted);margin-top:.35rem;">
+                                Current source: <code id="ae-current-source" style="font-size:.78em;">{{ current_storage_source }}</code>
+                            </div>
+                        </div>
+                        <div style="grid-column:span 2;display:flex;align-items:center;gap:.65rem;flex-wrap:wrap;">
+                            <button type="button" class="add-row-btn" id="ae-migrate-btn" onclick="migrateStorage(this)">
+                                <i class="bi bi-arrow-left-right"></i> Migrate Storage
+                            </button>
+                            <span id="ae-migrate-feedback"></span>
+                        </div>
                     </div>
                 </div>
+            </div>
 
-                <hr>
-
-                <!-- Ports -->
-                <div class="row mb-3">
-                    <div class="col-md-12">
-                        <label class="form-label d-flex justify-content-between align-items-center">
-                            <span>Port Mappings</span>
-                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="addPortRow()">+ Add Port</button>
-                        </label>
-                        <div id="ports-container"></div>
-                    </div>
+            <div class="sec-card">
+                <div class="sec-hd" style="cursor:pointer;user-select:none;" onclick="toggleSecCard(this)">
+                    <div class="sec-hd-icon"><i class="bi bi-diagram-2-fill"></i></div>
+                    <div class="sec-hd-title">Port Bindings</div>
+                    <i class="bi bi-chevron-down sec-chev" style="margin-left:auto;color:var(--muted);transition:transform .2s;"></i>
                 </div>
-
-                <!-- Env -->
-                <div class="row mb-4">
-                    <div class="col-md-12">
-                        <label class="form-label d-flex justify-content-between align-items-center">
-                            <span>Environment Variables</span>
-                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="addEnvRow()">+ Add</button>
-                        </label>
-                        <div id="env-container"></div>
+                <div class="sec-bd" style="display:none;">
+                    <div style="display:grid;grid-template-columns:1fr 28px 1fr 84px 26px;gap:.45rem;padding:0 .6rem .35rem;font-size:.69rem;color:var(--muted);font-weight:500;letter-spacing:.04em;text-transform:uppercase;">
+                        <span>Host Port</span><span></span><span>Container Port</span><span>Proto</span><span></span>
                     </div>
+                    <div class="row-list" id="ports-container"></div>
+                    <button type="button" class="add-row-btn" onclick="addPortRow()">
+                        <i class="bi bi-plus"></i> Add Port Binding
+                    </button>
                 </div>
+            </div>
 
-                <div class="d-flex justify-content-between align-items-center mt-4">
-                    <a href="/admin/containers" class="btn btn-secondary">Cancel</a>
-                    <div class="d-flex align-items-center gap-3">
-                        <span id="ae-feedback"></span>
-                        <button type="button" class="btn btn-primary" onclick="saveEdit(this)">
-                            <i class="bi bi-floppy me-1"></i> Save Changes
-                        </button>
+            <div class="sec-card">
+                <div class="sec-hd" style="cursor:pointer;user-select:none;" onclick="toggleSecCard(this)">
+                    <div class="sec-hd-icon"><i class="bi bi-code-square"></i></div>
+                    <div class="sec-hd-title">Environment Variables</div>
+                    <i class="bi bi-chevron-down sec-chev" style="margin-left:auto;color:var(--muted);transition:transform .2s;"></i>
+                </div>
+                <div class="sec-bd" style="display:none;">
+                    <div style="display:grid;grid-template-columns:1fr 20px 1fr 26px;gap:.45rem;padding:0 .6rem .35rem;font-size:.69rem;color:var(--muted);font-weight:500;letter-spacing:.04em;text-transform:uppercase;">
+                        <span>Key</span><span></span><span>Value</span><span></span>
                     </div>
+                    <div class="row-list" id="env-container"></div>
+                    <button type="button" class="add-row-btn" onclick="addEnvRow()">
+                        <i class="bi bi-plus"></i> Add Variable
+                    </button>
                 </div>
+            </div>
 
+            <div class="save-row">
+                <button type="button" class="btn-cancel" onclick="if(window.yuGo){window.yuGo('/admin/containers');}else{location.href='/admin/containers';}">
+                    <i class="bi bi-x-lg"></i> Cancel
+                </button>
+                <div style="display:flex;align-items:center;gap:.6rem;">
+                    <span id="ae-feedback"></span>
+                    <button type="button" class="btn-create" onclick="saveEdit(this)">
+                        <i class="bi bi-floppy"></i> Save Changes
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="preview-col">
+            <div class="yaml-card">
+                <div class="yaml-hd">
+                    <div class="yaml-hd-left">
+                        <i class="bi bi-file-code"></i>
+                        Generated Config
+                    </div>
+                    <button type="button" class="yaml-copy-btn" onclick="copyYaml(this)">
+                        <i class="bi bi-clipboard"></i> Copy
+                    </button>
+                </div>
+                <div id="yaml-editor-container"></div>
+            </div>
+            <div style="margin-top:.75rem;padding:.65rem .9rem;background:var(--surface);border:1px solid var(--bdr);border-radius:10px;font-size:.72rem;color:var(--muted);line-height:1.6;">
+                <i class="bi bi-info-circle" style="color:var(--accent-l);margin-right:.3rem;"></i>
+                Preview is generated from current edit fields to match New Server experience.
             </div>
         </div>
     </div>
 
-    <script nonce="{{nonce}}">
-    const AE_ID = {{ id }};
-    const INITIAL_PORTS = `{{ edit.ports }}`.trim();
-    const INITIAL_ENV   = `{{ edit.env }}`.trim();
+    <textarea id="config" style="display:none;"></textarea>
+    <textarea id="initial-ports" style="display:none;">{{ edit.ports }}</textarea>
+    <textarea id="initial-env" style="display:none;">{{ edit.env }}</textarea>
+    <textarea id="initial-disk-limit" style="display:none;">{{ edit.disk_limit }}</textarea>
+</div>
 
-    // ── Ports ──────────────────────────────────────────────────────────────────
-    function addPortRow(host = '', container = '', proto = 'tcp') {
-        const row = document.createElement('div');
-        row.className = 'row g-2 mb-2 port-row';
-        row.innerHTML = `
-            <div class="col">
-                <input type="number" class="form-control" placeholder="Host port" value="${host}" min="1" max="65535">
-            </div>
-            <div class="col-auto d-flex align-items-center px-1" style="color:var(--muted);">:</div>
-            <div class="col">
-                <input type="number" class="form-control" placeholder="Container port" value="${container}" min="1" max="65535">
-            </div>
-            <div class="col-auto" style="min-width:90px;">
-                <select class="form-select">
-                    <option value="tcp" ${proto==='tcp'?'selected':''}>TCP</option>
-                    <option value="udp" ${proto==='udp'?'selected':''}>UDP</option>
-                </select>
-            </div>
-            <div class="col-auto">
-                <button type="button" class="btn btn-sm btn-outline-danger remove-row-btn" onclick="this.closest('.port-row').remove()">
-                    <i class="bi bi-x"></i>
-                </button>
-            </div>`;
-        document.getElementById('ports-container').appendChild(row);
+<script nonce="{{nonce}}">
+const AE_ID = {{ id }};
+const INITIAL_PORTS = (document.getElementById('initial-ports')?.value || '').trim();
+const INITIAL_ENV = (document.getElementById('initial-env')?.value || '').trim();
+const INITIAL_DISK_LIMIT = (document.getElementById('initial-disk-limit')?.value || '').trim();
+const CURRENT_STORAGE_BASE = (document.getElementById('ae-current-storage-base')?.value || '').trim();
+
+function esc(s) {
+    return String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function parseDiskLimit(raw) {
+    const t = String(raw || '').trim().toLowerCase();
+    if (!t) return null;
+    const m = t.match(/^([0-9]+(?:\.[0-9]+)?)\s*(gb|g|mb|m)?$/);
+    if (!m) return null;
+    const val = m[1];
+    const unit = (m[2] || 'gb').startsWith('m') ? 'mb' : 'gb';
+    return { val, unit };
+}
+
+function getDiskLimitForSave() {
+    const val = (document.getElementById('ae-disk-val')?.value || '').trim();
+    if (!val) return '';
+    const num = parseFloat(val);
+    if (!Number.isFinite(num) || num <= 0) return '';
+    const unit = (document.getElementById('ae-disk-unit')?.value || 'gb').toLowerCase();
+    return `${val}${unit}`;
+}
+
+function hydrateDiskLimitFromInitial() {
+    const parsed = parseDiskLimit(INITIAL_DISK_LIMIT);
+    if (!parsed) return;
+    const valEl = document.getElementById('ae-disk-val');
+    const unitEl = document.getElementById('ae-disk-unit');
+    if (valEl) valEl.value = parsed.val;
+    if (unitEl) unitEl.value = parsed.unit;
+}
+
+function getPortRowHtml(host = '', container = '', proto = 'tcp') {
+    const opt = (v) => `<option value="${v}"${proto === v ? ' selected' : ''}>`;
+    return `
+    <div class="entry-row" style="display:grid;grid-template-columns:1fr 28px 1fr 84px 26px;gap:.45rem;align-items:center;">
+        <input type="number" min="1" max="65535" class="form-control host-input" placeholder="20000" value="${host}" oninput="updateYaml()">
+        <span class="row-sep" style="text-align:center;">:</span>
+        <input type="number" min="1" max="65535" class="form-control container-input" placeholder="20000" value="${container}" oninput="updateYaml()">
+        <select class="form-select proto-sel proto-input" onchange="updateYaml()">
+            ${opt('tcp')}TCP</option>
+            ${opt('udp')}UDP</option>
+            ${opt('tcp+udp')}Both</option>
+        </select>
+        <button type="button" class="row-del" onclick="this.closest('.entry-row').remove();updateYaml()" title="Remove">
+            <i class="bi bi-trash3"></i>
+        </button>
+    </div>`;
+}
+
+function getEnvRowHtml(key = '', val = '') {
+    return `
+    <div class="entry-row" style="display:grid;grid-template-columns:1fr 20px 1fr 26px;gap:.45rem;align-items:center;">
+        <input type="text" class="form-control key-input" placeholder="VARIABLE" value="${esc(key)}" oninput="updateYaml()">
+        <span class="row-sep" style="text-align:center;">=</span>
+        <input type="text" class="form-control val-input" placeholder="value" value="${esc(val)}" oninput="updateYaml()">
+        <button type="button" class="row-del" onclick="this.closest('.entry-row').remove();updateYaml()" title="Remove">
+            <i class="bi bi-trash3"></i>
+        </button>
+    </div>`;
+}
+
+function addPortRow(h, c, p) {
+    document.getElementById('ports-container').insertAdjacentHTML('beforeend', getPortRowHtml(h, c, p));
+    if (h === undefined) updateYaml();
+}
+
+function addEnvRow(k, v) {
+    document.getElementById('env-container').insertAdjacentHTML('beforeend', getEnvRowHtml(k, v));
+    if (k === undefined) updateYaml();
+}
+
+function toggleSecCard(hd) {
+    const card = hd.closest('.sec-card');
+    const body = card.querySelector('.sec-bd');
+    if (!body) return;
+    const open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : '';
+    const chev = hd.querySelector('.sec-chev');
+    if (chev) {
+        chev.className = 'bi ' + (open ? 'bi-chevron-down' : 'bi-chevron-up') + ' sec-chev';
+        chev.style.cssText = 'margin-left:auto;color:var(--muted);transition:transform .2s;';
+    }
+}
+
+function updateYaml() {
+    const config = {
+        image: document.getElementById('ae-image').value || undefined,
+        ports: [],
+        environment: []
+    };
+
+    const cpus = parseFloat(document.getElementById('ae-cpu').value || '0');
+    if (cpus > 0) config.cpus = cpus;
+
+    const memMb = parseInt(document.getElementById('ae-mem').value || '0', 10);
+    if (memMb > 0) config.mem_limit = `${memMb}mb`;
+
+    const diskLimit = getDiskLimitForSave();
+    if (diskLimit) config.disk_limit = diskLimit;
+
+    document.querySelectorAll('#ports-container .entry-row').forEach((row) => {
+        const h = row.querySelector('.host-input').value;
+        const c = row.querySelector('.container-input').value;
+        const p = row.querySelector('.proto-input').value;
+        if (!h || !c) return;
+        if (p === 'tcp+udp') {
+            config.ports.push(`${h}:${c}/tcp`);
+            config.ports.push(`${h}:${c}/udp`);
+        } else {
+            config.ports.push(`${h}:${c}/${p}`);
+        }
+    });
+
+    document.querySelectorAll('#env-container .entry-row').forEach((row) => {
+        const k = row.querySelector('.key-input').value;
+        const v = row.querySelector('.val-input').value;
+        if (k) config.environment.push(`${k}=${v}`);
+    });
+
+    if (!config.ports.length) delete config.ports;
+    if (!config.environment.length) delete config.environment;
+    if (!config.image) delete config.image;
+
+    const yamlStr = jsyaml.dump(config, { indent: 2, lineWidth: -1 });
+    document.getElementById('config').value = yamlStr;
+    if (window.yamlEditor) {
+        const pos = window.yamlEditor.getPosition();
+        window.yamlEditor.setValue(yamlStr);
+        if (pos) window.yamlEditor.setPosition(pos);
+    }
+}
+
+function copyYaml(btn) {
+    const val = document.getElementById('config').value;
+    if (!val) return;
+    navigator.clipboard.writeText(val).then(() => {
+        btn.innerHTML = '<i class="bi bi-check2"></i> Copied!';
+        btn.style.color = 'var(--success)';
+        setTimeout(() => {
+            btn.innerHTML = '<i class="bi bi-clipboard"></i> Copy';
+            btn.style.color = '';
+        }, 2000);
+    });
+}
+
+fetch('/api/image/local').then((r) => r.json()).then((d) => {
+    const dl = document.getElementById('local-images-list');
+    (d.tags || []).forEach((t) => {
+        const opt = document.createElement('option');
+        opt.value = t;
+        dl.appendChild(opt);
+    });
+}).catch(() => {});
+
+async function fetchImageEnv() {
+    const image = document.getElementById('ae-image').value.trim();
+    if (!image) {
+        alert('Enter a Docker image name first.');
+        return;
     }
 
-    function getPorts() {
-        return [...document.querySelectorAll('#ports-container .port-row')].map(row => {
-            const inputs = row.querySelectorAll('input');
-            const sel    = row.querySelector('select');
-            const host   = inputs[0].value.trim();
-            const cont   = inputs[1].value.trim();
-            if (!host || !cont) return null;
-            return `${host}:${cont}/${sel.value}`;
-        }).filter(Boolean).join('\n');
+    const btn = document.getElementById('fetch-env-btn');
+    const status = document.getElementById('fetch-env-status');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" style="width:.8rem;height:.8rem;"></span> Loading…';
+    status.style.color = '';
+    status.textContent = '';
+
+    try {
+        const enc = encodeURIComponent(image);
+        const overridesRes = await fetch(`/api/image/env-overrides?image=${enc}`).then((r) => r.json()).catch(() => ({ ok: false, env: '' }));
+        const dbEnv = (overridesRes.ok && overridesRes.env) ? overridesRes.env.trim() : '';
+
+        const map = new Map();
+        if (dbEnv) {
+            for (const line of dbEnv.split('\n')) {
+                const t = line.trim();
+                if (!t) continue;
+                const eq = t.indexOf('=');
+                map.set(eq >= 0 ? t.slice(0, eq) : t, eq >= 0 ? t.slice(eq + 1) : '');
+            }
+        } else {
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" style="width:.8rem;height:.8rem;"></span> Pulling image…';
+            const nativeRes = await fetch(`/api/image/env?image=${enc}`).then((r) => r.json());
+            if (!nativeRes.ok) throw new Error(nativeRes.error || 'Unknown error');
+            for (const pair of (nativeRes.env || [])) {
+                const eq = pair.indexOf('=');
+                map.set(eq >= 0 ? pair.slice(0, eq) : pair, eq >= 0 ? pair.slice(eq + 1) : '');
+            }
+        }
+
+        const existing = new Set(Array.from(document.querySelectorAll('#env-container .key-input')).map((el) => el.value));
+        let added = 0;
+        for (const [k, v] of map) {
+            if (!existing.has(k)) {
+                addEnvRow(k, v);
+                existing.add(k);
+                added++;
+            }
+        }
+
+        status.style.color = 'var(--success)';
+        status.textContent = added > 0
+            ? `✓ Added ${added} var${added !== 1 ? 's' : ''}${dbEnv ? ' (from DB)' : ''}`
+            : '✓ No new vars';
+    } catch (e) {
+        status.style.color = 'var(--danger)';
+        status.textContent = `✗ ${e.message}`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-cloud-download"></i> Fetch ENV';
+        setTimeout(() => { status.textContent = ''; }, 4000);
+        updateYaml();
+    }
+}
+
+function renderQuotaPreflightBanner(d) {
+    const banner = document.getElementById('quota-warn-banner');
+    const text = document.getElementById('quota-warn-text');
+    if (!banner || !text) return;
+
+    if (d && d.ok) {
+        banner.style.display = 'none';
+        return;
     }
 
-    // ── Env ────────────────────────────────────────────────────────────────────
-    function addEnvRow(key = '', value = '') {
-        const row = document.createElement('div');
-        row.className = 'row g-2 mb-2 env-row';
-        row.innerHTML = `
-            <div class="col-md-4">
-                <input type="text" class="form-control" placeholder="KEY" value="${esc(key)}" autocomplete="off">
+    let msg = 'No quota-capable filesystem detected (ext4 with prjquota). disk_limit may not be enforced.';
+    if (d && d.ext4_without_prjquota) {
+        msg = 'ext4 detected without prjquota/prjjquota. disk_limit will not be enforced. Enable prjquota in your mount options and remount to enforce per-container disk limits.';
+    }
+
+    text.textContent = msg;
+    banner.style.display = '';
+}
+
+async function loadQuotaPreflight() {
+    try {
+        const d = await fetch('/api/quota-check').then((r) => r.json());
+        renderQuotaPreflightBanner(d);
+    } catch {
+        renderQuotaPreflightBanner({ ok: false });
+    }
+}
+
+let _storMounts = [];
+let _storIdx = 0;
+
+function normalizePath(p) {
+    return String(p || '').replace(/\/+$/, '');
+}
+
+function _storIconClass(m) {
+    if (m.is_default) return 'bi-folder2';
+    const d = (m.device || '').toLowerCase();
+    if (d.includes('nvme')) return 'bi-device-ssd-fill';
+    if (d.includes('sd') || d.includes('hd')) return 'bi-hdd-fill';
+    return 'bi-hdd-fill';
+}
+
+function _storBarColor(pct) {
+    return pct > 80 ? '#f87171' : pct > 55 ? '#fbbf24' : '#34d399';
+}
+
+function _storRenderTrigger() {
+    const m = _storMounts[_storIdx];
+    if (!m) return;
+
+    const iconEl = document.getElementById('stor-sel-icon');
+    const deviceEl = document.getElementById('stor-sel-device');
+    const subEl = document.getElementById('stor-sel-sub');
+    const hidden = document.getElementById('storage-path-hidden');
+
+    if (iconEl) iconEl.className = 'bi ' + _storIconClass(m);
+    if (deviceEl) deviceEl.textContent = m.device;
+    if (subEl) subEl.textContent = m.sub;
+    if (hidden) hidden.value = m.value;
+
+    _storRenderNote(m);
+}
+
+function _storRenderPanel() {
+    const panel = document.getElementById('stor-sel-panel');
+    if (!panel) return;
+
+    panel.innerHTML = _storMounts.map((m, i) => {
+        const icon = _storIconClass(m);
+        const badge = m.is_default
+            ? ''
+            : m.has_ext4
+            ? (m.has_prjquota ? '<span class="stor-opt-badge ext4">ext4+prjquota</span>' : '<span class="stor-opt-badge nq">ext4 no quota</span>')
+            : '<span class="stor-opt-badge nq">no quota</span>';
+
+        const row2 = m.path2 ? `<div class="stor-opt-row2">${esc(m.path2)}</div>` : '';
+        const barFill = m.total > 0
+            ? `<div class="stor-opt-usage">
+                 <div class="stor-opt-bar"><div class="stor-opt-bar-fill" style="width:${Math.min(m.pct, 100)}%;background:${_storBarColor(m.pct)};"></div></div>
+                 <span class="stor-opt-free">${m.free} free</span>
+               </div>`
+            : '';
+
+        const check = i === _storIdx ? '<i class="bi bi-check2"></i>' : '';
+
+        return `<div class="stor-opt${i === _storIdx ? ' active' : ''}" onclick="storSelPick(${i})">
+            <div class="stor-opt-icon"><i class="bi ${icon}"></i></div>
+            <div class="stor-opt-body">
+                <div class="stor-opt-row1">
+                    <span class="stor-opt-device">${esc(m.device)}</span>
+                    <span class="stor-opt-mount">${esc(m.mount)}</span>
+                    ${badge}
+                </div>
+                ${row2}
             </div>
-            <div class="col-auto d-flex align-items-center px-1" style="color:var(--muted);">=</div>
-            <div class="col">
-                <input type="text" class="form-control" placeholder="VALUE" value="${esc(value)}" autocomplete="off">
-            </div>
-            <div class="col-auto">
-                <button type="button" class="btn btn-sm btn-outline-danger remove-row-btn" onclick="this.closest('.env-row').remove()">
-                    <i class="bi bi-x"></i>
-                </button>
-            </div>`;
-        document.getElementById('env-container').appendChild(row);
+            ${barFill}
+            <div class="stor-opt-check">${check}</div>
+        </div>`;
+    }).join('');
+}
+
+function _storRenderNote(m) {
+    const note = document.getElementById('storage-path-note');
+    if (!note) return;
+    if (!m || m.is_default) {
+        note.innerHTML = '';
+        return;
     }
 
-    function getEnv() {
-        return [...document.querySelectorAll('#env-container .env-row')].map(row => {
-            const inputs = row.querySelectorAll('input');
-            const key = inputs[0].value.trim();
-            const val = inputs[1].value;
-            if (!key) return null;
-            return `${key}=${val}`;
-        }).filter(Boolean).join('\n');
+    const samePath = normalizePath(m.value) === normalizePath(CURRENT_STORAGE_BASE);
+    if (samePath) {
+        note.innerHTML = '<span style="color:#93c5fd;"><i class="bi bi-info-circle"></i> This container is already on this storage base.</span>';
+        return;
     }
 
-    function esc(s) {
-        return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+    if (m.has_ext4 && m.has_prjquota) {
+        note.innerHTML = `<span style="color:#fb923c;"><i class="bi bi-check-circle"></i> ext4 prjquota active on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits enforced.</span>`;
+    } else if (m.has_ext4) {
+        note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> ext4 without prjquota on <code style="font-size:.78em;">${esc(m.device)}</code> — add <strong>prjquota</strong> mount option and remount to enforce disk limits.</span>`;
+    } else {
+        note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> Quotas are unavailable on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits will <strong>not</strong> be enforced.</span>`;
+    }
+}
+
+function storSelToggle(e) {
+    if (e) e.stopPropagation();
+
+    const el = document.getElementById('stor-sel');
+    const panel = document.getElementById('stor-sel-panel');
+    if (!el || !panel || el.hasAttribute('disabled')) return;
+
+    if (el.classList.contains('open')) {
+        el.classList.remove('open');
+    } else {
+        _storRenderPanel();
+        const rect = el.getBoundingClientRect();
+        panel.style.top = (rect.bottom + 5) + 'px';
+        panel.style.left = rect.left + 'px';
+        panel.style.width = rect.width + 'px';
+        el.classList.add('open');
+    }
+}
+
+function storSelClose() {
+    const el = document.getElementById('stor-sel');
+    if (el) el.classList.remove('open');
+}
+
+function storSelPick(idx) {
+    _storIdx = idx;
+    _storRenderTrigger();
+    storSelClose();
+}
+
+document.addEventListener('click', (e) => {
+    const el = document.getElementById('stor-sel');
+    if (el && !el.contains(e.target)) storSelClose();
+});
+
+(function loadStorMounts() {
+    function initDefault(hint) {
+        _storMounts = [{
+            device: 'Default',
+            mount: '',
+            sub: hint || 'volumes/ in panel directory',
+            path2: '',
+            value: '',
+            is_default: true,
+            has_prjquota: false,
+            has_ext4: false,
+            free: '--',
+            total: 0,
+            pct: 0,
+        }];
+        _storIdx = 0;
+        _storRenderTrigger();
     }
 
-    // ── Init existing config ───────────────────────────────────────────────────
-    (function init() {
-        INITIAL_PORTS.split('\n').forEach(line => {
-            line = line.trim();
-            if (!line) return;
-            const slashIdx = line.lastIndexOf('/');
-            const proto = slashIdx >= 0 ? line.slice(slashIdx + 1) : 'tcp';
-            const main  = slashIdx >= 0 ? line.slice(0, slashIdx) : line;
-            const colonIdx = main.indexOf(':');
-            const host = colonIdx >= 0 ? main.slice(0, colonIdx) : main;
-            const cont = colonIdx >= 0 ? main.slice(colonIdx + 1) : main;
-            addPortRow(host, cont, proto);
+    initDefault('loading…');
+
+    fetch('/api/admin/storage/mounts', { credentials: 'same-origin' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+            if (!d || !d.ok) {
+                initDefault();
+                return;
+            }
+
+            const cp = d.current_path || '';
+            _storMounts = [{
+                device: 'Default',
+                mount: '',
+                sub: cp ? `panel default → ${cp}` : 'panel default (volumes/)',
+                path2: '',
+                value: '',
+                is_default: true,
+                has_prjquota: false,
+                has_ext4: false,
+                free: '--',
+                total: 0,
+                pct: 0,
+            }];
+
+            (d.mounts || []).forEach((m) => {
+                const sp = m.suggested_path || '';
+                _storMounts.push({
+                    device: m.device || 'disk',
+                    mount: m.mount || '',
+                    sub: sp || m.mount,
+                    path2: sp ? `→ ${sp}` : '',
+                    value: sp,
+                    is_default: false,
+                    has_prjquota: !!m.has_prjquota,
+                    has_ext4: !!m.has_ext4,
+                    free: `${m.free_gib} GiB`,
+                    total: parseFloat(m.total_gib) || 0,
+                    pct: m.used_pct || 0,
+                });
+            });
+
+            const idx = _storMounts.findIndex((m) => normalizePath(m.value) === normalizePath(CURRENT_STORAGE_BASE));
+            _storIdx = idx >= 0 ? idx : 0;
+            _storRenderTrigger();
+        })
+        .catch(() => initDefault());
+})();
+
+async function migrateStorage(btn) {
+    const feedback = document.getElementById('ae-migrate-feedback');
+    const target = (document.getElementById('storage-path-hidden')?.value || '').trim();
+
+    feedback.textContent = '';
+    feedback.style.color = '';
+
+    if (!target || !target.startsWith('/')) {
+        feedback.textContent = 'Select a valid absolute target path.';
+        feedback.style.color = '#ef4444';
+        return;
+    }
+
+    if (normalizePath(target) === normalizePath(CURRENT_STORAGE_BASE)) {
+        feedback.textContent = 'This container is already on that storage base.';
+        feedback.style.color = '#93c5fd';
+        return;
+    }
+
+    if (!confirm(`Migrate this container volume to\n${target}\n\nContainer will be stopped and recreated. Continue?`)) {
+        return;
+    }
+
+    const oldHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Migrating…';
+
+    try {
+        const res = await fetch('/api/admin/storage/migrate', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ server_id: AE_ID, target_base_path: target }),
         });
+        const data = await res.json().catch(() => ({}));
 
-        INITIAL_ENV.split('\n').forEach(line => {
-            line = line.trim();
-            if (!line) return;
-            const eqIdx = line.indexOf('=');
-            const key = eqIdx >= 0 ? line.slice(0, eqIdx) : line;
-            const val = eqIdx >= 0 ? line.slice(eqIdx + 1) : '';
-            addEnvRow(key, val);
-        });
-    })();
-
-    // ── Save ───────────────────────────────────────────────────────────────────
-    async function saveEdit(btn) {
-        const feedback = document.getElementById('ae-feedback');
-        btn.disabled = true;
-        btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i> Saving…';
-        feedback.textContent = '';
-        feedback.style.color = '';
-
-        const body = {
-            name:      document.getElementById('ae-name').value.trim(),
-            image:     document.getElementById('ae-image').value.trim(),
-            owner_id:  parseInt(document.getElementById('ae-owner').value, 10) || 0,
-            memory_mb: parseInt(document.getElementById('ae-mem').value, 10)   || 0,
-            cpu:       parseFloat(document.getElementById('ae-cpu').value)      || 0,
-            ports:     getPorts(),
-            env:       getEnv(),
-        };
-
-        if (!body.name) {
-            feedback.textContent = 'Name cannot be empty.';
-            feedback.style.color = '#ef4444';
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-floppy me-1"></i> Save Changes';
+        if (data.ok) {
+            feedback.textContent = '✓ Migration complete. Reloading…';
+            feedback.style.color = '#10b981';
+            setTimeout(() => location.reload(), 900);
             return;
         }
 
-        try {
-            const res  = await fetch(`/api/admin/servers/${AE_ID}/edit`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            });
-            const data = await res.json();
-            if (!res.ok || data.error) {
-                feedback.textContent = '✗ ' + (data.error || 'Unknown error');
-                feedback.style.color = '#ef4444';
-                btn.disabled = false;
-                btn.innerHTML = '<i class="bi bi-floppy me-1"></i> Save Changes';
-                return;
-            }
-            feedback.textContent = '✓ Saved';
-            feedback.style.color = '#10b981';
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-floppy me-1"></i> Save Changes';
-            if (data.new_id != null) {
-                feedback.textContent = '✓ Saved — reloading…';
-                setTimeout(() => { window.location.href = `/admin/servers/${data.new_id}/edit`; }, 800);
-            }
-        } catch (e) {
-            feedback.textContent = '✗ Network error';
-            feedback.style.color = '#ef4444';
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-floppy me-1"></i> Save Changes';
+        if (data.needs_permission) {
+            feedback.innerHTML = `<span style="color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> ${esc(data.message || 'Sudo permission required')}</span><code>${esc(data.fix_command || '')}</code>`;
+            return;
         }
+
+        feedback.textContent = `✗ ${data.error || 'Migration failed'}`;
+        feedback.style.color = '#ef4444';
+    } catch (e) {
+        feedback.textContent = `✗ ${e.message || 'Network error'}`;
+        feedback.style.color = '#ef4444';
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = oldHtml;
     }
-    </script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous" nonce="{{nonce}}"></script>
-    {% include "_script_footer.html" %}
+}
+
+if (!window.__monacoEditServerReady) {
+    window.__monacoEditServerReady = true;
+    require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' } });
+    require(['vs/editor/editor.main'], function () {
+        window.yamlEditor = monaco.editor.create(document.getElementById('yaml-editor-container'), {
+            value: '',
+            language: 'yaml',
+            theme: 'vs-dark',
+            automaticLayout: true,
+            minimap: { enabled: false },
+            scrollBeyondLastLine: false,
+            fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+            fontSize: 12,
+            lineHeight: 19,
+            lineNumbers: 'on',
+            renderLineHighlight: 'gutter',
+            roundedSelection: true,
+            scrollbar: { verticalScrollbarSize: 4, horizontalScrollbarSize: 4 },
+            padding: { top: 10, bottom: 10 },
+            wordWrap: 'off',
+            overviewRulerLanes: 0,
+            hideCursorInOverviewRuler: true,
+            overviewRulerBorder: false,
+            glyphMargin: false,
+            folding: true,
+            renderWhitespace: 'none',
+            bracketPairColorization: { enabled: true },
+        });
+        updateYaml();
+    });
+}
+
+function getPortsForSave() {
+    const ports = [];
+    document.querySelectorAll('#ports-container .entry-row').forEach((row) => {
+        const h = row.querySelector('.host-input').value.trim();
+        const c = row.querySelector('.container-input').value.trim();
+        const p = row.querySelector('.proto-input').value;
+        if (!h || !c) return;
+        if (p === 'tcp+udp') {
+            ports.push(`${h}:${c}/tcp`);
+            ports.push(`${h}:${c}/udp`);
+        } else {
+            ports.push(`${h}:${c}/${p}`);
+        }
+    });
+    return ports.join('\n');
+}
+
+function getEnvForSave() {
+    const env = [];
+    document.querySelectorAll('#env-container .entry-row').forEach((row) => {
+        const k = row.querySelector('.key-input').value.trim();
+        const v = row.querySelector('.val-input').value;
+        if (k) env.push(`${k}=${v}`);
+    });
+    return env.join('\n');
+}
+
+function seedRowsFromInitial() {
+    const grouped = new Map();
+
+    INITIAL_PORTS.split('\n').forEach((lineRaw) => {
+        const line = lineRaw.trim();
+        if (!line) return;
+
+        const slashIdx = line.lastIndexOf('/');
+        const proto = slashIdx >= 0 ? line.slice(slashIdx + 1).toLowerCase() : 'tcp';
+        const main = slashIdx >= 0 ? line.slice(0, slashIdx) : line;
+        const colIdx = main.indexOf(':');
+        const host = colIdx >= 0 ? main.slice(0, colIdx) : main;
+        const cont = colIdx >= 0 ? main.slice(colIdx + 1) : main;
+        const key = `${host}:${cont}`;
+
+        if (!grouped.has(key)) {
+            grouped.set(key, { host, cont, protos: new Set() });
+        }
+        grouped.get(key).protos.add(proto);
+    });
+
+    grouped.forEach((v) => {
+        const hasTcp = v.protos.has('tcp');
+        const hasUdp = v.protos.has('udp');
+        let proto = 'tcp';
+        if (hasTcp && hasUdp) proto = 'tcp+udp';
+        else if (hasUdp) proto = 'udp';
+        addPortRow(v.host, v.cont, proto);
+    });
+
+    if (grouped.size === 0) {
+        addPortRow('', '', 'tcp');
+    }
+
+    let envCount = 0;
+    INITIAL_ENV.split('\n').forEach((lineRaw) => {
+        const line = lineRaw.trim();
+        if (!line) return;
+        const eqIdx = line.indexOf('=');
+        const key = eqIdx >= 0 ? line.slice(0, eqIdx) : line;
+        const val = eqIdx >= 0 ? line.slice(eqIdx + 1) : '';
+        addEnvRow(key, val);
+        envCount += 1;
+    });
+
+    if (envCount === 0) {
+        addEnvRow('', '');
+    }
+}
+
+async function saveEdit(btn) {
+    const feedback = document.getElementById('ae-feedback');
+    const name = document.getElementById('ae-name').value.trim();
+    const image = document.getElementById('ae-image').value.trim();
+
+    if (!name) {
+        feedback.textContent = 'Name cannot be empty.';
+        feedback.style.color = '#ef4444';
+        return;
+    }
+    if (!image) {
+        feedback.textContent = 'Image cannot be empty.';
+        feedback.style.color = '#ef4444';
+        return;
+    }
+
+    btn.disabled = true;
+    const oldHtml = btn.innerHTML;
+    btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Saving…';
+    feedback.textContent = '';
+    feedback.style.color = '';
+
+    const body = {
+        name,
+        image,
+        owner_id: parseInt(document.getElementById('ae-owner').value, 10) || 0,
+        memory_mb: parseInt(document.getElementById('ae-mem').value, 10) || 0,
+        cpu: parseFloat(document.getElementById('ae-cpu').value) || 0,
+        disk_limit: getDiskLimitForSave(),
+        bandwidth_mbit: (document.getElementById('ae-bandwidth')?.value || '').trim(),
+        ports: getPortsForSave(),
+        env: getEnvForSave(),
+    };
+
+    try {
+        const res = await fetch(`/api/admin/servers/${AE_ID}/edit`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+            feedback.textContent = `✗ ${data.error || 'Unknown error'}`;
+            feedback.style.color = '#ef4444';
+            return;
+        }
+
+        feedback.textContent = '✓ Saved';
+        feedback.style.color = '#10b981';
+
+        if (data.new_id != null) {
+            feedback.textContent = '✓ Saved — reloading…';
+            setTimeout(() => {
+                const next = `/admin/servers/${data.new_id}/edit`;
+                if (window.yuGo) window.yuGo(next);
+                else window.location.href = next;
+            }, 700);
+        }
+    } catch (e) {
+        feedback.textContent = `✗ ${e.message || 'Network error'}`;
+        feedback.style.color = '#ef4444';
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = oldHtml;
+        updateYaml();
+    }
+}
+
+seedRowsFromInitial();
+hydrateDiskLimitFromInitial();
+loadQuotaPreflight();
+updateYaml();
+</script>
+
+{% include "_script_footer.html" %}
 </body>
 </html>

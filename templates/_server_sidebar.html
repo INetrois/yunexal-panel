@@ -13,9 +13,13 @@
     </div>
     <div class="yu-sidebar-top">
         <div class="yu-nav-label">Server</div>
-        <a href="/servers/{{id}}/console" class="yu-nav-item{% if active_tab == "console" %} active{% endif %}"><i class="bi bi-terminal-fill"></i> Console</a>
-        <a href="/servers/{{id}}/files" class="yu-nav-item{% if active_tab == "files" %} active{% endif %}"><i class="bi bi-folder2-open"></i> Files</a>
-        <a href="/servers/{{id}}/networking" class="yu-nav-item{% if active_tab == "networking" %} active{% endif %}"><i class="bi bi-diagram-3"></i> Networking</a>
-        <a href="/servers/{{id}}/settings" class="yu-nav-item{% if active_tab == "settings" %} active{% endif %}"><i class="bi bi-gear"></i> Settings</a>
+        <a href="/servers/{{id}}/console" class="yu-nav-item{% if active_tab == "console" %} active{% endif %}" onclick="if (typeof serverSwitchTab === 'function') { serverSwitchTab('/servers/{{id}}/console', this); return false; }"><i class="bi bi-terminal-fill"></i> Console</a>
+        <a href="/servers/{{id}}/files" class="yu-nav-item{% if active_tab == "files" %} active{% endif %}" onclick="if (typeof serverSwitchTab === 'function') { serverSwitchTab('/servers/{{id}}/files', this); return false; }"><i class="bi bi-folder2-open"></i> Files</a>
+        <a href="/servers/{{id}}/networking" class="yu-nav-item{% if active_tab == "networking" %} active{% endif %}" onclick="if (typeof serverSwitchTab === 'function') { serverSwitchTab('/servers/{{id}}/networking', this); return false; }"><i class="bi bi-diagram-3"></i> Networking</a>
+        {% if can_members %}
+        <a href="/servers/{{id}}/users" class="yu-nav-item{% if active_tab == "users" %} active{% endif %}" onclick="if (typeof serverSwitchTab === 'function') { serverSwitchTab('/servers/{{id}}/users', this); return false; }"><i class="bi bi-people"></i> Users</a>
+        {% endif %}
+        <a href="/servers/{{id}}/audit" class="yu-nav-item{% if active_tab == "audit" %} active{% endif %}" onclick="if (typeof serverSwitchTab === 'function') { serverSwitchTab('/servers/{{id}}/audit', this); return false; }"><i class="bi bi-clock-history"></i> Audit</a>
+        <a href="/servers/{{id}}/settings" class="yu-nav-item{% if active_tab == "settings" %} active{% endif %}" onclick="if (typeof serverSwitchTab === 'function') { serverSwitchTab('/servers/{{id}}/settings', this); return false; }"><i class="bi bi-gear"></i> Settings</a>
     </div>
 </aside>

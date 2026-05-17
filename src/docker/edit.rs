@@ -148,7 +148,7 @@ pub async fn update_container_resources(id: &str, cpu: f64, memory_mb: i64) -> R
 
 /// Stops, removes, and recreates a container with updated config.
 /// Returns the new container ID.
-pub async fn recreate_with_updated_config(
+async fn recreate_with_updated_config_inner(
     docker: &Docker,
     old_id: &str,
     new_image: &str,
@@ -157,6 +157,8 @@ pub async fn recreate_with_updated_config(
     new_cpu: f64,
     new_memory_mb: i64,
     new_name: &str,
+    volume_source_override: Option<&str>,
+    disk_limit_override: Option<Option<String>>,
 ) -> Result<String> {
     let inspect = docker
         .inspect_container(old_id, None::<bollard::query_parameters::InspectContainerOptions>)
@@ -172,15 +174,55 @@ pub async fn recreate_with_updated_config(
     let port_bindings = parse_ports_to_bindings(new_ports);
     host_config.port_bindings = if port_bindings.is_empty() { None } else { Some(port_bindings) };
 
+    if let Some(new_source) = volume_source_override {
+        let binds = host_config.binds.as_mut().ok_or_else(|| anyhow::anyhow!(
+            "Container has no bind mounts to migrate"
+        ))?;
+        let first = binds.first_mut().ok_or_else(|| anyhow::anyhow!(
+            "Container has no bind mounts to migrate"
+        ))?;
+        let mut parts = first.splitn(3, ':');
+        let _old_source = parts.next().unwrap_or("");
+        let target = parts.next().ok_or_else(|| anyhow::anyhow!(
+            "Invalid bind format while migrating: {}",
+            first
+        ))?;
+        let mode = parts.next();
+        *first = if let Some(mode) = mode {
+            format!("{}:{}:{}", new_source, target, mode)
+        } else {
+            format!("{}:{}", new_source, target)
+        };
+    }
+
     let env_vec: Vec<String> = new_env.lines()
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .collect();
 
-    // Preserve volume_dir label
+    // Preserve/normalize labels so recreated legacy containers stay discoverable.
     let mut labels = inspect.config.as_ref()
         .and_then(|cfg| cfg.labels.clone())
         .unwrap_or_default();
+
+    labels.insert("yunexal.managed".to_string(), "true".to_string());
+
+    if labels.get("yunexal.volume_dir").map(|v| v.trim().is_empty()).unwrap_or(true) {
+        let legacy_volume = [
+            "panel.volume_dir",
+            "panel-volume-dir",
+            "volume_key",
+            "volume-dir",
+            "volume_dir",
+        ]
+        .iter()
+        .find_map(|k| labels.get(*k).cloned())
+        .filter(|v| !v.trim().is_empty());
+
+        if let Some(v) = legacy_volume {
+            labels.insert("yunexal.volume_dir".to_string(), v);
+        }
+    }
 
     let volume_dir_from_bind = host_config.binds.as_ref()
         .and_then(|binds| binds.first())
@@ -191,8 +233,23 @@ pub async fn recreate_with_updated_config(
 
     if let Some(ref vdir) = volume_dir_from_bind {
         labels.insert("yunexal.volume_dir".to_string(), vdir.clone());
-    } else if !labels.contains_key("yunexal.volume_dir") {
+    } else if labels
+        .get("yunexal.volume_dir")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+    {
         labels.insert("yunexal.volume_dir".to_string(), full_old_id);
+    }
+
+    if let Some(limit) = disk_limit_override {
+        match limit {
+            Some(v) if !v.trim().is_empty() => {
+                labels.insert("yunexal.disk_limit".to_string(), v.trim().to_string());
+            }
+            _ => {
+                labels.remove("yunexal.disk_limit");
+            }
+        }
     }
 
     let new_config = bollard::models::ContainerCreateBody {
@@ -213,6 +270,85 @@ pub async fn recreate_with_updated_config(
     super::remove_container(docker, old_id).await?;
     let new_id = super::create_container(docker, new_name, new_config).await?;
     Ok(new_id)
+}
+
+pub async fn recreate_with_updated_config(
+    docker: &Docker,
+    old_id: &str,
+    new_image: &str,
+    new_env: &str,
+    new_ports: &str,
+    new_cpu: f64,
+    new_memory_mb: i64,
+    new_name: &str,
+) -> Result<String> {
+    recreate_with_updated_config_inner(
+        docker,
+        old_id,
+        new_image,
+        new_env,
+        new_ports,
+        new_cpu,
+        new_memory_mb,
+        new_name,
+        None,
+        None,
+    )
+    .await
+}
+
+pub async fn recreate_with_updated_config_and_disk_limit(
+    docker: &Docker,
+    old_id: &str,
+    new_image: &str,
+    new_env: &str,
+    new_ports: &str,
+    new_cpu: f64,
+    new_memory_mb: i64,
+    new_name: &str,
+    disk_limit: Option<String>,
+) -> Result<String> {
+    recreate_with_updated_config_inner(
+        docker,
+        old_id,
+        new_image,
+        new_env,
+        new_ports,
+        new_cpu,
+        new_memory_mb,
+        new_name,
+        None,
+        Some(disk_limit),
+    )
+    .await
+}
+
+/// Same as `recreate_with_updated_config`, but rewrites the source path of the
+/// first bind mount before recreation.
+pub async fn recreate_with_updated_config_and_volume_source(
+    docker: &Docker,
+    old_id: &str,
+    new_image: &str,
+    new_env: &str,
+    new_ports: &str,
+    new_cpu: f64,
+    new_memory_mb: i64,
+    new_name: &str,
+    new_volume_source: &str,
+) -> Result<String> {
+    recreate_with_updated_config_inner(
+        docker,
+        old_id,
+        new_image,
+        new_env,
+        new_ports,
+        new_cpu,
+        new_memory_mb,
+        new_name,
+        Some(new_volume_source),
+        None,
+    )
+    .await
 }
 
 #[allow(dead_code)]

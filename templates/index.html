@@ -42,6 +42,52 @@
         </div>
     </div>
 
+    <!-- Dashboard Settings Modal -->
+    <div id="dashSettingsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:610;backdrop-filter:blur(6px);align-items:center;justify-content:center;">
+        <div class="yu-modal-inner" style="background:var(--surface);border:1px solid var(--bdr);border-radius:16px;padding:1.65rem;max-width:360px;width:90%;">
+            <div style="display:flex;align-items:center;gap:.55rem;font-size:1rem;font-weight:700;letter-spacing:-.02em;margin-bottom:.35rem;">
+                <span style="width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 14px var(--accent);flex-shrink:0;display:inline-block;"></span>
+                Settings
+            </div>
+            <div style="font-size:.825rem;color:var(--muted);margin-bottom:1.1rem;">Manage your account actions.</div>
+
+            <button onclick="openDashPasswordFromSettings()" style="background:var(--surface2);border:1px solid var(--bdr);color:var(--txt);border-radius:9px;padding:.68rem .9rem;font-size:.84rem;font-weight:600;width:100%;cursor:pointer;font-family:'Inter',sans-serif;display:flex;align-items:center;justify-content:flex-start;gap:.55rem;transition:border-color .15s,background .15s;" onmouseover="this.style.borderColor='rgba(124,58,237,.5)';this.style.background='rgba(124,58,237,.12)'" onmouseout="this.style.borderColor='var(--bdr)';this.style.background='var(--surface2)'">
+                <i class="bi bi-key" style="color:var(--muted);"></i> Change Password
+            </button>
+
+            <button onclick="openDashDevicesFromSettings()" style="margin-top:.55rem;background:var(--surface2);border:1px solid var(--bdr);color:var(--txt);border-radius:9px;padding:.68rem .9rem;font-size:.84rem;font-weight:600;width:100%;cursor:pointer;font-family:'Inter',sans-serif;display:flex;align-items:center;justify-content:flex-start;gap:.55rem;transition:border-color .15s,background .15s;" onmouseover="this.style.borderColor='rgba(124,58,237,.5)';this.style.background='rgba(124,58,237,.12)'" onmouseout="this.style.borderColor='var(--bdr)';this.style.background='var(--surface2)'">
+                <i class="bi bi-phone" style="color:var(--muted);"></i> Devices
+            </button>
+
+            <button onclick="closeDashSettingsModal()" style="background:transparent;border:none;color:var(--muted);font-size:.8rem;font-family:'Inter',sans-serif;cursor:pointer;width:100%;margin-top:.9rem;padding:.3rem;transition:color .15s;" onmouseover="this.style.color='var(--txt)'" onmouseout="this.style.color='var(--muted)'">
+                Close
+            </button>
+        </div>
+    </div>
+
+    <!-- Devices Modal -->
+    <div id="dashDevicesModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:620;backdrop-filter:blur(6px);align-items:center;justify-content:center;">
+        <div class="yu-modal-inner" style="background:var(--surface);border:1px solid var(--bdr);border-radius:16px;padding:1.6rem;max-width:560px;width:94%;max-height:82dvh;overflow:auto;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:.8rem;margin-bottom:.2rem;">
+                <div style="display:flex;align-items:center;gap:.55rem;font-size:1rem;font-weight:700;letter-spacing:-.02em;">
+                    <span style="width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 14px var(--accent);flex-shrink:0;display:inline-block;"></span>
+                    Devices
+                </div>
+                <button onclick="dashLoadDevices()" style="background:transparent;border:1px solid var(--bdr);border-radius:8px;color:var(--muted);font-size:.76rem;padding:.26rem .55rem;cursor:pointer;" title="Refresh list">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
+            </div>
+            <div style="font-size:.81rem;color:var(--muted);margin-bottom:.9rem;">Active logged-in devices for your account. You can logout any device except current.</div>
+            <div id="dashDevicesAlert" style="display:none;border-radius:9px;padding:.6rem .85rem;font-size:.79rem;margin-bottom:.8rem;"></div>
+            <div id="dashDevicesList" style="display:flex;flex-direction:column;gap:.55rem;">
+                <div style="font-size:.82rem;color:var(--muted);padding:.45rem 0;">Loading devices…</div>
+            </div>
+            <button onclick="closeDashDevicesModal()" style="background:transparent;border:none;color:var(--muted);font-size:.8rem;font-family:'Inter',sans-serif;cursor:pointer;width:100%;margin-top:.95rem;padding:.3rem;transition:color .15s;" onmouseover="this.style.color='var(--txt)'" onmouseout="this.style.color='var(--muted)'">
+                Close
+            </button>
+        </div>
+    </div>
+
     <!-- Change Password Modal -->
     <div id="dashPwModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:600;backdrop-filter:blur(6px);align-items:center;justify-content:center;">
         <div class="yu-modal-inner" style="background:var(--surface);border:1px solid var(--bdr);border-radius:16px;padding:2rem;max-width:360px;width:90%;">
@@ -76,6 +122,41 @@
     <script src="/static/js/dashboard.js?v=6" nonce="{{nonce}}"></script>
     {% include "_script_footer.html" %}
     <script nonce="{{nonce}}">
+    function openDashSettingsModal() {
+        const modal = document.getElementById('dashSettingsModal');
+        modal.style.display = 'flex';
+        const inner = modal.querySelector('.yu-modal-inner');
+        if (inner) { inner.style.animation = 'none'; inner.offsetHeight; inner.style.animation = ''; }
+    }
+
+    function closeDashSettingsModal() {
+        const modal = document.getElementById('dashSettingsModal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    function openDashPasswordFromSettings() {
+        closeDashSettingsModal();
+        openDashModal();
+    }
+
+    function openDashDevicesFromSettings() {
+        closeDashSettingsModal();
+        openDashDevicesModal();
+    }
+
+    function openDashDevicesModal() {
+        const modal = document.getElementById('dashDevicesModal');
+        modal.style.display = 'flex';
+        const inner = modal.querySelector('.yu-modal-inner');
+        if (inner) { inner.style.animation = 'none'; inner.offsetHeight; inner.style.animation = ''; }
+        dashLoadDevices();
+    }
+
+    function closeDashDevicesModal() {
+        const modal = document.getElementById('dashDevicesModal');
+        if (modal) modal.style.display = 'none';
+    }
+
     function openDashModal() {
         const modal = document.getElementById('dashPwModal');
         modal.style.display = 'flex';
@@ -99,23 +180,140 @@
         if (nw.length < 8) return show('Password must be at least 8 characters.', false);
         const res = await fetch('/api/user/change-password', {
             method: 'POST',
+            credentials: 'same-origin',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({current: cur, new_password: nw})
         });
         const data = await res.json();
         if (data.ok) {
+            if (data.force_logout) {
+                show('Password updated. Redirecting to login…', true);
+                setTimeout(() => {
+                    fetch('/logout', { method: 'POST', credentials: 'same-origin' })
+                        .catch(() => {})
+                        .finally(() => window.location.replace(data.redirect || '/login'));
+                }, 700);
+                return;
+            }
             show('Password updated successfully!', true);
             setTimeout(() => { document.getElementById('dashPwModal').style.display = 'none'; }, 1500);
         } else show(data.error || 'Failed to update password.', false);
     }
 
-    const _dashUser = '{{ auth_username }}';
-    let _dashMyOnly = true;
+    function dashEsc(v) {
+        return String(v == null ? '' : v)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function dashDevicesShowAlert(msg, ok) {
+        const alert = document.getElementById('dashDevicesAlert');
+        if (!alert) return;
+        alert.textContent = msg;
+        alert.style.display = 'block';
+        alert.style.background = ok ? 'rgba(16,185,129,.12)' : 'rgba(239,68,68,.12)';
+        alert.style.color = ok ? '#10b981' : '#ef4444';
+        alert.style.border = ok ? '1px solid rgba(16,185,129,.25)' : '1px solid rgba(239,68,68,.25)';
+    }
+
+    function dashDevicesHideAlert() {
+        const alert = document.getElementById('dashDevicesAlert');
+        if (!alert) return;
+        alert.style.display = 'none';
+        alert.textContent = '';
+    }
+
+    async function dashLoadDevices() {
+        const list = document.getElementById('dashDevicesList');
+        if (!list) return;
+        dashDevicesHideAlert();
+        list.innerHTML = '<div style="font-size:.82rem;color:var(--muted);padding:.45rem 0;">Loading devices…</div>';
+
+        try {
+            const res = await fetch('/api/user/devices', { credentials: 'same-origin' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.ok) {
+                list.innerHTML = '<div style="font-size:.82rem;color:#ef4444;padding:.45rem 0;">Failed to load devices.</div>';
+                dashDevicesShowAlert(data.error || 'Failed to load devices.', false);
+                return;
+            }
+
+            const devices = Array.isArray(data.devices) ? data.devices : [];
+            if (!devices.length) {
+                list.innerHTML = '<div style="font-size:.82rem;color:var(--muted);padding:.45rem 0;">No active devices found.</div>';
+                return;
+            }
+
+            list.innerHTML = devices.map((d) => {
+                const sid = encodeURIComponent(d.session_id || '');
+                const isCurrent = !!d.is_current;
+                const ua = dashEsc((d.user_agent || 'Unknown device').slice(0, 220));
+                const ip = dashEsc(d.ip || 'unknown ip');
+                const createdAt = dashEsc(d.created_at || '');
+                const lastSeen = dashEsc(d.last_seen_at || '');
+                const badge = isCurrent
+                    ? '<span style="font-size:.66rem;font-weight:700;padding:.1rem .42rem;border-radius:99px;background:rgba(16,185,129,.15);color:#10b981;border:1px solid rgba(16,185,129,.25);">current</span>'
+                    : '';
+                const action = isCurrent
+                    ? '<button disabled style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);color:var(--muted);border-radius:8px;padding:.34rem .6rem;font-size:.73rem;cursor:not-allowed;">Current device</button>'
+                    : `<button data-sid="${sid}" onclick="dashLogoutDevice(decodeURIComponent(this.dataset.sid))" style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:#ef4444;border-radius:8px;padding:.34rem .6rem;font-size:.73rem;cursor:pointer;">Logout</button>`;
+                return `<div style="border:1px solid var(--bdr);border-radius:10px;padding:.65rem .75rem;background:rgba(255,255,255,.015);">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:.6rem;">
+                        <div style="min-width:0;">
+                            <div style="font-size:.79rem;color:var(--txt);font-weight:600;word-break:break-word;">${ua}</div>
+                            <div style="font-size:.73rem;color:var(--muted);margin-top:.2rem;">IP: ${ip}</div>
+                            <div style="font-size:.7rem;color:var(--muted);margin-top:.2rem;">Seen: ${lastSeen} · Login: ${createdAt}</div>
+                        </div>
+                        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:.35rem;flex-shrink:0;">${badge}${action}</div>
+                    </div>
+                </div>`;
+            }).join('');
+        } catch (e) {
+            list.innerHTML = '<div style="font-size:.82rem;color:#ef4444;padding:.45rem 0;">Failed to load devices.</div>';
+            dashDevicesShowAlert(e.message || 'Network error.', false);
+        }
+    }
+
+    async function dashLogoutDevice(sessionId) {
+        if (!sessionId) return;
+        if (!confirm('Logout this device from your account?')) return;
+
+        try {
+            const res = await fetch('/api/user/devices/logout', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.ok) {
+                dashDevicesShowAlert(data.error || 'Failed to logout device.', false);
+                return;
+            }
+            dashDevicesShowAlert('Device logged out.', true);
+            await dashLoadDevices();
+        } catch (e) {
+            dashDevicesShowAlert(e.message || 'Network error.', false);
+        }
+    }
+
+    const _dashUser = '{{ auth_owner_label }}';
+    const _dashOwnerFilterBtn = document.getElementById('dash-my-only-btn');
+    let _dashMyOnly = !!_dashOwnerFilterBtn;
 
     function dashFilterOwner() {
-        const btn  = document.getElementById('dash-my-only-btn');
+        const btn  = _dashOwnerFilterBtn;
         const icon = document.getElementById('dash-my-only-icon');
         const lbl  = document.getElementById('dash-my-only-lbl');
+        if (!btn) {
+            document.querySelectorAll('#server-list > [data-owner]').forEach(el => {
+                el.style.display = '';
+            });
+            return;
+        }
         if (btn) {
             if (_dashMyOnly) {
                 btn.style.background = 'rgba(124,58,237,.15)';
@@ -135,6 +333,7 @@
     }
 
     function dashToggleOwner() {
+        if (!_dashOwnerFilterBtn) return;
         _dashMyOnly = !_dashMyOnly;
         dashFilterOwner();
     }

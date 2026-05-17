@@ -1,6 +1,6 @@
 use axum::{
-    extract::{ConnectInfo, Form, Query, State},
-    http::HeaderMap,
+    extract::{ConnectInfo, Form, Multipart, Query, State},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect},
     Extension, Json,
 };
@@ -10,12 +10,167 @@ use rand::{distr::Alphanumeric, RngExt};
 use tracing::error;
 use crate::compose::ComposeService;
 use crate::{auth, db, docker};
-use crate::dns as dns_lib;
 use crate::state::AppState;
 use std::net::SocketAddr;
 use super::CspNonce;
 use super::templates::{render, CreateServerForm, NewServerTemplate, UserInfo};
 use tracing::warn;
+
+fn valid_image_ref(image: &str) -> bool {
+    let v = image.trim();
+    if v.is_empty() {
+        return false;
+    }
+    if v.chars().any(|c| c.is_whitespace()) {
+        return false;
+    }
+    v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | ':' | '.' | '_' | '-'))
+}
+
+fn is_critical_system_mount(mount: &str) -> bool {
+    if mount == "/" {
+        return true;
+    }
+    ["/boot", "/efi", "/usr", "/var", "/etc", "/bin", "/sbin", "/lib", "/lib64"]
+        .iter()
+        .any(|p| mount == *p || mount.starts_with(&format!("{}/", p.trim_end_matches('/'))))
+}
+
+async fn device_top_parent_kname(device: &str) -> String {
+    if !device.starts_with("/dev/") {
+        return String::new();
+    }
+
+    let mut current = device.to_string();
+    let mut top = std::path::Path::new(device)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    for _ in 0..8 {
+        let parent = tokio::process::Command::new("lsblk")
+            .args(["-no", "PKNAME", &current])
+            .output()
+            .await
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        if parent.is_empty() {
+            break;
+        }
+        top = parent.clone();
+        current = format!("/dev/{}", parent);
+    }
+
+    top
+}
+
+async fn root_disk_info_for_policy() -> (String, String) {
+    let root_source = tokio::process::Command::new("findmnt")
+        .args(["-n", "-o", "SOURCE", "/"])
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    if root_source.is_empty() {
+        return (String::new(), String::new());
+    }
+
+    let top_kname = device_top_parent_kname(&root_source).await;
+    (root_source, top_kname)
+}
+
+async fn validate_container_storage_base(path: &std::path::Path) -> Result<(), String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(path)
+    };
+
+    let probe = if absolute.exists() {
+        absolute.clone()
+    } else {
+        absolute
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("/"))
+    };
+
+    let out = tokio::process::Command::new("findmnt")
+        .args(["-n", "-T", &probe.to_string_lossy(), "-o", "SOURCE,FSTYPE,OPTIONS,TARGET"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to inspect storage mount: {}", e))?;
+
+    if !out.status.success() {
+        return Err(format!(
+            "Cannot validate storage path '{}': {}",
+            absolute.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 4 {
+        return Err(format!("Cannot parse mount info for '{}'", absolute.display()));
+    }
+    let source = parts[0].to_string();
+    let fs_type = parts[1].to_string();
+    let opts = parts[2].to_string();
+    let mount_point = parts[3].to_string();
+
+    if is_critical_system_mount(&mount_point) {
+        return Err(format!(
+            "Storage path '{}' is on critical system mount '{}' and is forbidden",
+            absolute.display(),
+            mount_point
+        ));
+    }
+
+    if fs_type != "ext4" {
+        return Err(format!(
+            "Only ext4 with prjquota is supported for container storage (mount '{}' uses '{}')",
+            mount_point,
+            fs_type
+        ));
+    }
+
+    if !(opts.contains("prjquota") || opts.contains("prjjquota")) {
+        return Err(format!(
+            "ext4 without prjquota is forbidden for container storage (mount: '{}')",
+            mount_point
+        ));
+    }
+
+    let (root_source, root_disk_kname) = root_disk_info_for_policy().await;
+    if !root_source.is_empty() {
+        if source == root_source {
+            return Err(format!(
+                "Storage path '{}' is on the system disk ('{}') and is forbidden",
+                absolute.display(),
+                root_source
+            ));
+        }
+        if source.starts_with("/dev/") && !root_disk_kname.is_empty() {
+            let src_top = device_top_parent_kname(&source).await;
+            if !src_top.is_empty() && src_top == root_disk_kname {
+                return Err(format!(
+                    "Storage path '{}' is on system root disk '{}' and is forbidden",
+                    absolute.display(),
+                    root_disk_kname
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
 
 pub async fn create_server(
     State(state): State<AppState>,
@@ -31,12 +186,19 @@ pub async fn create_server(
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|u| UserInfo { id: u.id, username: u.username, role: u.role, created_at: u.created_at })
+        .map(|u| UserInfo {
+            id: u.id,
+            uid: u.uid,
+            nickname: u.nickname,
+            username: u.username,
+            role: u.role,
+            created_at: u.created_at,
+        })
         .collect();
 
     macro_rules! err {
         ($msg:expr) => {{
-            return render(NewServerTemplate { users: users.clone(), error: Some($msg), fix_cmd: None, cf_token: state.cf_analytics_token.clone(), nonce: nonce.clone(), default_quota_gb: "15".to_string() })
+            return render(NewServerTemplate { users: users.clone(), error: Some($msg), fix_cmd: None, nonce: nonce.clone(), default_quota_gb: "15".to_string() })
                 .into_response();
         }};
     }
@@ -107,8 +269,12 @@ pub async fn create_server(
         err!("Docker image must be provided either in the input field or YAML.".to_string());
     }
 
-    if let Err(e) = docker::ensure_image(&state.docker, target_image).await {
-        err!(e.to_string());
+    // Local-first image resolution: use existing local/custom image when available,
+    // only pull from registry if the image is not present on this host.
+    if docker::get_image_info(&state.docker, target_image).await.is_err() {
+        if let Err(e) = docker::ensure_image(&state.docker, target_image).await {
+            err!(e.to_string());
+        }
     }
 
     // Apply image ENV overrides stored in the panel DB.
@@ -157,7 +323,6 @@ pub async fn create_server(
             users: users.clone(),
             error: Some(format!("A server named '{}' already exists. Choose a different name.", raw_name)),
             fix_cmd: None,
-            cf_token: state.cf_analytics_token.clone(),
             nonce: nonce.clone(),
             default_quota_gb: "15".to_string(),
         }).into_response(),
@@ -212,31 +377,24 @@ pub async fn create_server(
             }
         }
     };
+
+    let volumes_base = if volumes_base.is_absolute() {
+        volumes_base
+    } else {
+        cwd.join(volumes_base)
+    };
+
+    let storage_unsafe_override = db::get_panel_setting_bool(&state.db, "storage_unsafe_override").await;
+
+    if !storage_unsafe_override {
+        if let Err(e) = validate_container_storage_base(&volumes_base).await {
+            err!(e);
+        }
+    }
+
     let volume_host_path = volumes_base.join(&volume_key);
 
-    // For ZFS mounts: create a child dataset (which creates its own mountpoint).
-    // For Btrfs mounts: create a subvolume (apply_btrfs_quota handles creation).
-    // For all others: create the directory normally.
-    if docker::zfs_dataset_for(&volumes_base).is_some() {
-        // Pre-create the child ZFS dataset so the bind mount path exists before container launch.
-        // Quota/refquota is set later once db_id is known.
-        if let Err(e) = tokio::process::Command::new("zfs")
-            .args(["create", &format!("{}/{}", docker::zfs_dataset_for(&volumes_base).unwrap(), &volume_key)])
-            .status()
-            .await
-        {
-            return format!("Failed to create ZFS dataset for volume: {}", e).into_response();
-        }
-    } else if docker::btrfs_mount_for(&volumes_base).is_some() {
-        // Pre-create a Btrfs subvolume; quota will be applied after db_id is known.
-        if let Err(e) = tokio::process::Command::new("btrfs")
-            .args(["subvolume", "create", &volume_host_path.to_string_lossy().to_string()])
-            .status()
-            .await
-        {
-            return format!("Failed to create Btrfs subvolume for volume: {}", e).into_response();
-        }
-    } else if let Err(e) = tokio::fs::create_dir_all(&volume_host_path).await {
+    if let Err(e) = tokio::fs::create_dir_all(&volume_host_path).await {
         let fix_cmd = if e.raw_os_error() == Some(13) {
             // EACCES — either the volumes dir doesn't exist, its parent isn't traversable
             // (e.g. /var/lib/docker is 710), or it's not owned by the panel user.
@@ -254,15 +412,22 @@ pub async fn create_server(
             users: users.clone(),
             error: Some(format!("Failed to create volume directory: {}", e)),
             fix_cmd,
-            cf_token: state.cf_analytics_token.clone(),
             nonce: nonce.clone(),
             default_quota_gb: "15".to_string(),
         }).into_response();
     }
 
-    if docker::xfs_pquota_mount(&volumes_base).is_none() && docker::zfs_dataset_for(&volumes_base).is_none() {
+    let storage_has_quota = docker::ext4_pquota_mount(&volumes_base).is_some();
+
+    if !storage_has_quota {
+        if service.disk_limit.is_some() && !storage_unsafe_override {
+            err!(format!(
+                "Storage path '{}' has no quota support. Configure ext4 with prjquota before creating containers with disk_limit.",
+                volumes_base.display()
+            ));
+        }
         warn!(
-            "Volumes directory '{}' is not on XFS+prjquota or ZFS — disk_limit will have no effect",
+            "Volumes directory '{}' is not on ext4+prjquota — disk_limit will have no effect",
             volume_host_path.display()
         );
     }
@@ -367,119 +532,18 @@ pub async fn create_server(
     };
 
     if db_id > 0 {
-        // ── Disk quota (XFS / ZFS / Btrfs) ───────────────────────────────────
+        // ── Disk quota (ext4 + prjquota) ─────────────────────────────────────
         if let Some(ref limit_str) = service.disk_limit {
             if let Some(limit_bytes) = docker::parse_disk_limit(limit_str) {
-                if docker::xfs_pquota_mount(&volume_host_path).is_some() {
-                    if let Err(e) = docker::apply_xfs_quota(&volume_host_path, db_id as u32, limit_bytes).await {
-                        warn!("Server #{}: failed to apply XFS quota (disk_limit='{}'): {}", db_id, limit_str, e);
-                    }
-                } else if docker::zfs_dataset_for(&volume_host_path).is_some() {
-                    // Dataset was pre-created; set refquota only (apply_zfs_quota handles "already exists")
-                    if let Err(e) = docker::apply_zfs_quota(&volume_host_path, limit_bytes).await {
-                        warn!("Server #{}: failed to apply ZFS quota (disk_limit='{}'): {}", db_id, limit_str, e);
-                    }
-                } else if docker::btrfs_mount_for(&volume_host_path).is_some() {
-                    // Subvolume was pre-created; apply_btrfs_quota sets the qgroup limit.
-                    if let Err(e) = docker::apply_btrfs_quota(&volume_host_path, limit_bytes).await {
-                        warn!("Server #{}: failed to apply Btrfs quota (disk_limit='{}'): {}", db_id, limit_str, e);
-                    }
-                } else if docker::ext4_pquota_mount(&volume_host_path).is_some() {
+                if docker::ext4_pquota_mount(&volume_host_path).is_some() {
                     if let Err(e) = docker::apply_ext4_quota(&volume_host_path, db_id as u32, limit_bytes).await {
                         warn!("Server #{}: failed to apply ext4 quota (disk_limit='{}'): {}", db_id, limit_str, e);
                     }
                 } else {
                     warn!(
-                        "Server #{}: disk_limit='{}' specified but the volumes directory is not on XFS+prjquota, ZFS, Btrfs, or ext4+prjquota — quota will not be enforced",
+                        "Server #{}: disk_limit='{}' specified but the volumes directory is not on ext4+prjquota — quota will not be enforced",
                         db_id, limit_str
                     );
-                }
-            }
-        }
-
-        // ── Auto-create A + SRV DNS records ───────────────────────────────────
-        if form.dns_srv_enabled.trim() == "1" {
-            let pid: Option<i64> = form.dns_provider_id.trim().parse().ok();
-            let port: Option<u64> = form.dns_srv_port.trim().parse().ok();
-            let srv_name  = form.dns_srv_name.trim().to_string();
-            let zone_id   = form.dns_zone_id.trim().to_string();
-            let zone_name = form.dns_zone_name.trim().to_string();
-            let priority: i64 = form.dns_srv_priority.trim().parse().unwrap_or(0);
-            let weight: u64   = form.dns_srv_weight.trim().parse().unwrap_or(0);
-            let a_subdomain   = form.dns_a_subdomain.trim().to_string();
-            let a_ip          = form.dns_a_ip.trim().to_string();
-
-            if let (Some(pid), Some(port)) = (pid, port) {
-                if !srv_name.is_empty() && !zone_id.is_empty() {
-                    if let Ok(Some(provider)) = db::dns_get_provider(&state.db, pid).await {
-                        let creds: serde_json::Value = serde_json::from_str(&provider.credentials)
-                            .unwrap_or(serde_json::Value::Object(Default::default()));
-                        if let Ok(client) = dns_lib::DnsClient::from_type(&provider.provider_type, &creds) {
-
-                            // Step 1 – A record (when subdomain + IP are supplied)
-                            let target = if !a_subdomain.is_empty() && !a_ip.is_empty() {
-                                let a_remote_id = client.create_record(&zone_id, &dns_lib::DnsRecordInput {
-                                    record_type: "A".to_string(),
-                                    name:        a_subdomain.clone(),
-                                    value:       a_ip.clone(),
-                                    ttl:         1,
-                                    priority:    0,
-                                    proxied:     false,
-                                }).await.unwrap_or_default();
-                                let _ = db::dns_add_record(
-                                    &state.db, pid,
-                                    &zone_id, &zone_name,
-                                    "A", &a_subdomain, &a_ip,
-                                    1, 0, false, &a_remote_id,
-                                    Some(db_id), false, 300,
-                                ).await;
-                                // SRV target = fully-qualified subdomain
-                                format!("{}.{}", a_subdomain, zone_name)
-                            } else if !form.dns_srv_target.trim().is_empty() {
-                                form.dns_srv_target.trim().to_string()
-                            } else {
-                                zone_name.clone()
-                            };
-
-                            // Step 2 – SRV record(s): base name without protocol
-                            // If both_protos, create _tcp AND _udp; otherwise use dns_srv_name as-is
-                            let base_name = {
-                                let n = form.dns_srv_name.trim();
-                                // Strip any trailing ._tcp / ._udp to get the bare _service
-                                let stripped = n.trim_end_matches("._tcp").trim_end_matches("._udp");
-                                stripped.to_string()
-                            };
-                            let protos: &[&str] = match form.dns_srv_both_protos.trim() {
-                                "udp"  => &["udp"],
-                                "tcp"  => &["tcp"],
-                                _      => &["tcp", "udp"], // "both" or "1" (legacy)
-                            };
-                            for proto in protos {
-                                let full_name = if !a_subdomain.is_empty() {
-                                    // e.g. "_minecraft._tcp.user" → resolves as _minecraft._tcp.user.zone.com
-                                    format!("{}._{}.{}", base_name, proto, a_subdomain)
-                                } else {
-                                    format!("{}._", base_name) + proto
-                                };
-                                let srv_value = format!("{} {} {}", weight, port, target);
-                                let srv_remote_id = client.create_record(&zone_id, &dns_lib::DnsRecordInput {
-                                    record_type: "SRV".to_string(),
-                                    name:        full_name.clone(),
-                                    value:       srv_value.clone(),
-                                    ttl:         1,
-                                    priority,
-                                    proxied:     false,
-                                }).await.unwrap_or_default();
-                                let _ = db::dns_add_record(
-                                    &state.db, pid,
-                                    &zone_id, &zone_name,
-                                    "SRV", &full_name, &srv_value,
-                                    1, priority, false, &srv_remote_id,
-                                    Some(db_id), false, 300,
-                                ).await;
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -540,6 +604,144 @@ pub async fn api_image_env(
     }
 }
 
+/// Builds a local Docker image from an uploaded Dockerfile.
+/// Multipart fields:
+/// - `image`: resulting image tag/reference (required)
+/// - `dockerfile`: file bytes (required)
+pub async fn api_build_image_from_dockerfile(
+    State(state): State<AppState>,
+    jar: PrivateCookieJar,
+    addr: ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let ip = auth::client_ip(&headers, addr);
+    let actor = auth::session_username(&jar).unwrap_or_else(|| "admin".to_string());
+
+    let mut image_ref = String::new();
+    let mut dockerfile_bytes: Option<Vec<u8>> = None;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or_default().to_string();
+        match name.as_str() {
+            "image" => {
+                image_ref = field.text().await.unwrap_or_default().trim().to_string();
+            }
+            "dockerfile" => {
+                match field.bytes().await {
+                    Ok(bytes) => dockerfile_bytes = Some(bytes.to_vec()),
+                    Err(e) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({ "ok": false, "error": format!("Failed to read Dockerfile upload: {}", e) })),
+                        ).into_response();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !valid_image_ref(&image_ref) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "error": "Invalid image reference" })),
+        ).into_response();
+    }
+
+    let dockerfile = match dockerfile_bytes {
+        Some(bytes) => bytes,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "ok": false, "error": "Dockerfile upload is required" })),
+            ).into_response();
+        }
+    };
+
+    if dockerfile.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "error": "Dockerfile is empty" })),
+        ).into_response();
+    }
+    if dockerfile.len() > 512 * 1024 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "error": "Dockerfile is too large (max 512 KiB)" })),
+        ).into_response();
+    }
+
+    let temp_key: String = rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(16)
+        .map(char::from)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    let build_dir = std::env::temp_dir().join(format!("yunexal-dockerfile-{}", temp_key));
+    let dockerfile_path = build_dir.join("Dockerfile");
+
+    if let Err(e) = tokio::fs::create_dir_all(&build_dir).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "error": format!("Failed to create build context: {}", e) })),
+        ).into_response();
+    }
+    if let Err(e) = tokio::fs::write(&dockerfile_path, &dockerfile).await {
+        let _ = tokio::fs::remove_dir_all(&build_dir).await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "error": format!("Failed to write Dockerfile: {}", e) })),
+        ).into_response();
+    }
+
+    let build_result = tokio::time::timeout(
+        std::time::Duration::from_secs(600),
+        tokio::process::Command::new("docker")
+            .args(["build", "-t", &image_ref, "-f", "Dockerfile", "."])
+            .current_dir(&build_dir)
+            .output(),
+    ).await;
+
+    let _ = tokio::fs::remove_dir_all(&build_dir).await;
+
+    match build_result {
+        Ok(Ok(out)) if out.status.success() => {
+            state.cache.remove("images_ts");
+            let _ = db::audit_log(
+                &state.db,
+                &actor,
+                "image.build_dockerfile",
+                &image_ref,
+                "",
+                &ip,
+                &auth::user_agent(&headers),
+            ).await;
+            (StatusCode::OK, Json(serde_json::json!({ "ok": true, "image": image_ref }))).into_response()
+        }
+        Ok(Ok(out)) => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let msg = if err.is_empty() {
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            } else {
+                err
+            };
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "ok": false, "error": if msg.is_empty() { "Docker build failed".to_string() } else { msg } })),
+            ).into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "error": format!("Failed to run docker build: {}", e) })),
+        ).into_response(),
+        Err(_) => (
+            StatusCode::REQUEST_TIMEOUT,
+            Json(serde_json::json!({ "ok": false, "error": "Docker build timed out" })),
+        ).into_response(),
+    }
+}
+
 /// Returns a flat list of all local image tags for use in datalists / autocomplete.
 pub async fn api_local_images(State(state): State<AppState>) -> impl IntoResponse {
     let tags: Vec<String> = match docker::list_docker_images(&state.docker).await {
@@ -549,18 +751,35 @@ pub async fn api_local_images(State(state): State<AppState>) -> impl IntoRespons
     Json(serde_json::json!({ "tags": tags }))
 }
 
-/// Returns whether the volumes directory is on XFS with pquota/prjquota.
-/// Used by the "New Server" page to show a warning if disk limiting won't work.
-pub async fn api_xfs_check() -> impl IntoResponse {
-    // Show a warning only if no XFS mount with prjquota/pquota exists anywhere on the system.
+/// Returns whether host storage supports ext4 project quotas for containers.
+pub async fn api_quota_check(State(state): State<AppState>) -> impl IntoResponse {
     let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
-    let ok = mounts.lines().any(|line| {
+    let unsafe_override = db::get_panel_setting_bool(&state.db, "storage_unsafe_override").await;
+
+    let mut has_ext4_prjquota = false;
+    let mut ext4_without_prjquota = false;
+
+    for line in mounts.lines() {
         let mut parts = line.split_whitespace();
-        let _dev   = parts.next();
-        let _mount = parts.next();
+        let dev    = parts.next().unwrap_or("");
+        let _mount = parts.next().unwrap_or("");
         let fstype = parts.next().unwrap_or("");
         let opts   = parts.next().unwrap_or("");
-        fstype == "xfs" && opts.split(',').any(|o| o == "pquota" || o == "prjquota")
-    });
-    Json(serde_json::json!({ "ok": ok }))
+
+        if fstype == "ext4" && dev.starts_with("/dev/") {
+            let has_prj = opts.split(',').any(|o| o == "prjquota" || o == "prjjquota");
+            has_ext4_prjquota |= has_prj;
+            ext4_without_prjquota |= !has_prj;
+        }
+    }
+
+    let has_quota = has_ext4_prjquota;
+    let ok = if unsafe_override { true } else { has_quota };
+    Json(serde_json::json!({
+        "ok": ok,
+        "has_quota": has_quota,
+        "has_ext4_prjquota": has_ext4_prjquota,
+        "ext4_without_prjquota": ext4_without_prjquota,
+        "unsafe_override": unsafe_override,
+    }))
 }

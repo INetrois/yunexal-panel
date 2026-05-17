@@ -1,5 +1,10 @@
 // ── Row templates ────────────────────────────────────────────────────────────
 
+// Backward-compatible no-op for optional integrations.
+if (typeof window !== 'undefined' && typeof window._refreshSrvPortSelect !== 'function') {
+    window._refreshSrvPortSelect = () => {};
+}
+
 function getPortRowHtml(host='', container='', proto='tcp') {
     const opt = v => `<option value="${v}"${proto===v?' selected':''}>`;
     return `
@@ -30,18 +35,6 @@ function getEnvRowHtml(key='', val='') {
     </div>`;
 }
 
-function getVolRowHtml(host='', container='') {
-    return `
-    <div class="entry-row" style="display:grid;grid-template-columns:1fr 20px 1fr 26px;gap:.45rem;align-items:center;">
-        <input type="text" class="form-control host-input" placeholder="/host/path" value="${host}" oninput="updateYaml()">
-        <span class="row-sep" style="text-align:center;">:</span>
-        <input type="text" class="form-control container-input" placeholder="/data" value="${container}" oninput="updateYaml()">
-        <button type="button" class="row-del" onclick="this.closest('.entry-row').remove();updateYaml()" title="Remove">
-            <i class="bi bi-trash3"></i>
-        </button>
-    </div>`;
-}
-
 // ── Add helpers ──────────────────────────────────────────────────────────────
 
 function addPortRow(h, c, p) {
@@ -52,10 +45,6 @@ function addEnvRow(k, v) {
     document.getElementById('env-container').insertAdjacentHTML('beforeend', getEnvRowHtml(k, v));
     if (k === undefined) updateYaml();
 }
-function addVolRow(h, c) {
-    document.getElementById('vol-container').insertAdjacentHTML('beforeend', getVolRowHtml(h, c));
-    if (h === undefined) updateYaml();
-}
 
 // ── YAML generation ──────────────────────────────────────────────────────────
 
@@ -64,8 +53,7 @@ function updateYaml() {
         image:       document.getElementById('image').value || undefined,
         restart:     document.getElementById('gui_restart').value,
         ports:       [],
-        environment: [],
-        volumes:     []
+        environment: []
     };
 
     const cpus = document.getElementById('gui_cpus').value;
@@ -90,15 +78,8 @@ function updateYaml() {
         if (k) config.environment.push(`${k}=${v}`);
     });
 
-    document.querySelectorAll('#vol-container .entry-row').forEach(row => {
-        const h = row.querySelector('.host-input').value;
-        const c = row.querySelector('.container-input').value;
-        if (h && c) config.volumes.push(`${h}:${c}`);
-    });
-
     if (!config.ports.length)       delete config.ports;
     if (!config.environment.length) delete config.environment;
-    if (!config.volumes.length)     delete config.volumes;
     if (!config.image)              delete config.image;
 
     const yamlStr = jsyaml.dump(config, { indent: 2, lineWidth: -1 });
@@ -109,8 +90,10 @@ function updateYaml() {
         if (pos) window.yamlEditor.setPosition(pos);
     }
     saveFormState();
-    // Keep port select in sync
-    _refreshSrvPortSelect();
+    // Keep optional port select integrations in sync.
+    if (typeof window._refreshSrvPortSelect === 'function') {
+        window._refreshSrvPortSelect();
+    }
 }
 
 function copyYaml(btn) {
@@ -123,27 +106,279 @@ function copyYaml(btn) {
     });
 }
 
-// ── Image datalist ───────────────────────────────────────────────────────────
+// ── Local image picker (dropdown inside input) ───────────────────────────────
 
-fetch('/api/image/local').then(r => r.json()).then(d => {
+const _localImageTags = new Set();
+
+function _sortedLocalImageTags() {
+    return Array.from(_localImageTags).sort((a, b) => a.localeCompare(b));
+}
+
+function _addLocalImageTag(tag) {
+    const t = String(tag || '').trim();
+    if (!t || _localImageTags.has(t)) return;
+    _localImageTags.add(t);
+
     const dl = document.getElementById('local-images-list');
-    (d.tags || []).forEach(t => {
+    if (dl) {
         const opt = document.createElement('option');
         opt.value = t;
         dl.appendChild(opt);
+    }
+}
+
+function renderImageDropdown() {
+    const box = document.getElementById('image-dropdown');
+    const imageEl = document.getElementById('image');
+    if (!box || !imageEl) return;
+
+    const q = imageEl.value.trim().toLowerCase();
+    const tags = _sortedLocalImageTags()
+        .filter(t => !q || t.toLowerCase().includes(q))
+        .slice(0, 80);
+
+    box.innerHTML = '';
+    if (!tags.length) {
+        const empty = document.createElement('div');
+        empty.className = 'image-dropdown-empty';
+        empty.textContent = 'No local images found';
+        box.appendChild(empty);
+        return;
+    }
+
+    tags.forEach(t => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'image-dropdown-item';
+        item.textContent = t;
+        item.dataset.value = t;
+        box.appendChild(item);
     });
-}).catch(() => {});
+}
 
-// ── XFS quota check ──────────────────────────────────────────────────────────
+function openImageDropdown() {
+    const box = document.getElementById('image-dropdown');
+    if (!box) return;
+    renderImageDropdown();
+    box.classList.add('open');
+}
 
-fetch('/api/xfs-check').then(r => r.json()).then(d => {
-    if (!d.ok) document.getElementById('xfs-warn-banner').style.display = '';
-}).catch(() => {});
+function closeImageDropdown() {
+    const box = document.getElementById('image-dropdown');
+    if (box) box.classList.remove('open');
+}
+
+function toggleImageDropdown(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const box = document.getElementById('image-dropdown');
+    if (!box) return;
+    if (box.classList.contains('open')) {
+        closeImageDropdown();
+    } else {
+        openImageDropdown();
+        document.getElementById('image')?.focus();
+    }
+}
+
+function pickLocalImage(value) {
+    if (!value) return;
+    const imageEl = document.getElementById('image');
+    if (imageEl) imageEl.value = value;
+    closeImageDropdown();
+    updateYaml();
+    saveFormState();
+}
+
+function onImageInputChanged() {
+    const box = document.getElementById('image-dropdown');
+    if (box?.classList.contains('open')) renderImageDropdown();
+    updateYaml();
+}
+
+function onImageInputKeydown(e) {
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        openImageDropdown();
+        return;
+    }
+    if (e.key === 'Escape') {
+        closeImageDropdown();
+    }
+}
+
+function loadLocalImages() {
+    fetch('/api/image/local')
+        .then(r => r.json())
+        .then(d => {
+            const tags = Array.from(new Set(d.tags || []))
+                .map(v => String(v || '').trim())
+                .filter(Boolean)
+                .sort((a, b) => a.localeCompare(b));
+            tags.forEach(_addLocalImageTag);
+            renderImageDropdown();
+        })
+        .catch(() => {});
+}
+
+document.addEventListener('click', e => {
+    const wrap = document.querySelector('.image-combo-wrap');
+    if (wrap && !wrap.contains(e.target)) closeImageDropdown();
+});
+
+document.getElementById('image-dropdown')?.addEventListener('click', e => {
+    const item = e.target.closest('.image-dropdown-item');
+    if (!item) return;
+    pickLocalImage(item.dataset.value || '');
+});
+
+loadLocalImages();
+
+// ── Filesystem quota preflight ───────────────────────────────────────────────
+
+let _quotaCreationBlocked = false;
+let _quotaCreationReason = '';
+
+function _setCreateButtonsBlocked(blocked) {
+    const openBtn = document.getElementById('create-server-open-btn');
+    const confirmBtn = document.getElementById('create-server-confirm-btn');
+    [openBtn, confirmBtn].forEach((btn) => {
+        if (!btn) return;
+        btn.disabled = blocked;
+        btn.style.opacity = blocked ? '.55' : '';
+        btn.style.cursor = blocked ? 'not-allowed' : '';
+        if (blocked) {
+            btn.setAttribute('title', _quotaCreationReason || 'Quota must be configured before server creation');
+        } else {
+            btn.removeAttribute('title');
+        }
+    });
+}
+
+function _guardQuotaBeforeCreate() {
+    if (!_quotaCreationBlocked) return true;
+    const banner = document.getElementById('quota-warn-banner');
+    if (banner) {
+        banner.style.display = '';
+        banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    return false;
+}
+
+function renderQuotaPreflightBanner(d) {
+    const banner = document.getElementById('quota-warn-banner');
+    const text = document.getElementById('quota-warn-text');
+    if (!banner || !text) return;
+
+    if (d && d.unsafe_override) {
+        _quotaCreationBlocked = false;
+        _quotaCreationReason = '';
+        _setCreateButtonsBlocked(false);
+        text.textContent = 'Unsafe storage override is enabled in Admin Settings. Quota/safety checks are bypassed at your own risk.';
+        banner.style.display = '';
+        return;
+    }
+
+    if (d && d.ok) {
+        _quotaCreationBlocked = false;
+        _quotaCreationReason = '';
+        _setCreateButtonsBlocked(false);
+        banner.style.display = 'none';
+        return;
+    }
+
+    let msg = 'No quota-capable filesystem detected (ext4 with prjquota). Server creation is blocked until quota support is configured.';
+    if (d && d.ext4_without_prjquota) {
+        msg = 'ext4 detected without prjquota/prjjquota. Server creation is blocked. Enable prjquota in mount options and remount before creating containers.';
+    }
+
+    _quotaCreationBlocked = true;
+    _quotaCreationReason = msg;
+    _setCreateButtonsBlocked(true);
+    text.textContent = msg;
+    banner.style.display = '';
+}
+
+async function loadQuotaPreflight() {
+    try {
+        const d = await fetch('/api/quota-check').then(r => r.json());
+        renderQuotaPreflightBanner(d);
+    } catch {
+        renderQuotaPreflightBanner({ ok: false });
+    }
+}
+
+loadQuotaPreflight();
 
 // ── Custom storage selector ──────────────────────────────────────────────────
 
 let _storMounts = []; // populated after fetch
 let _storIdx    = 0;  // currently selected index
+let _storUnsafeOverride = false;
+let _storPosListenersAttached = false;
+let _storPosRaf = null;
+
+function _storPositionPanel() {
+    const el = document.getElementById('stor-sel');
+    const panel = document.getElementById('stor-sel-panel');
+    if (!el || !panel || !el.classList.contains('open')) return;
+
+    const rect = el.getBoundingClientRect();
+    const gap = 5;
+    const pad = 8;
+    const width = Math.max(240, Math.round(rect.width));
+    panel.style.width = `${width}px`;
+
+    const panelHeight = panel.offsetHeight || 280;
+    const spaceBelow = window.innerHeight - rect.bottom - pad;
+    const spaceAbove = rect.top - pad;
+    const placeAbove = spaceBelow < Math.min(220, panelHeight) && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(140, placeAbove ? spaceAbove : spaceBelow);
+
+    let top = placeAbove ? (rect.top - panelHeight - gap) : (rect.bottom + gap);
+    top = Math.max(pad, Math.min(top, window.innerHeight - Math.min(panelHeight, maxHeight) - pad));
+
+    let left = rect.left;
+    left = Math.max(pad, Math.min(left, window.innerWidth - width - pad));
+
+    panel.style.maxHeight = `${Math.round(maxHeight)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.left = `${Math.round(left)}px`;
+}
+
+function _storSchedulePosition() {
+    if (_storPosRaf) cancelAnimationFrame(_storPosRaf);
+    _storPosRaf = requestAnimationFrame(() => {
+        _storPosRaf = null;
+        _storPositionPanel();
+    });
+}
+
+function _storAttachPositionListeners() {
+    if (_storPosListenersAttached) return;
+    window.addEventListener('scroll', _storSchedulePosition, true);
+    window.addEventListener('resize', _storSchedulePosition);
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('scroll', _storSchedulePosition);
+        window.visualViewport.addEventListener('resize', _storSchedulePosition);
+    }
+    _storPosListenersAttached = true;
+}
+
+function _storDetachPositionListeners() {
+    if (!_storPosListenersAttached) return;
+    window.removeEventListener('scroll', _storSchedulePosition, true);
+    window.removeEventListener('resize', _storSchedulePosition);
+    if (window.visualViewport) {
+        window.visualViewport.removeEventListener('scroll', _storSchedulePosition);
+        window.visualViewport.removeEventListener('resize', _storSchedulePosition);
+    }
+    if (_storPosRaf) {
+        cancelAnimationFrame(_storPosRaf);
+        _storPosRaf = null;
+    }
+    _storPosListenersAttached = false;
+}
 
 function _storIconClass(m) {
     if (m.is_default) return 'bi-folder2';
@@ -176,9 +411,13 @@ function _storRenderPanel() {
     if (!panel) return;
     panel.innerHTML = _storMounts.map((m, i) => {
         const icon    = _storIconClass(m);
-        const badge   = m.is_default ? '' : (m.has_prjquota
-            ? `<span class="stor-opt-badge pq">prjquota</span>`
-            : `<span class="stor-opt-badge nq">no quota</span>`);
+        const badge = m.is_default
+            ? ''
+            : m.has_ext4
+            ? (m.has_prjquota
+                ? `<span class="stor-opt-badge ext4">ext4+prjquota</span>`
+                : `<span class="stor-opt-badge nq">ext4 no quota</span>`)
+            : `<span class="stor-opt-badge nq">no quota</span>`;
         const row2    = m.path2 ? `<div class="stor-opt-row2">${esc(m.path2)}</div>` : '';
         const barFill = m.total > 0
             ? `<div class="stor-opt-usage">
@@ -206,10 +445,20 @@ function _storRenderNote(m) {
     const note = document.getElementById('storage-path-note');
     if (!note) return;
     if (!m || m.is_default) { note.innerHTML = ''; return; }
-    if (m.has_prjquota) {
-        note.innerHTML = `<span style="color:#34d399;"><i class="bi bi-check-circle"></i> XFS prjquota active on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits enforced.</span>`;
+    if (m.has_ext4 && m.has_prjquota) {
+        note.innerHTML = `<span style="color:#fb923c;"><i class="bi bi-check-circle"></i> ext4 prjquota active on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits enforced.</span>`;
+    } else if (m.has_ext4) {
+        if (_storUnsafeOverride) {
+            note.innerHTML = `<span style="color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> ext4 without prjquota on <code style="font-size:.78em;">${esc(m.device)}</code> — allowed only because unsafe override is enabled.</span>`;
+        } else {
+            note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> ext4 without prjquota on <code style="font-size:.78em;">${esc(m.device)}</code> — creation is blocked until <strong>prjquota</strong> is enabled and remounted.</span>`;
+        }
     } else {
-        note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> No prjquota on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits will <strong>not</strong> be enforced.</span>`;
+        if (_storUnsafeOverride) {
+            note.innerHTML = `<span style="color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> Quotas are unavailable on <code style="font-size:.78em;">${esc(m.device)}</code> — allowed via unsafe override (at your own risk).</span>`;
+        } else {
+            note.innerHTML = `<span style="color:#f87171;"><i class="bi bi-exclamation-triangle"></i> Quotas are unavailable on <code style="font-size:.78em;">${esc(m.device)}</code> — disk limits will <strong>not</strong> be enforced.</span>`;
+        }
     }
 }
 
@@ -220,20 +469,19 @@ function storSelToggle(e) {
     if (!el || !panel) return;
     if (el.classList.contains('open')) {
         el.classList.remove('open');
+        _storDetachPositionListeners();
     } else {
         _storRenderPanel(); // refresh marks
-        // Position the fixed panel under the trigger
-        const rect = el.getBoundingClientRect();
-        panel.style.top   = (rect.bottom + 5) + 'px';
-        panel.style.left  = rect.left + 'px';
-        panel.style.width = rect.width + 'px';
         el.classList.add('open');
+        _storPositionPanel();
+        _storAttachPositionListeners();
     }
 }
 
 function storSelClose() {
     const el = document.getElementById('stor-sel');
     if (el) el.classList.remove('open');
+    _storDetachPositionListeners();
 }
 
 function storSelPick(idx) {
@@ -252,9 +500,11 @@ document.addEventListener('click', e => {
 (function loadStorMounts() {
     // Default-only fallback
     function initDefault(hint) {
+        _storUnsafeOverride = false;
         _storMounts = [{
             device: 'Default', mount: '', sub: hint || 'volumes/ in panel directory',
             path2: '', value: '', is_default: true, has_prjquota: false,
+            has_ext4: false,
             free: '--', total: 0, pct: 0,
         }];
         _storIdx = 0;
@@ -267,11 +517,13 @@ document.addEventListener('click', e => {
         .then(r => r.ok ? r.json() : null)
         .then(d => {
             if (!d || !d.ok) { initDefault(); return; }
+            _storUnsafeOverride = !!d.unsafe_override;
             const cp = d.current_path || '';
             _storMounts = [{
                 device: 'Default', mount: '',
                 sub: cp ? `panel default → ${cp}` : 'panel default  (volumes/)',
                 path2: '', value: '', is_default: true, has_prjquota: false,
+                has_ext4: false,
                 free: '--', total: 0, pct: 0,
             }];
             (d.mounts || []).forEach(m => {
@@ -284,6 +536,7 @@ document.addEventListener('click', e => {
                     value:        sp,
                     is_default:   false,
                     has_prjquota: !!m.has_prjquota,
+                    has_ext4:     !!m.has_ext4,
                     free:         `${m.free_gib} GiB`,
                     total:        parseFloat(m.total_gib) || 0,
                     pct:          m.used_pct || 0,
@@ -349,6 +602,80 @@ async function fetchImageEnv() {
     }
 }
 
+async function buildImageFromDockerfile() {
+    const imageEl = document.getElementById('image');
+    const customTagEl = document.getElementById('dockerfile-image-tag');
+    const fileEl = document.getElementById('dockerfile-upload');
+    const btn = document.getElementById('build-dockerfile-btn');
+    const status = document.getElementById('dockerfile-build-status');
+
+    const customTag = (customTagEl?.value || '').trim();
+    const image = customTag || (imageEl?.value || '').trim();
+    const file = fileEl?.files?.[0];
+
+    if (!image) {
+        if (status) {
+            status.style.color = 'var(--danger)';
+            status.textContent = '✗ Enter a Docker image tag first (e.g. my-custom:latest).';
+        }
+        imageEl?.focus();
+        return;
+    }
+    if (!file) {
+        if (status) {
+            status.style.color = 'var(--danger)';
+            status.textContent = '✗ Choose a Dockerfile to upload.';
+        }
+        return;
+    }
+
+    const form = new FormData();
+    form.append('image', image);
+    form.append('dockerfile', file, file.name || 'Dockerfile');
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" style="width:.8rem;height:.8rem;"></span> Building…';
+    if (status) {
+        status.style.color = '';
+        status.textContent = '';
+    }
+
+    try {
+        const resp = await fetch('/api/image/build-dockerfile', {
+            method: 'POST',
+            credentials: 'same-origin',
+            body: form,
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.ok) {
+            throw new Error(data.error || 'Build failed');
+        }
+
+        // Ensure the freshly-built image appears in local autocomplete + dropdown immediately.
+        _addLocalImageTag(image);
+
+        if (status) {
+            status.style.color = 'var(--success)';
+            status.textContent = `✓ Built local image ${image}`;
+        }
+        if (imageEl && imageEl.value.trim() !== image) {
+            imageEl.value = image;
+        }
+        renderImageDropdown();
+        if (fileEl) fileEl.value = '';
+        updateYaml();
+        saveFormState();
+    } catch (e) {
+        if (status) {
+            status.style.color = 'var(--danger)';
+            status.textContent = `✗ ${e.message || 'Build failed'}`;
+        }
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-hammer"></i> Build Local Image';
+    }
+}
+
 // ── Monaco init ──────────────────────────────────────────────────────────────
 
 if (!window.__monacoEditorReady) {
@@ -409,15 +736,12 @@ function autoFillName() {
 const FORM_KEY = 'yunexal_new_server_draft';
 
 function saveFormState() {
-    const ports = [], envs = [], vols = [];
+    const ports = [], envs = [];
     document.querySelectorAll('#ports-container .entry-row').forEach(r => {
         ports.push({ h: r.querySelector('.host-input').value, c: r.querySelector('.container-input').value, p: r.querySelector('.proto-input').value });
     });
     document.querySelectorAll('#env-container .entry-row').forEach(r => {
         envs.push({ k: r.querySelector('.key-input').value, v: r.querySelector('.val-input').value });
-    });
-    document.querySelectorAll('#vol-container .entry-row').forEach(r => {
-        vols.push({ h: r.querySelector('.host-input').value, c: r.querySelector('.container-input').value });
     });
     const collapsed = {};
     document.querySelectorAll('.sec-card').forEach((card, i) => {
@@ -428,6 +752,7 @@ function saveFormState() {
         name:          document.getElementById('name')?.value || '',
         owner_id:      document.getElementById('owner_id')?.value || '0',
         image:         document.getElementById('image')?.value || '',
+        dockerfile_image_tag: document.getElementById('dockerfile-image-tag')?.value || '',
         gui_cpus:      document.getElementById('gui_cpus')?.value || '',
         gui_mem_val:   document.getElementById('gui_mem_val')?.value || '',
         gui_mem_unit:  document.getElementById('gui_mem_unit')?.value || 'mb',
@@ -435,12 +760,7 @@ function saveFormState() {
         gui_disk_unit: document.getElementById('gui_disk_unit')?.value || 'gb',
         bandwidth_mbit:document.getElementById('bandwidth_mbit')?.value || '',
         gui_restart:   document.getElementById('gui_restart')?.value || 'unless-stopped',
-        ports, envs, vols, collapsed,
-        srv_enabled:     document.getElementById('srv-enable-chk')?.checked || false,
-        srv_service:     document.getElementById('srv-service')?.value || '',
-        srv_a_subdomain: document.getElementById('srv-a-subdomain')?.value || '',
-        srv_port:        document.getElementById('srv-port')?.value || '',
-        dns_open:        document.getElementById('dns-srv-body')?.style.display !== 'none',
+        ports, envs, collapsed,
     }));
 }
 
@@ -452,6 +772,8 @@ function restoreFormState() {
     sv('name', s.name);
     sv('owner_id', s.owner_id);
     sv('image', s.image);
+    renderImageDropdown();
+    sv('dockerfile-image-tag', s.dockerfile_image_tag);
     sv('gui_cpus', s.gui_cpus);
     sv('gui_mem_val', s.gui_mem_val);
     sv('gui_mem_unit', s.gui_mem_unit);
@@ -461,37 +783,15 @@ function restoreFormState() {
     sv('gui_restart', s.gui_restart);
     (s.ports || []).forEach(r => addPortRow(r.h, r.c, r.p));
     (s.envs  || []).forEach(r => addEnvRow(r.k, r.v));
-    (s.vols  || []).forEach(r => addVolRow(r.h, r.c));
     if (s.collapsed) {
         document.querySelectorAll('.sec-card').forEach((card, i) => {
             if (!(i in s.collapsed)) return;
             const bd   = card.querySelector('.sec-bd');
-            const chev = card.querySelector('.sec-chev') || card.querySelector('#dns-srv-chevron');
+            const chev = card.querySelector('.sec-chev');
             if (!bd) return;
             bd.style.display = s.collapsed[i] ? 'none' : '';
-            if (chev) chev.className = 'bi ' + (s.collapsed[i] ? 'bi-chevron-down' : 'bi-chevron-up') +
-                (chev.id === 'dns-srv-chevron' ? '' : ' sec-chev');
+            if (chev) chev.className = 'bi ' + (s.collapsed[i] ? 'bi-chevron-down' : 'bi-chevron-up') + ' sec-chev';
         });
-    }
-    if (s.dns_open) {
-        const body = document.getElementById('dns-srv-body');
-        if (body) { body.style.display = ''; loadSrvProviders(); }
-        const chev = document.getElementById('dns-srv-chevron');
-        if (chev) chev.className = 'bi bi-chevron-up';
-    }
-    if (s.srv_enabled) {
-        const chk = document.getElementById('srv-enable-chk');
-        if (chk) { chk.checked = true; onSrvToggle(); }
-        sv('srv-service', s.srv_service);
-        sv('srv-a-subdomain', s.srv_a_subdomain);
-        // srv-port is a <select> populated by _refreshSrvPortSelect inside onSrvToggle,
-        // so restore value after a tick to ensure options exist
-        if (s.srv_port) setTimeout(() => {
-            const sel = document.getElementById('srv-port');
-            if (sel && sel.querySelector(`option[value="${s.srv_port}"]`)) sel.value = s.srv_port;
-            updateSrvPreview();
-        }, 50);
-        else updateSrvPreview();
     }
 }
 
@@ -535,6 +835,8 @@ function _cfmEmpty(msg) {
 }
 
 function showCreateConfirm() {
+    if (!_guardQuotaBeforeCreate()) return;
+
     // Auto-fill name if empty
     const nameEl = document.getElementById('name');
     if (!nameEl.value.trim()) nameEl.value = randomServerName();
@@ -557,7 +859,6 @@ function showCreateConfirm() {
     imageEl.style.boxShadow   = '';
 
     updateYaml();
-    prepareSrvHiddenFields();
 
     const name     = document.getElementById('name').value.trim() || '—';
     const ownerSel = document.getElementById('owner_id');
@@ -636,50 +937,6 @@ function showCreateConfirm() {
         sections.push(_cfmSection('bi-code-square', `Environment${envs.length ? ' ('+envs.length+')' : ''}`, inner));
     }
 
-    // ── Volumes ──
-    const vols = [];
-    document.querySelectorAll('#vol-container .entry-row').forEach(r => {
-        const h = r.querySelector('.host-input').value;
-        const c = r.querySelector('.container-input').value;
-        if (h && c) vols.push({ h, c });
-    });
-    {
-        const inner = vols.length
-            ? `<div style="display:flex;flex-direction:column;gap:.25rem;">${vols.map(({h,c}) =>
-                `<div style="display:flex;align-items:center;gap:.4rem;padding:.25rem .4rem;background:var(--surface3);border-radius:6px;font-family:monospace;font-size:.77rem;overflow:hidden;">
-                    <span style="color:var(--txt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${esc(h)}</span>
-                    <i class="bi bi-arrow-right" style="color:var(--muted);flex-shrink:0;font-size:.7rem;"></i>
-                    <span style="color:#a78bfa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${esc(c)}</span>
-                </div>`
-            ).join('')}</div>`
-            : _cfmEmpty('No volume mounts');
-        sections.push(_cfmSection('bi-hdd-fill', `Volume Mounts${vols.length ? ' ('+vols.length+')' : ''}`, inner));
-    }
-
-    // ── DNS / SRV ──
-    const srvEnabled = document.getElementById('h-dns-srv-enabled').value === '1';
-    if (srvEnabled) {
-        const srvName   = document.getElementById('h-dns-srv-name').value || '_yunexal';
-        const srvTarget = document.getElementById('h-dns-srv-target').value;
-        const srvPort   = document.getElementById('h-dns-srv-port').value;
-        const aSub      = document.getElementById('h-dns-a-subdomain').value;
-        const aIp       = document.getElementById('h-dns-a-ip').value;
-        const proto     = document.getElementById('h-dns-srv-both-protos').value || 'both';
-        const zone      = document.getElementById('h-dns-zone-name').value;
-        const protoLabel = proto === 'tcp' ? 'TCP only' : proto === 'udp' ? 'UDP only' : 'TCP + UDP';
-        const protoColor = proto === 'both' ? '#34d399' : '#fbbf24';
-        const records = [];
-        if (proto === 'both' || proto === 'tcp') records.push(`<code style="color:#a78bfa;font-size:.77rem;">${esc(srvName)}._tcp.${esc(srvTarget)}</code>`);
-        if (proto === 'both' || proto === 'udp') records.push(`<code style="color:#a78bfa;font-size:.77rem;">${esc(srvName)}._udp.${esc(srvTarget)}</code>`);
-        sections.push(_cfmSection('bi-hdd-network-fill', 'DNS / SRV Record',
-            _cfmKV('Protocol', `<span style="color:${protoColor};font-size:.77rem;font-weight:600;">${protoLabel}</span>`) +
-            records.map((r, i) => _cfmKV(records.length > 1 ? `SRV record ${i+1}` : 'SRV record', r)).join('') +
-            _cfmKV('Target', `<code style="color:var(--txt);font-size:.77rem;">${esc(srvTarget)}:${esc(srvPort)}</code>`) +
-            (zone ? _cfmKV('Zone', `<code style="color:var(--muted);font-size:.77rem;">${esc(zone)}</code>`) : '') +
-            (aSub ? _cfmKV('A-record', `<code style="color:#a78bfa;font-size:.77rem;">${esc(aSub)}.${esc(zone)}</code>${aIp ? ` <span style="color:var(--muted);font-size:.72rem;">→ ${esc(aIp)}</span>` : ''}`) : '')
-        ));
-    }
-
     document.getElementById('confirm-summary').innerHTML = sections.join('');
     document.getElementById('confirmCreateModal').style.display = 'block';}
 
@@ -688,159 +945,13 @@ function hideCreateConfirm() {
 }
 
 function submitCreateForm() {
+    if (!_guardQuotaBeforeCreate()) return;
     clearFormState();
     document.getElementById('createServerForm').submit();
 }
 
-// ── DNS / SRV ──────────────────────────────────────────────────────────────────
-// ── DNS / SRV ─────────────────────────────────────────────────────────────────
-function toggleDnsSrv() {
-    const body = document.getElementById('dns-srv-body');
-    const chev = document.getElementById('dns-srv-chevron');
-    const open = body.style.display !== 'none';
-    body.style.display = open ? 'none' : '';
-    chev.className = open ? 'bi bi-chevron-down' : 'bi bi-chevron-up';
-    if (!open) loadSrvProviders();
-    saveFormState();
-}
-
-function onSrvToggle() {
-    const on = document.getElementById('srv-enable-chk').checked;
-    document.getElementById('srv-fields').style.display = on ? '' : 'none';
-    saveFormState();
-    if (on) {
-        if (!document.getElementById('srv-service').value) document.getElementById('srv-service').value = 'yunexal';
-        if (!document.getElementById('srv-a-subdomain').value) rollSrvSubdomain();
-        _refreshSrvPortSelect();
+document.getElementById('createServerForm')?.addEventListener('submit', (e) => {
+    if (!_guardQuotaBeforeCreate()) {
+        e.preventDefault();
     }
-}
-
-function rollSrvSubdomain() {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    let s = '';
-    for (let i = 0; i < 8; i++) s += chars[Math.floor(Math.random() * chars.length)];
-    document.getElementById('srv-a-subdomain').value = s;
-    updateSrvPreview();
-}
-
-function _refreshSrvPortSelect() {
-    const sel = document.getElementById('srv-port');
-    if (!sel) return;
-    const prev = sel.value;
-    sel.innerHTML = '<option value="">\u2014 select port \u2014</option>';
-    const seen = new Set();
-    document.querySelectorAll('#ports-container .entry-row').forEach(row => {
-        const v = row.querySelector('.host-input')?.value.trim();
-        if (!v || seen.has(v)) return;
-        seen.add(v);
-        const proto = row.querySelector('.proto-input')?.value || 'tcp';
-        const o = document.createElement('option');
-        o.value = v;
-        o.textContent = v;
-        o.dataset.proto = proto;
-        sel.appendChild(o);
-    });
-    if (sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
-    updateSrvPreview();
-}
-
-function loadSrvProviders() {
-    fetch('/api/admin/dns/providers', { credentials: 'same-origin' })
-        .then(r => r.json()).then(d => {
-            const sel = document.getElementById('srv-provider');
-            sel.innerHTML = '<option value="">\u2014 Select provider \u2014</option>';
-            (d.providers || []).forEach(p => {
-                const o = document.createElement('option');
-                o.value = p.id; o.textContent = p.name;
-                sel.appendChild(o);
-            });
-        }).catch(() => {});
-}
-
-function onSrvProviderChange() {
-    const pid = document.getElementById('srv-provider').value;
-    const sel = document.getElementById('srv-zone');
-    if (!pid) { sel.innerHTML = '<option value="">Select provider first</option>'; updateSrvPreview(); return; }
-    sel.innerHTML = '<option value="">Loading\u2026</option>';
-    fetch(`/api/admin/dns/providers/${pid}/zones`, { credentials: 'same-origin' })
-        .then(r => r.json()).then(d => {
-            sel.innerHTML = '<option value="">\u2014 Select domain \u2014</option>';
-            (d.zones || []).forEach(z => {
-                const o = document.createElement('option');
-                o.value = z.id; o.textContent = z.name; o.dataset.name = z.name;
-                sel.appendChild(o);
-            });
-            sel.onchange = () => { _autoFetchIp(); updateSrvPreview(); };
-        }).catch(() => { sel.innerHTML = '<option value="">Failed to load</option>'; });
-}
-
-function _getSrvZoneName() {
-    const zSel = document.getElementById('srv-zone');
-    const idx = zSel.selectedIndex;
-    return idx > 0 ? (zSel.options[idx]?.dataset?.name || zSel.options[idx]?.text || '') : '';
-}
-
-function _autoFetchIp() {
-    fetch('/api/admin/dns/public-ip', { credentials: 'same-origin' })
-        .then(r => r.json())
-        .then(d => { if (d.ip) document.getElementById('h-dns-a-ip').value = d.ip; })
-        .catch(() => {});
-}
-
-function _srvContainerName() {
-    return (document.getElementById('name')?.value || 'server')
-        .trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'server';
-}
-
-function _getSrvProto() {
-    const sel = document.getElementById('srv-port');
-    const p = sel?.options[sel.selectedIndex]?.dataset?.proto || 'tcp';
-    return p === 'tcp+udp' ? 'both' : p;
-}
-
-function updateSrvPreview() {
-    const svc   = (document.getElementById('srv-service')?.value.trim() || 'yunexal').replace(/[^a-z0-9-]/gi, '-').toLowerCase();
-    const sub   = document.getElementById('srv-a-subdomain').value.trim();
-    const zone  = _getSrvZoneName();
-    const port  = document.getElementById('srv-port').value;
-    const proto = _getSrvProto();
-    const box   = document.getElementById('srv-preview-box');
-    if (!box) return;
-    if (!sub || !zone || !port) {
-        box.innerHTML = '<em style="color:var(--muted);font-size:.74rem;">Fill in service, subdomain, domain and port to see preview</em>';
-        return;
-    }
-    const target = `${sub}.${zone}`;
-    const arrow  = `<span style="color:var(--muted);font-size:.72rem;"> \u2192 ${esc(target)}:${esc(port)}</span>`;
-    const rows = [];
-    if (proto === 'both' || proto === 'tcp') rows.push(`<code style="color:#a78bfa;font-size:.76rem;">_${esc(svc)}._tcp.${esc(target)}</code>${arrow}`);
-    if (proto === 'both' || proto === 'udp') rows.push(`<code style="color:#a78bfa;font-size:.76rem;">_${esc(svc)}._udp.${esc(target)}</code>${arrow}`);
-    box.innerHTML = rows.map(r => `<div style="margin-bottom:.15rem;">${r}</div>`).join('');
-}
-
-function prepareSrvHiddenFields() {
-    const chk = document.getElementById('srv-enable-chk');
-    if (!chk || !chk.checked) { document.getElementById('h-dns-srv-enabled').value = '0'; return; }
-    const pid   = document.getElementById('srv-provider').value;
-    const zSel  = document.getElementById('srv-zone');
-    const zid   = zSel.value;
-    const zname = zSel.options[zSel.selectedIndex]?.dataset?.name || zSel.options[zSel.selectedIndex]?.text || zid;
-    const port  = document.getElementById('srv-port').value;
-    const aSub  = document.getElementById('srv-a-subdomain').value.trim();
-    if (!pid || !zid || !port || !aSub) { document.getElementById('h-dns-srv-enabled').value = '0'; return; }
-    const svc    = (document.getElementById('srv-service')?.value.trim() || 'yunexal').replace(/[^a-z0-9-]/gi, '-').toLowerCase();
-    const target = `${aSub}.${zname}`;
-    const proto = _getSrvProto();
-    document.getElementById('h-dns-srv-enabled').value     = '1';
-    document.getElementById('h-dns-srv-both-protos').value = proto;
-    document.getElementById('h-dns-provider-id').value     = pid;
-    document.getElementById('h-dns-zone-id').value         = zid;
-    document.getElementById('h-dns-zone-name').value       = zname;
-    document.getElementById('h-dns-srv-name').value        = `_${svc}`;
-    document.getElementById('h-dns-srv-port').value        = port;
-    document.getElementById('h-dns-srv-target').value      = target;
-    document.getElementById('h-dns-srv-priority').value    = '0';
-    document.getElementById('h-dns-srv-weight').value      = '0';
-    document.getElementById('h-dns-a-subdomain').value     = aSub;
-    // h-dns-a-ip already set by _autoFetchIp()
-}
+});

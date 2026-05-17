@@ -12,6 +12,8 @@ pub fn render<T: Template>(t: T) -> Html<String> {
 #[derive(Debug, Clone)]
 pub struct UserInfo {
     pub id: i64,
+    pub uid: String,
+    pub nickname: String,
     pub username: String,
     pub role: String,
     pub created_at: String,
@@ -25,7 +27,7 @@ pub struct IndexTemplate {
     pub containers: Vec<ContainerInfo>,
     pub is_admin: bool,
     pub auth_username: String,
-    pub cf_token: String,
+    pub auth_owner_label: String,
     pub nonce: String,
 }
 
@@ -49,7 +51,6 @@ pub struct NewServerTemplate {
     pub error: Option<String>,
     pub fix_cmd: Option<String>,
     pub users: Vec<UserInfo>,
-    pub cf_token: String,
     pub nonce: String,
     pub default_quota_gb: String,
 }
@@ -65,8 +66,20 @@ pub struct LoginTemplate {
 pub struct ConsoleTemplate {
     pub id: i64,
     pub container: ContainerInfo,
+    pub can_power: bool,
+    pub can_members: bool,
     pub active_tab: &'static str,
-    pub cf_token: String,
+    pub nonce: String,
+}
+
+#[derive(Template)]
+#[template(path = "server_users.html")]
+pub struct ServerUsersTemplate {
+    pub id: i64,
+    pub container: ContainerInfo,
+    pub can_members: bool,
+    pub can_members_write: bool,
+    pub active_tab: &'static str,
     pub nonce: String,
 }
 
@@ -75,8 +88,8 @@ pub struct ConsoleTemplate {
 pub struct FilesTemplate {
     pub id: i64,
     pub container: ContainerInfo,
+    pub can_members: bool,
     pub active_tab: &'static str,
-    pub cf_token: String,
     pub nonce: String,
 }
 
@@ -85,12 +98,12 @@ pub struct FilesTemplate {
 pub struct FileEditTemplate {
     pub id: i64,
     pub container: ContainerInfo,
+    pub can_members: bool,
     pub path: String,
     pub filename: String,
     pub content: String,
     pub ace_mode: String,
     pub active_tab: &'static str,
-    pub cf_token: String,
     pub nonce: String,
 }
 
@@ -101,8 +114,8 @@ pub struct SettingsTemplate {
     pub id: i64,
     pub container: ContainerInfo,
     pub is_admin: bool,
+    pub can_members: bool,
     pub active_tab: &'static str,
-    pub cf_token: String,
     pub nonce: String,
     pub env: String,
 }
@@ -124,12 +137,22 @@ pub struct NetworkingTemplate {
     /// Current bandwidth limit in Mbit/s, or None for unlimited.
     pub bandwidth_mbit: Option<u32>,
     pub is_admin: bool,
+    pub can_members: bool,
     pub ports: Vec<PortRow>,
     pub active_tab: &'static str,
-    pub cf_token: String,
     pub nonce: String,
     pub ufw_enabled: bool,
     pub bandwidth_enabled: bool,
+}
+
+#[derive(Template)]
+#[template(path = "server_audit.html")]
+pub struct ServerAuditTemplate {
+    pub id: i64,
+    pub container: ContainerInfo,
+    pub can_members: bool,
+    pub active_tab: &'static str,
+    pub nonce: String,
 }
 
 #[derive(Template)]
@@ -149,6 +172,10 @@ pub struct AdminTemplate {
     pub listen_addr: String,
     pub auth_username: String,
     pub auth_role: String,
+    pub auth_role_color: String,
+    pub auth_role_badge_bg: String,
+    pub auth_role_badge_border: String,
+    pub root_role_color: String,
     pub panel_memory_mb: String,
     pub panel_version: String,
     pub users: Vec<UserInfo>,
@@ -170,20 +197,12 @@ pub struct AdminTemplate {
     pub zram_compr_mb: String,
     pub zram_ratio: String,
     pub zram_algorithm: String,
-    pub cf_token: String,
     pub nonce: String,
     pub settings_ufw_enabled: bool,
     pub settings_bandwidth_enabled: bool,
-    pub settings_cf_uam_enabled: bool,
-    pub cf_zone_id: String,
-    pub cf_api_token_set: bool,
-    pub cf_uam_threshold: String,
-    pub cf_uam_cooldown_mins: String,
-    pub settings_cf_l7_enabled: bool,
-    pub cf_l7_threshold: String,
-    pub cf_l7_ips_min: String,
     pub docker_default_quota: String,
     pub container_storage_path: String,
+    pub settings_storage_unsafe_override: bool,
     pub panel_accent: String,
     pub panel_name: String,
 }
@@ -194,9 +213,10 @@ pub struct AdminEditTemplate {
     pub id: i64,
     pub container: ContainerInfo,
     pub edit: ContainerEditInfo,
+    pub current_storage_source: String,
+    pub current_storage_base: String,
     pub users: Vec<UserInfo>,
     pub error: Option<String>,
-    pub cf_token: String,
     pub nonce: String,
 }
 
@@ -212,6 +232,10 @@ pub struct ContainerEditInfo {
     pub cpu: String,
     /// Memory limit in MB as string (empty = unlimited).
     pub memory_mb: String,
+    /// Disk limit as string (e.g. "15gb", empty = unlimited).
+    pub disk_limit: String,
+    /// Bandwidth limit in Mbit/s (empty = unlimited).
+    pub bandwidth_mbit: String,
     pub owner_id: i64,
 }
 
@@ -229,38 +253,6 @@ pub struct CreateServerForm {
     /// Owner user id selected in the form. 0 = assigned server-side (self).
     #[serde(default)]
     pub owner_id: i64,
-    // ── DNS / SRV auto-record ────────────────────────────────────────────────
-    /// "1" to create an SRV record after container is created.
-    #[serde(default)]
-    pub dns_srv_enabled: String,
-    #[serde(default)]
-    pub dns_provider_id: String,
-    #[serde(default)]
-    pub dns_zone_id: String,
-    #[serde(default)]
-    pub dns_zone_name: String,
-    /// Full SRV name, e.g. `_minecraft._tcp`
-    #[serde(default)]
-    pub dns_srv_name: String,
-    #[serde(default)]
-    pub dns_srv_port: String,
-    /// SRV target hostname (leave empty to use zone name or auto-generated A record)
-    #[serde(default)]
-    pub dns_srv_target: String,
-    #[serde(default)]
-    pub dns_srv_priority: String,
-    #[serde(default)]
-    pub dns_srv_weight: String,
-    /// "1" = create both _tcp and _udp SRV records (default behaviour)
-    #[serde(default)]
-    pub dns_srv_both_protos: String,
-    // ── A record (created before SRV so its FQDN is the SRV target) ──────────
-    /// Subdomain for the auto-created A record (e.g. "mc" → mc.example.com)
-    #[serde(default)]
-    pub dns_a_subdomain: String,
-    /// IPv4 address for the A record
-    #[serde(default)]
-    pub dns_a_ip: String,
     /// Custom storage path for this container's volume. Empty = use panel default.
     #[serde(default)]
     pub container_storage_path: String,
@@ -288,6 +280,9 @@ pub struct CreateFileForm {
     /// Current directory path — set by the file browser JS
     #[serde(default)]
     pub path: String,
+    /// "file" (default) or "folder"
+    #[serde(default)]
+    pub entry_type: String,
 }
 
 #[derive(Deserialize)]
@@ -359,9 +354,33 @@ pub struct ChangePwForm {
 
 #[derive(Deserialize)]
 pub struct CreateUserForm {
+    pub uid: String,
+    pub nickname: String,
     pub username: String,
     pub password: String,
     pub role: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetUserRoleForm {
+    pub role: String,
+}
+
+#[derive(Deserialize)]
+pub struct CreateRoleForm {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub color: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetRolePermissionsForm {
+    #[serde(default)]
+    pub permissions: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub color: String,
 }
 
 #[derive(Deserialize)]
@@ -376,6 +395,10 @@ pub struct EditContainerForm {
     pub owner_id: i64,
     pub memory_mb: i64,
     pub cpu: f64,
+    #[serde(default)]
+    pub disk_limit: String,
+    #[serde(default)]
+    pub bandwidth_mbit: String,
     pub ports: String,
     pub env: String,
 }

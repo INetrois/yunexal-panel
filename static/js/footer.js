@@ -1,4 +1,80 @@
 (function () {
+    // ── Global URL helpers (no implicit route hashes) ───────────────────────
+    const _FILES_ROUTE_RE = /^\/servers\/\d+\/files(?:\/edit)?\/?$/;
+    const _FILES_HASH_RE = /^(?:path=|%2f|servers-\d+-files(?:@|$))/i;
+    const _LEGACY_ROUTE_HASH_RE = /^(?:route:)?[a-z0-9_-]+(?:-[a-z0-9_-]+)*$/i;
+
+    function _shouldStripLegacyRouteHash(pathname, hashValue) {
+        if (!hashValue) return false;
+        if (_FILES_ROUTE_RE.test(pathname)) return false;
+        if (_FILES_HASH_RE.test(hashValue)) return false;
+        return _LEGACY_ROUTE_HASH_RE.test(hashValue);
+    }
+
+    function _toRouteHashUrl(rawUrl) {
+        try {
+            const url = new URL(rawUrl, window.location.origin);
+            if (url.origin !== window.location.origin) return rawUrl;
+            const hashValue = (url.hash || '').replace(/^#/, '');
+            if (_shouldStripLegacyRouteHash(url.pathname, hashValue)) {
+                return `${url.pathname}${url.search}`;
+            }
+            return `${url.pathname}${url.search}${url.hash}`;
+        } catch {
+            return rawUrl;
+        }
+    }
+
+    function _cleanupCurrentLegacyRouteHash() {
+        const hashValue = (window.location.hash || '').replace(/^#/, '');
+        if (!_shouldStripLegacyRouteHash(window.location.pathname, hashValue)) return;
+        history.replaceState(
+            history.state,
+            '',
+            `${window.location.pathname}${window.location.search}`,
+        );
+    }
+
+    window.yuRouteUrl = function (rawUrl) {
+        return _toRouteHashUrl(rawUrl);
+    };
+
+    window.yuGo = function (rawUrl, replace) {
+        const next = _toRouteHashUrl(rawUrl);
+        if (replace) window.location.replace(next);
+        else window.location.href = next;
+    };
+
+    function _annotateAnchorHref(a) {
+        if (!a || !a.getAttribute) return;
+        // Sidebar navigation should keep original clean route URLs.
+        if (a.closest && a.closest('.yu-sidebar')) return;
+        const raw = a.getAttribute('href');
+        if (!raw) return;
+        if (raw.startsWith('#') || raw.startsWith('mailto:') || raw.startsWith('tel:') || raw.startsWith('javascript:')) return;
+        const next = _toRouteHashUrl(raw);
+        if (next !== raw) a.setAttribute('href', next);
+    }
+
+    function _annotateAnchors(root) {
+        if (!root || !root.querySelectorAll) return;
+        root.querySelectorAll('a[href]').forEach(_annotateAnchorHref);
+    }
+
+    function _initRouteHashAnnotation() {
+        _annotateAnchors(document);
+        const mo = new MutationObserver((mutations) => {
+            for (const m of mutations) {
+                for (const n of m.addedNodes) {
+                    if (!n || n.nodeType !== Node.ELEMENT_NODE) continue;
+                    if (n.matches && n.matches('a[href]')) _annotateAnchorHref(n);
+                    _annotateAnchors(n);
+                }
+            }
+        });
+        mo.observe(document.body, { childList: true, subtree: true });
+    }
+
     // ── Manifest + Service Worker ──
     const _mlink = document.createElement('link');
     _mlink.rel = 'manifest';
@@ -7,6 +83,37 @@
 
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+
+    _cleanupCurrentLegacyRouteHash();
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', _initRouteHashAnnotation, { once: true });
+    } else {
+        _initRouteHashAnnotation();
+    }
+
+    // ── Global fetch auth expiry guard ─────────────────────────────────────
+    // If backend redirects an API call to /login (expired/invalid session),
+    // promote that redirect to a top-level navigation for this tab.
+    if (typeof window.fetch === 'function') {
+        const _origFetch = window.fetch.bind(window);
+        window.fetch = async function(input, init) {
+            const res = await _origFetch(input, init);
+            try {
+                if (res && res.redirected) {
+                    const resUrl = new URL(res.url, window.location.origin);
+                    if (
+                        resUrl.origin === window.location.origin
+                        && resUrl.pathname === '/login'
+                        && window.location.pathname !== '/login'
+                    ) {
+                        window.location.replace('/login');
+                    }
+                }
+            } catch (_) {}
+            return res;
+        };
     }
 
     // ── Global confirm dialog ─────────────────────────────────────────────────

@@ -13,6 +13,47 @@ function showToast(msg, type) {
     setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 3500);
 }
 
+function fbShowModal(modalEl) {
+    if (!modalEl) return;
+    try {
+        if (window.bootstrap?.Modal?.getOrCreateInstance) {
+            window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
+            return;
+        }
+        if (window.bootstrap?.Modal) {
+            new window.bootstrap.Modal(modalEl).show();
+            return;
+        }
+    } catch (e) {
+        console.error('fbShowModal bootstrap fallback:', e);
+    }
+
+    // Fallback path when bootstrap modal instance is unavailable/broken.
+    modalEl.style.display = 'block';
+    modalEl.classList.add('show');
+    modalEl.removeAttribute('aria-hidden');
+    document.body.classList.add('modal-open');
+}
+
+function fbHideModal(modalEl) {
+    if (!modalEl) return;
+    try {
+        const inst = window.bootstrap?.Modal?.getInstance?.(modalEl);
+        if (inst) {
+            inst.hide();
+            return;
+        }
+    } catch (e) {
+        console.error('fbHideModal bootstrap fallback:', e);
+    }
+
+    modalEl.classList.remove('show');
+    modalEl.style.display = 'none';
+    modalEl.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('modal-open');
+    document.querySelectorAll('.modal-backdrop').forEach((el) => el.remove());
+}
+
 function getServerId() {
     const m = location.pathname.match(/\/servers\/(\d+)/);
     return m ? m[1] : null;
@@ -20,6 +61,74 @@ function getServerId() {
 
 function currentBrowserPath() {
     return document.getElementById('file-browser')?.dataset?.path || '/';
+}
+
+function fbNormalizePath(path) {
+    const raw = String(path || '/').trim();
+    if (!raw || raw === '/') return '/';
+
+    const parts = [];
+    for (const seg of raw.split('/')) {
+        if (!seg || seg === '.') continue;
+        if (seg === '..') {
+            if (parts.length) parts.pop();
+            continue;
+        }
+        parts.push(seg);
+    }
+
+    return '/' + parts.join('/');
+}
+
+function fbHashForPath(path) {
+    const normalized = fbNormalizePath(path);
+    // Root path lives in URL pathname already; keep hash empty there.
+    return normalized === '/' ? '' : encodeURIComponent(normalized);
+}
+
+function fbPathFromHash(hash) {
+    const raw = String(hash || '').replace(/^#/, '');
+    if (!raw) return null;
+
+    // Backward compatibility for legacy hash format:
+    // #servers-{id}-files and #servers-{id}-files@%2Fpath
+    const sid = getServerId();
+    const legacyBase = sid ? `servers-${sid}-files` : 'servers-files';
+    if (raw === legacyBase) return '/';
+    if (raw.startsWith(legacyBase + '@')) {
+        try {
+            return fbNormalizePath(decodeURIComponent(raw.slice(legacyBase.length + 1)));
+        } catch {
+            return null;
+        }
+    }
+
+    const encoded = raw.startsWith('path=') ? raw.slice(5) : raw;
+
+    try {
+        const decoded = decodeURIComponent(encoded);
+        if (!decoded.startsWith('/')) return null;
+        return fbNormalizePath(decoded);
+    } catch {
+        return null;
+    }
+}
+
+function fbWriteHash(path) {
+    const nextHash = fbHashForPath(path);
+    if (!nextHash) {
+        if (!location.hash) return;
+        history.replaceState(history.state, '', `${location.pathname}${location.search}`);
+        return;
+    }
+    if (location.hash === `#${nextHash}`) return;
+    history.replaceState(history.state, '', `${location.pathname}${location.search}#${nextHash}`);
+}
+
+function fbSyncHashToCurrentPath() {
+    const fb = document.getElementById('file-browser');
+    if (!fb) return;
+    fbWriteHash(fb.dataset.path || '/');
 }
 
 // Dispatch on body so HTMX "hx-trigger='file-created from:body'" picks it up
@@ -39,16 +148,32 @@ function refreshBrowser() {
 // Returns a Promise<boolean> — resolves true on confirm, false on cancel.
 // ── "New File" modal ──────────────────────────────────────────────────────────
 
-function fbOpenCreate() {
+function fbOpenCreate(kind = 'file') {
     const path = currentBrowserPath();
     const inp = document.getElementById('fb-create-path');
     if (inp) inp.value = path;
     const lbl = document.getElementById('fb-create-dir');
     if (lbl) lbl.textContent = path === '/' ? '/ (root)' : path;
+    const isFolder = kind === 'folder';
+    const typeEl = document.getElementById('fb-create-type');
+    const titleEl = document.getElementById('fb-create-title');
+    const nameLblEl = document.getElementById('fb-create-name-label');
+    const submitEl = document.getElementById('fb-create-submit');
     // clear name field
     const name = document.getElementById('fb-create-name');
-    if (name) name.value = '';
-    new bootstrap.Modal(document.getElementById('createFileModal')).show();
+    if (name) {
+        name.value = '';
+        name.placeholder = isFolder ? 'plugins' : 'eula.txt';
+    }
+    if (typeEl) typeEl.value = isFolder ? 'folder' : 'file';
+    if (titleEl) titleEl.textContent = isFolder ? 'Create New Folder' : 'Create New File';
+    if (nameLblEl) nameLblEl.textContent = isFolder ? 'Folder name' : 'Filename';
+    if (submitEl) {
+        submitEl.innerHTML = isFolder
+            ? '<i class="bi bi-folder-plus"></i> Create Folder'
+            : '<i class="bi bi-file-earmark-plus"></i> Create File';
+    }
+    fbShowModal(document.getElementById('createFileModal'));
 }
 
 // After HTMX file creation request
@@ -59,8 +184,9 @@ document.body.addEventListener('htmx:afterRequest', function (e) {
     if (!action.includes('files/create')) return;
 
     if (e.detail.successful) {
-        showToast('File created', 'ok');
-        bootstrap.Modal.getInstance(document.getElementById('createFileModal'))?.hide();
+        const type = el.querySelector('[name="entry_type"]')?.value || 'file';
+        showToast(type === 'folder' ? 'Folder created' : 'File created', 'ok');
+        fbHideModal(document.getElementById('createFileModal'));
     } else {
         showToast(e.detail.xhr?.responseText || 'Failed to create file', 'err');
     }
@@ -69,7 +195,7 @@ document.body.addEventListener('htmx:afterRequest', function (e) {
 // Keyboard shortcut: n = new file
 document.addEventListener('keydown', function (e) {
     if (document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
-    if (e.key === 'n' && !e.ctrlKey && !e.metaKey) fbOpenCreate();
+    if (e.key === 'n' && !e.ctrlKey && !e.metaKey) fbOpenCreate('file');
 });
 
 // ── Context Menu ──────────────────────────────────────────────────────────────
@@ -88,15 +214,16 @@ function ctxShow(x, y, row) {
     const type    = row.dataset.type; // "file" | "dir"
     const hasClip = !!_clipboard;
     const isArchive = row.dataset.archive === 'true';
+    const isEditable = row.dataset.editable !== 'false';
 
     const editEl  = ctxEl('fb-ctx-edit');
     const openEl  = ctxEl('fb-ctx-open');
     const pasteEl = ctxEl('fb-ctx-paste');
     const primarySepEl = ctxEl('fb-ctx-sep-primary');
-    if (editEl)  editEl.style.display  = type === 'file' && !isArchive ? '' : 'none';
+    if (editEl)  editEl.style.display  = type === 'file' && isEditable && !isArchive ? '' : 'none';
     if (openEl)  openEl.style.display  = type === 'dir'  ? '' : 'none';
     if (pasteEl) pasteEl.classList.toggle('disabled', !hasClip);
-    if (primarySepEl) primarySepEl.style.display = (type === 'file' && !isArchive) || type === 'dir' ? '' : 'none';
+    if (primarySepEl) primarySepEl.style.display = (type === 'file' && isEditable && !isArchive) || type === 'dir' ? '' : 'none';
 
     const extractFolderEl = ctxEl('fb-ctx-extract-folder');
     const extractHereEl = ctxEl('fb-ctx-extract-here');
@@ -143,7 +270,10 @@ function fbInit() {
     // Edit (files only)
     ctxEl('fb-ctx-edit')?.addEventListener('click', function () {
         if (!_ctxTarget) return;
-        location.href = `/servers/${getServerId()}/files/edit?path=${encodeURIComponent(_ctxTarget.dataset.path)}`;
+        if (_ctxTarget.dataset.editable === 'false') return;
+        const next = `/servers/${getServerId()}/files/edit?path=${encodeURIComponent(_ctxTarget.dataset.path)}`;
+        if (typeof window.yuGo === 'function') window.yuGo(next);
+        else location.href = next;
     });
 
     // Open (dirs only) — use htmx.ajax for a proper HTMX swap
@@ -168,7 +298,7 @@ function fbInit() {
         ctxHide();
         const modal = ctxEl('renameModal');
         if (modal) {
-            new bootstrap.Modal(modal).show();
+            fbShowModal(modal);
             setTimeout(() => nameInp?.select(), 300);
         }
     });
@@ -232,7 +362,7 @@ function fbInit() {
         const newName = (ctxEl('fb-rename-name')?.value || '').trim();
         if (!newName) return;
         const modal = ctxEl('renameModal');
-        if (modal) bootstrap.Modal.getInstance(modal)?.hide();
+        if (modal) fbHideModal(modal);
         const fd = new URLSearchParams();
         fd.append('path',     path);
         fd.append('new_name', newName);
@@ -336,8 +466,11 @@ function fbInit() {
         if (e.target.closest('#fb-btn-delete'))  fbBulkDelete();
     });
 
-    // Clear selection state whenever HTMX re-renders the file browser
-    document.body.addEventListener('htmx:afterSwap', fbClearSelection);
+    // Clear selection state + sync URL hash whenever HTMX re-renders file browser
+    document.body.addEventListener('htmx:afterSwap', function () {
+        fbClearSelection();
+        fbSyncHashToCurrentPath();
+    });
 }
 
 // Script is at bottom of <body> so DOM is already parsed — call immediately
@@ -346,35 +479,57 @@ fbInit();
 // ── Eager initial load (fixes SPA navigation delay) ───────────────────────────
 // hx-trigger="load" only fires after htmx.process() which runs *after* all scripts.
 // We trigger the first listing immediately from JS instead.
-(function fbEagerLoad() {
+function fbEagerLoad() {
     const fb = document.getElementById('file-browser');
-    if (!fb || fb.dataset.path !== '/') return; // already loaded (non-root path means htmx already ran)
+    if (!fb) return;
     const sid = getServerId();
     if (!sid || !window.htmx) return;
-    htmx.ajax('GET', `/api/servers/${sid}/files/list?path=/`, {
+
+    const hashPath = fbPathFromHash(location.hash);
+    if (!hashPath && location.hash) {
+        history.replaceState(history.state, '', `${location.pathname}${location.search}`);
+    }
+    const targetPath = hashPath || (fb.dataset.path || '/');
+    const loadingState = !!fb.querySelector('.bi-hourglass-split');
+
+    if (!loadingState && fb.dataset.path === targetPath) {
+        fbWriteHash(targetPath);
+        return;
+    }
+
+    htmx.ajax('GET', `/api/servers/${sid}/files/list?path=${encodeURIComponent(targetPath)}`, {
         target: '#file-browser',
         swap: 'outerHTML',
     });
-})();
+}
 
 // ── Auto-refresh: JSON diff (dashboard-style, no flicker) ────────────────────
 
 // Builds a single .fb-row element from a JSON entry (used when inserting new rows).
 function fbBuildRow(e, sid) {
-    const el = document.createElement('a');
+    const editable = e.editable !== false;
+    const rowTag = e.is_dir ? 'a' : (editable ? 'a' : 'div');
+    const el = document.createElement(rowTag);
     el.dataset.path = e.path;
 
     if (e.is_dir) {
         el.className = 'fb-row fb-row-dir';
         el.dataset.type = 'dir';
+        el.dataset.editable = 'true';
         el.setAttribute('hx-get', `/api/servers/${sid}/files/list?path=${encodeURIComponent(e.path)}`);
         el.setAttribute('hx-target', '#file-browser');
         el.setAttribute('hx-swap', 'outerHTML');
     } else {
         el.className = 'fb-row fb-row-file';
         el.dataset.type = 'file';
+        el.dataset.editable = editable ? 'true' : 'false';
         if (e.is_archive) el.dataset.archive = 'true';
-        el.href = `/servers/${sid}/files/edit?path=${encodeURIComponent(e.path)}`;
+        if (editable) {
+            el.href = `/servers/${sid}/files/edit?path=${encodeURIComponent(e.path)}`;
+        } else {
+            el.classList.add('fb-row-noedit');
+            el.title = 'This file type cannot be edited in the panel';
+        }
     }
 
     // Checkbox
@@ -475,12 +630,38 @@ async function fbPollJson() {
     fbUpdateSelBar();
 }
 
-const _fbRefreshTimer = setInterval(fbPollJson, 5000);
+let _fbRefreshTimer = null;
+
+function fbStartPolling() {
+    if (_fbRefreshTimer) clearInterval(_fbRefreshTimer);
+    _fbRefreshTimer = setInterval(fbPollJson, 5000);
+}
+
+function fbStopPolling() {
+    if (_fbRefreshTimer) {
+        clearInterval(_fbRefreshTimer);
+        _fbRefreshTimer = null;
+    }
+}
+
+function fbOnPageShown(path) {
+    const p = String(path || window.location.pathname || '');
+    if (!/^\/servers\/\d+\/files$/.test(p)) return;
+    fbEagerLoad();
+    fbStartPolling();
+    window._yuPageCleanup = fbStopPolling;
+}
+
+fbOnPageShown(window.location.pathname);
+
+window.addEventListener('yu:page-shown', (ev) => {
+    const path = String(ev?.detail?.path || '');
+    fbOnPageShown(path);
+});
 
 // ── Cleanup (SPA navigation teardown) ────────────────────────────────────────
 window._yuPageCleanup = function () {
-    clearInterval(_fbRefreshTimer);
-    window._yuPageCleanup = undefined;
+    fbStopPolling();
 };
 
 // ── Selection bar ──────────────────────────────────────────────────────────────────────

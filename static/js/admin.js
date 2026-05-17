@@ -74,6 +74,97 @@ function closeSidebar() {
     document.getElementById('sbOverlay').classList.remove('open');
 }
 
+const SETTINGS_CATEGORY_META = {
+    storage: {
+        kicker: 'Storage',
+        title: 'Storage & Docker Core',
+        text: 'Manage where containers live and enforce ext4 + prjquota storage policy for new workloads.',
+    },
+    security: {
+        kicker: 'Security',
+        title: 'Host Security Layers',
+        text: 'Control UFW host firewall behavior and related security hardening from one place.',
+    },
+    operations: {
+        kicker: 'Operations',
+        title: 'Maintenance & Updates',
+        text: 'Run database cleanup routines and handle panel release channel updates with clear operational controls.',
+    },
+    interface: {
+        kicker: 'Interface',
+        title: 'User Experience Controls',
+        text: 'Adjust what panel users can see and whether bandwidth controls are available in networking tools.',
+    },
+};
+
+function _settingsGetStoredCategory() {
+    try {
+        return sessionStorage.getItem('yu.admin.settings.category') || '';
+    } catch (e) {
+        return '';
+    }
+}
+
+function _settingsStoreCategory(category) {
+    try {
+        sessionStorage.setItem('yu.admin.settings.category', category);
+    } catch (e) {}
+}
+
+function settingsSwitchCategory(category, opts = {}) {
+    const tab = document.getElementById('tab-settings');
+    if (!tab) return;
+
+    const navButtons = Array.from(tab.querySelectorAll('.settings-nav-btn[data-settings-nav]'));
+    const cards = Array.from(tab.querySelectorAll('.settings-cat-item[data-settings-cat]'));
+    if (!navButtons.length || !cards.length) return;
+
+    const available = navButtons.map(btn => btn.dataset.settingsNav).filter(Boolean);
+    const next = available.includes(category) ? category : (available[0] || 'storage');
+
+    tab.classList.add('settings-categorized');
+    tab.dataset.settingsCategory = next;
+
+    navButtons.forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.settingsNav === next);
+    });
+    cards.forEach(card => {
+        card.classList.toggle('settings-cat-active', card.dataset.settingsCat === next);
+    });
+
+    const meta = SETTINGS_CATEGORY_META[next] || SETTINGS_CATEGORY_META.storage;
+    const kickerEl = document.getElementById('settings-category-kicker');
+    const titleEl = document.getElementById('settings-category-title');
+    const textEl = document.getElementById('settings-category-text');
+    if (kickerEl) kickerEl.textContent = meta.kicker;
+    if (titleEl) titleEl.textContent = meta.title;
+    if (textEl) textEl.textContent = meta.text;
+
+    if (!opts.skipPersist) {
+        _settingsStoreCategory(next);
+    }
+
+    if (!opts.skipRefresh) {
+        if (next === 'storage' && typeof loadStorageStats === 'function') {
+            loadStorageStats();
+        }
+        if (next === 'security') {
+            if (typeof ufwCheckStatus === 'function') ufwCheckStatus();
+            if (typeof cfCheckStatus === 'function') cfCheckStatus();
+        }
+    }
+}
+
+function initSettingsCategories() {
+    const tab = document.getElementById('tab-settings');
+    if (!tab) return;
+    const firstButton = tab.querySelector('.settings-nav-btn[data-settings-nav]');
+    if (!firstButton) return;
+
+    const initial = tab.dataset.settingsCategory || _settingsGetStoredCategory() || firstButton.dataset.settingsNav || 'storage';
+    settingsSwitchCategory(initial, { skipPersist: true, skipRefresh: true });
+}
+
 function switchTab(name, btn) {
     document.querySelectorAll('.yu-tab-panel').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.yu-nav-item').forEach(b => b.classList.remove('active'));
@@ -94,9 +185,15 @@ function switchTab(name, btn) {
     history.pushState({ tab: name }, '', '/admin/' + name);
     closeSidebar();
     if (name === 'images') loadImages();
+    if (name === 'users' || name === 'roles') rolesLoad();
+    if (name === 'users') ensureCreateUserUid();
     if (name === 'audit') auditLoad();
-    if (name === 'dns') { dnsLoadProviders(); dnsGetPublicIp(); }
-    if (name === 'settings') loadStorageStats();
+    if (name === 'settings') {
+        initSettingsCategories();
+        const settingsTab = document.getElementById('tab-settings');
+        const activeCat = settingsTab ? settingsTab.dataset.settingsCategory : '';
+        if (!activeCat || activeCat === 'storage') loadStorageStats();
+    }
 }
 
 // Handle browser back/forward
@@ -110,9 +207,15 @@ window.addEventListener('popstate', (e) => {
         if ((b.getAttribute('onclick') || '').includes("'" + tab + "'")) b.classList.add('active');
     });
     if (tab === 'images') loadImages();
+    if (tab === 'users' || tab === 'roles') rolesLoad();
+    if (tab === 'users') ensureCreateUserUid();
     if (tab === 'audit') auditLoad();
-    if (tab === 'dns') { dnsLoadProviders(); dnsGetPublicIp(); }
-    if (tab === 'settings') loadStorageStats();
+    if (tab === 'settings') {
+        initSettingsCategories();
+        const settingsTab = document.getElementById('tab-settings');
+        const activeCat = settingsTab ? settingsTab.dataset.settingsCategory : '';
+        if (!activeCat || activeCat === 'storage') loadStorageStats();
+    }
 });
 
 
@@ -159,7 +262,16 @@ function adminModalChangePw() {
         body: JSON.stringify({ current: cur, new_password: nw })
     }).then(async r => {
         const data = await r.json().catch(() => ({}));
-        if (r.ok) {
+        if (r.ok && data.ok) {
+            if (data.force_logout) {
+                show(true, 'Password updated. Redirecting to login…');
+                setTimeout(() => {
+                    fetch('/logout', { method: 'POST', credentials: 'same-origin' })
+                        .catch(() => {})
+                        .finally(() => window.location.replace(data.redirect || '/login'));
+                }, 700);
+                return;
+            }
             show(true, 'Password updated successfully.');
             setTimeout(() => {
                 document.getElementById('adminPwModal').style.display = 'none';
@@ -174,7 +286,42 @@ function adminModalChangePw() {
 
 // ── User Management ───────────────────────────────────────────────────────────
 
+const USER_UID_MIN_LEN = 9;
+const USER_UID_MAX_LEN = 16;
+const USER_UID_RANDOM_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+function _secureRandomInt(maxExclusive) {
+    if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+        const arr = new Uint32Array(1);
+        window.crypto.getRandomValues(arr);
+        return arr[0] % maxExclusive;
+    }
+    return Math.floor(Math.random() * maxExclusive);
+}
+
+function generateRandomUserUid() {
+    const totalLen = USER_UID_MIN_LEN + _secureRandomInt(USER_UID_MAX_LEN - USER_UID_MIN_LEN + 1);
+    const bodyLen = Math.max(1, totalLen - 1);
+    let out = '#';
+    for (let i = 0; i < bodyLen; i++) {
+        const idx = _secureRandomInt(USER_UID_RANDOM_CHARS.length);
+        out += USER_UID_RANDOM_CHARS[idx];
+    }
+    return out;
+}
+
+function ensureCreateUserUid(force = false) {
+    const uidEl = document.getElementById('cu-uid');
+    if (!uidEl) return;
+    if (force || !uidEl.value.trim()) {
+        uidEl.value = generateRandomUserUid();
+    }
+}
+
 function createUser() {
+    ensureCreateUserUid();
+    const uid = document.getElementById('cu-uid').value.trim();
+    const nickname = document.getElementById('cu-nickname').value.trim();
     const username = document.getElementById('cu-username').value.trim();
     const password = document.getElementById('cu-password').value;
     const role     = document.getElementById('cu-role').value;
@@ -186,21 +333,28 @@ function createUser() {
         alertEl.style.display = 'flex';
     };
 
-    if (!username || !password) return show(false, 'Username and password are required.');
+    if (!uid || !nickname || !username || !password) return show(false, 'uid, nickname, username and password are required.');
+    if ([...uid].length < USER_UID_MIN_LEN || [...uid].length > USER_UID_MAX_LEN) {
+        return show(false, 'UID must be between 9 and 16 characters.');
+    }
+    if (nickname.length > 24) return show(false, 'Nickname must be at most 24 characters.');
     if (password.length < 8) return show(false, 'Password must be at least 8 characters.');
 
     fetch('/api/admin/users', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, role })
+        body: JSON.stringify({ uid, nickname, username, password, role })
     }).then(async r => {
         const data = await r.json().catch(() => ({}));
         if (r.ok && data.ok) {
-            show(true, `User "${username}" created.`);
+            show(true, `User "${nickname} ${uid}" created.`);
+            document.getElementById('cu-uid').value = '';
+            document.getElementById('cu-nickname').value = '';
             document.getElementById('cu-username').value = '';
             document.getElementById('cu-password').value = '';
-            document.getElementById('cu-role').value = 'user';
+            const roleSel = document.getElementById('cu-role');
+            if (roleSel && roleSel.options.length) roleSel.value = roleSel.options[0].value;
             // Reload to show the new user in the table
             setTimeout(() => location.reload(), 800);
         } else {
@@ -209,14 +363,15 @@ function createUser() {
     }).catch(() => show(false, 'Network error.'));
 }
 
-async function deleteUser(id, username, btn) {
-    if (!await yuConfirm(`Delete user "${username}"?`)) return;
+async function deleteUser(id, btn) {
+    const row = document.getElementById('user-row-' + id);
+    const displayName = row?.dataset?.userDisplay || `#${id}`;
+    if (!await yuConfirm(`Delete user "${displayName}"?`)) return;
     btn.disabled = true;
     fetch(`/api/admin/users/${id}/delete`, { method: 'POST', credentials: 'same-origin' })
         .then(async r => {
             const data = await r.json().catch(() => ({}));
             if (r.ok && data.ok) {
-                const row = document.getElementById('user-row-' + id);
                 if (row) row.remove();
                 // Update the count label
                 const tbody = document.getElementById('users-tbody');
@@ -234,9 +389,11 @@ async function deleteUser(id, username, btn) {
 
 let _setPwUserId = null;
 
-function openSetPwModal(id, username) {
+function openSetPwModal(id) {
     _setPwUserId = id;
-    document.getElementById('spw-user-lbl').textContent = `User: ${username}`;
+    const row = document.getElementById('user-row-' + id);
+    const displayName = row?.dataset?.userDisplay || `#${id}`;
+    document.getElementById('spw-user-lbl').textContent = `User: ${displayName}`;
     document.getElementById('spw-new').value = '';
     const a = document.getElementById('spw-alert');
     a.style.display = 'none';
@@ -268,12 +425,606 @@ function submitSetPw() {
     }).then(async r => {
         const data = await r.json().catch(() => ({}));
         if (r.ok && data.ok) {
+            if (data.force_logout) {
+                show(true, 'Password updated. Redirecting to login…');
+                setTimeout(() => {
+                    fetch('/logout', { method: 'POST', credentials: 'same-origin' })
+                        .catch(() => {})
+                        .finally(() => window.location.replace(data.redirect || '/login'));
+                }, 700);
+                return;
+            }
             show(true, 'Password updated.');
             setTimeout(() => closeSetPwModal(), 1000);
         } else {
             show(false, data.error || 'Failed to update password.');
         }
     }).catch(() => show(false, 'Network error.'));
+}
+
+let _rolesCatalog = [];
+let _rolesRows = [];
+let _rolesLoading = false;
+let _roleGroups = [];
+let _activeRoleName = '';
+
+function _authRole() {
+    return document.body?.dataset?.authRole || '';
+}
+
+function _roleDomId(roleName) {
+    return String(roleName || '').replace(/[^a-zA-Z0-9_-]/g, '-');
+}
+
+function _canAssignRole(roleName) {
+    const authRole = _authRole();
+    if (roleName === 'root') return false;
+    if (authRole === 'root') return true;
+    return roleName !== 'admin';
+}
+
+function _buildRoleOptions(currentRole) {
+    const rows = Array.isArray(_rolesRows) ? _rolesRows : [];
+    const out = rows
+        .filter(r => _canAssignRole(r.name) || r.name === currentRole)
+        .map(r => `<option value="${escAttr(r.name)}">${escHtml(r.name)}</option>`)
+        .join('');
+    if (out) return out;
+    return `<option value="${escAttr(currentRole || 'user')}">${escHtml(currentRole || 'user')}</option>`;
+}
+
+function syncCreateUserRoleSelect() {
+    const sel = document.getElementById('cu-role');
+    if (!sel) return;
+    const prev = sel.value || 'user';
+    sel.innerHTML = _buildRoleOptions(prev);
+    sel.value = sel.querySelector(`option[value="${CSS.escape(prev)}"]`) ? prev : (sel.options[0]?.value || 'user');
+
+    const hint = document.getElementById('cu-role-hint');
+    if (hint && _rolesRows.length) {
+        hint.textContent = `${_rolesRows.length} role(s) available.`;
+    }
+}
+
+function syncUserRoleSelects() {
+    document.querySelectorAll('.yu-user-role-select').forEach(sel => {
+        const current = sel.dataset.currentRole || sel.value || 'user';
+        sel.innerHTML = _buildRoleOptions(current);
+        sel.value = sel.querySelector(`option[value="${CSS.escape(current)}"]`) ? current : (sel.options[0]?.value || current);
+    });
+}
+
+async function setUserRole(sel) {
+    const userId = sel.dataset.userId;
+    const userDisplay = sel.dataset.userDisplay || `#${userId}`;
+    const previous = sel.dataset.currentRole || sel.value;
+    const next = sel.value;
+    if (!userId || !next || next === previous) return;
+
+    const ok = await yuConfirm(`Change role for "${userDisplay}" from "${previous}" to "${next}"?`, {
+        icon: 'bi-person-gear',
+        iconColor: '#a78bfa',
+        subtitle: 'Permission changes apply immediately to this account.',
+        okLabel: 'Apply',
+        okColor: 'rgba(124,58,237,.15)',
+        okBorder: 'rgba(124,58,237,.35)',
+        okText: '#c4b5fd',
+        okHover: 'rgba(124,58,237,.28)',
+    });
+    if (!ok) {
+        sel.value = previous;
+        return;
+    }
+
+    sel.disabled = true;
+    try {
+        const r = await fetch(`/api/admin/users/${userId}/set-role`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role: next }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            throw new Error(d.error || 'Failed to update role');
+        }
+        sel.dataset.currentRole = next;
+        showToast('success', `Role updated: ${userDisplay} → ${next}`);
+        await rolesLoad();
+    } catch (e) {
+        sel.value = previous;
+        showToast('danger', e.message || 'Failed to update role');
+    } finally {
+        sel.disabled = false;
+    }
+}
+
+function _normalizeRoleColorInput(raw) {
+    const v = String(raw || '').trim().toLowerCase();
+    if (!v.startsWith('#')) return null;
+    const hex = v.slice(1);
+    if (!((hex.length === 3 || hex.length === 6) && /^[0-9a-f]+$/i.test(hex))) return null;
+    return v;
+}
+
+function _hexToRgba(hex, alpha) {
+    const normalized = _normalizeRoleColorInput(hex) || '#94a3b8';
+    let h = normalized.slice(1);
+    if (h.length === 3) {
+        h = h.split('').map(ch => ch + ch).join('');
+    }
+    const num = parseInt(h, 16);
+    const r = (num >> 16) & 255;
+    const g = (num >> 8) & 255;
+    const b = num & 255;
+    return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function _roleColor(role) {
+    return _normalizeRoleColorInput(role && role.color) || '#94a3b8';
+}
+
+function _applyTopbarRoleBadgeColor(roleName, color) {
+    const authRole = _authRole();
+    if (!roleName || authRole !== roleName) return;
+
+    const normalized = _normalizeRoleColorInput(color);
+    if (!normalized) return;
+
+    const bg = _hexToRgba(normalized, 0.15);
+    const border = _hexToRgba(normalized, 0.35);
+
+    const topbarBadge = document.getElementById('topbar-role-badge');
+    if (topbarBadge) {
+        topbarBadge.style.background = bg;
+        topbarBadge.style.color = normalized;
+        topbarBadge.style.borderColor = border;
+    }
+
+    const dropdownBadge = document.getElementById('topbar-role-dropdown-badge');
+    if (dropdownBadge) {
+        dropdownBadge.style.background = bg;
+        dropdownBadge.style.color = normalized;
+        dropdownBadge.style.borderColor = border;
+    }
+
+    if (document.body && document.body.dataset) {
+        document.body.dataset.authRoleColor = normalized;
+    }
+}
+
+function _roleFromEditHash() {
+    if (!location.hash || !location.hash.startsWith('#edit:')) return '';
+    let target = '';
+    try {
+        target = decodeURIComponent(location.hash.slice(6));
+    } catch (e) {
+        target = location.hash.slice(6);
+    }
+    return target === 'root' ? '' : target;
+}
+
+function _visibleRoles() {
+    return _rolesRows.filter(r => r.name !== 'root');
+}
+
+function _renderRolesNavList(roles, activeName) {
+    const host = document.getElementById('roles-nav-list');
+    if (!host) return;
+    const badge = document.getElementById('roles-count-badge');
+
+    if (!roles.length) {
+        host.innerHTML = '<div style="text-align:center;color:var(--muted);padding:1rem 0;">No editable roles found.</div>';
+        if (badge) badge.textContent = '0 roles';
+        return;
+    }
+
+    host.innerHTML = roles.map(r => {
+        const active = r.name === activeName;
+        const color = _roleColor(r);
+        return `<button type="button" class="roles-nav-item ${active ? 'active' : ''}" onclick="goRoleEdit('${escAttr(r.name)}')">
+            <span class="roles-nav-main">
+                <span class="roles-nav-dot" style="background:${color};box-shadow:0 0 0 3px ${_hexToRgba(color, .18)};"></span>
+                <span class="roles-nav-name">${escHtml(r.name)}</span>
+            </span>
+            <span class="roles-nav-meta">${Number(r.users_count || 0)} users</span>
+        </button>`;
+    }).join('');
+
+    if (badge) {
+        badge.textContent = `${roles.length} role${roles.length === 1 ? '' : 's'}`;
+    }
+}
+
+function _setRolesEditorSubtitle(role) {
+    const subtitle = document.getElementById('roles-editor-subtitle');
+    if (!subtitle) return;
+    if (!role) {
+        subtitle.textContent = 'Select a role to edit permissions and color.';
+        return;
+    }
+    subtitle.textContent = `${role.name}: permissions, color and access profile.`;
+}
+
+function selectRoleForEdit(roleName, opts = {}) {
+    const roles = _visibleRoles();
+    if (!roles.length) return;
+
+    let target = String(roleName || '').trim();
+    if (target === 'root') target = '';
+    if (!target || !roles.some(r => r.name === target)) {
+        target = roles[0].name;
+    }
+
+    _activeRoleName = target;
+
+    if (opts.syncHash !== false) {
+        const nextHash = `#edit:${encodeURIComponent(target)}`;
+        const nextUrl = `/admin/roles${nextHash}`;
+        if (opts.pushState) {
+            history.pushState({ tab: 'roles' }, '', nextUrl);
+        } else {
+            history.replaceState(history.state, '', nextUrl);
+        }
+    }
+
+    renderRolesList();
+}
+
+function _roleCardHtml(role) {
+    const authRole = _authRole();
+    const isSystem = !!role.is_system;
+    const canEdit = role.name !== 'root' && (!isSystem || authRole === 'root');
+    const canDelete = !isSystem && Number(role.users_count || 0) === 0;
+    const roleId = _roleDomId(role.name);
+    const policy = role.policy || {};
+    const roleColor = _roleColor(role);
+
+    function modeSelect(roleName, permissionKey, activeMode, disabled) {
+        const border = activeMode === 'write'
+            ? 'rgba(16,185,129,.35)'
+            : activeMode === 'read'
+                ? 'rgba(59,130,246,.35)'
+                : 'rgba(107,114,128,.35)';
+        const bg = activeMode === 'write'
+            ? 'rgba(16,185,129,.12)'
+            : activeMode === 'read'
+                ? 'rgba(59,130,246,.12)'
+                : 'rgba(107,114,128,.12)';
+        return `<select class="yu-input role-mode-select"
+            data-role="${escAttr(roleName)}"
+            data-perm="${escAttr(permissionKey)}"
+            onchange="setRolePermissionModeSelect(this)"
+            ${disabled ? 'disabled' : ''}
+            style="min-width:98px;padding:.22rem .42rem;font-size:.72rem;line-height:1.2;border:1px solid ${disabled ? 'rgba(255,255,255,.1)' : border};background:${disabled ? 'rgba(255,255,255,.03)' : bg};color:var(--txt);cursor:${disabled ? 'not-allowed' : 'pointer'};opacity:${disabled ? '.55' : '1'};">
+            <option value="read" ${activeMode === 'read' ? 'selected' : ''}>read</option>
+            <option value="none" ${activeMode === 'none' ? 'selected' : ''}>none</option>
+            <option value="write" ${activeMode === 'write' ? 'selected' : ''}>write</option>
+        </select>`;
+    }
+
+    function renderPermissionRow(p) {
+        const activeMode = ['write', 'read', 'none'].includes(policy[p.key]) ? policy[p.key] : 'none';
+        return `<div style="display:flex;justify-content:space-between;gap:.6rem;align-items:flex-start;font-size:.78rem;padding:.42rem .2rem;border-bottom:1px dashed rgba(255,255,255,.05);">
+            <span style="min-width:0;">
+                <strong style="display:block;color:var(--txt);font-size:.78rem;">${escHtml(p.label)}</strong>
+                <small style="color:var(--muted);font-size:.7rem;line-height:1.35;">${escHtml(p.description)} <code>${escHtml(p.key)}</code></small>
+            </span>
+            <span style="display:flex;gap:.25rem;align-items:center;flex-shrink:0;">
+                ${modeSelect(role.name, p.key, activeMode, !canEdit)}
+            </span>
+        </div>`;
+    }
+
+    let permissionRows = '';
+    if (Array.isArray(_roleGroups) && _roleGroups.length) {
+        permissionRows = _roleGroups.map(group => {
+            const items = (group.permissions || [])
+                .map(key => _rolesCatalog.find(p => p.key === key))
+                .filter(Boolean)
+                .map(renderPermissionRow)
+                .join('');
+            if (!items) return '';
+            return `<div style="margin-bottom:.7rem;">
+                <div style="font-size:.69rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin:.15rem 0 .2rem;">${escHtml(group.name || 'Group')}</div>
+                ${items}
+            </div>`;
+        }).join('');
+    }
+    if (!permissionRows) {
+        permissionRows = _rolesCatalog.map(renderPermissionRow).join('');
+    }
+
+    return `<div id="role-card-${roleId}" class="yu-card" style="margin-bottom:.85rem;">
+        <div class="yu-card-hd" style="display:flex;align-items:center;justify-content:space-between;gap:.65rem;flex-wrap:wrap;">
+            <div style="display:flex;align-items:center;gap:.55rem;flex-wrap:wrap;">
+                <span class="pill role-color-pill" data-role="${escAttr(role.name)}" style="background:${_hexToRgba(roleColor, .14)};color:${roleColor};border:1px solid ${_hexToRgba(roleColor, .35)};">
+                    <span class="pill-dot"></span>${escHtml(role.name)}
+                </span>
+                <span style="font-size:.72rem;color:var(--muted);">${Number(role.users_count || 0)} user(s)</span>
+            </div>
+            <div style="display:flex;gap:.4rem;align-items:center;">
+                <label style="display:flex;align-items:center;gap:.35rem;font-size:.72rem;color:var(--muted);">
+                    <span>Color</span>
+                    <input type="color" value="${escAttr(roleColor)}" data-role="${escAttr(role.name)}" onchange="setRoleColor(this)" ${canEdit ? '' : 'disabled'} style="width:28px;height:22px;padding:0;border:none;background:transparent;cursor:${canEdit ? 'pointer' : 'not-allowed'};opacity:${canEdit ? '1' : '.55'};">
+                </label>
+                <button class="btn-yu btn-primary-yu btn-sm-yu" onclick="saveRolePermissions('${escAttr(role.name)}')" ${canEdit ? '' : 'disabled style="opacity:.55;cursor:not-allowed;"'}>
+                    <i class="bi bi-save"></i> Save
+                </button>
+                <button class="btn-yu btn-danger-yu btn-sm-yu" onclick="deleteRole('${escAttr(role.name)}', ${Number(role.users_count || 0)})" ${canDelete ? '' : 'disabled style="opacity:.45;cursor:not-allowed;"'}>
+                    <i class="bi bi-trash"></i>
+                </button>
+            </div>
+        </div>
+        <div class="yu-card-bd">
+            <div style="font-size:.76rem;color:var(--muted);margin-bottom:.55rem;">${escHtml(role.description || 'No description')}</div>
+            <div style="display:grid;grid-template-columns:1fr;gap:.15rem;">${permissionRows}</div>
+        </div>
+    </div>`;
+}
+
+function renderRolesList() {
+    const list = document.getElementById('roles-list');
+    if (!list) return;
+
+    const visibleRoles = _visibleRoles();
+
+    if (!visibleRoles.length) {
+        list.innerHTML = '<div style="text-align:center;color:var(--muted);padding:1rem 0;">No editable roles found.</div>';
+        _renderRolesNavList([], '');
+        _setRolesEditorSubtitle(null);
+        return;
+    }
+
+    const hashTarget = _roleFromEditHash();
+    let target = _activeRoleName || hashTarget;
+    if (!target || !visibleRoles.some(r => r.name === target)) {
+        target = visibleRoles[0].name;
+    }
+    _activeRoleName = target;
+
+    _renderRolesNavList(visibleRoles, target);
+
+    const selectedRole = visibleRoles.find(r => r.name === target) || visibleRoles[0];
+    list.innerHTML = selectedRole ? _roleCardHtml(selectedRole) : '';
+    _setRolesEditorSubtitle(selectedRole);
+
+    const el = document.getElementById(`role-card-${_roleDomId(target)}`);
+    if (el && hashTarget && hashTarget === target) {
+        el.style.boxShadow = '0 0 0 2px rgba(96,165,250,.35)';
+        setTimeout(() => { el.style.boxShadow = ''; }, 1200);
+    }
+}
+
+function goRoleEdit(roleName) {
+    const role = String(roleName || '').trim();
+    if (!role) return;
+    if (role === 'root') return;
+    selectRoleForEdit(role, { syncHash: true, pushState: true });
+}
+
+function setRoleColor(input) {
+    if (!input || input.disabled) return;
+    const role = String(input.dataset.role || '').trim();
+    if (!role || role === 'root') return;
+
+    const color = _normalizeRoleColorInput(input.value) || '#94a3b8';
+    input.value = color;
+
+    const row = _rolesRows.find(r => r.name === role);
+    if (row) row.color = color;
+    renderRolesList();
+}
+
+function setRolePermissionModeSelect(sel) {
+    if (!sel || sel.disabled) return;
+    const role = sel.dataset.role;
+    const perm = sel.dataset.perm;
+    const rawMode = sel.value;
+    const mode = rawMode === 'read' || rawMode === 'write' ? rawMode : 'none';
+    if (mode !== rawMode) sel.value = mode;
+    if (!role || !perm || !mode) return;
+
+    const row = _rolesRows.find(r => r.name === role);
+    if (!row) return;
+    if (!row.policy || typeof row.policy !== 'object') row.policy = {};
+    row.policy[perm] = mode;
+
+    const border = mode === 'write'
+        ? 'rgba(16,185,129,.35)'
+        : mode === 'read'
+            ? 'rgba(59,130,246,.35)'
+            : 'rgba(107,114,128,.35)';
+    const bg = mode === 'write'
+        ? 'rgba(16,185,129,.12)'
+        : mode === 'read'
+            ? 'rgba(59,130,246,.12)'
+            : 'rgba(107,114,128,.12)';
+    sel.style.borderColor = border;
+    sel.style.background = bg;
+}
+
+async function rolesLoad() {
+    if (_rolesLoading) return;
+    _rolesLoading = true;
+    try {
+        const r = await fetch('/api/admin/roles', { credentials: 'same-origin' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            throw new Error(d.error || 'Failed to load roles');
+        }
+        _rolesRows = Array.isArray(d.roles) ? d.roles : [];
+        _rolesCatalog = Array.isArray(d.permissions) ? d.permissions : [];
+        _roleGroups = Array.isArray(d.permission_groups) ? d.permission_groups : [];
+
+        const currentRole = _rolesRows.find(r => r.name === _authRole());
+        if (currentRole) {
+            _applyTopbarRoleBadgeColor(currentRole.name, _roleColor(currentRole));
+        }
+
+        const rootColorInput = document.getElementById('root-role-color');
+        if (rootColorInput) {
+            const rootRole = _rolesRows.find(r => r.name === 'root');
+            if (rootRole) {
+                rootColorInput.value = _roleColor(rootRole);
+            }
+        }
+
+        const hashRole = _roleFromEditHash();
+        if (hashRole) _activeRoleName = hashRole;
+        syncCreateUserRoleSelect();
+        syncUserRoleSelects();
+        renderRolesList();
+    } catch (e) {
+        const list = document.getElementById('roles-list');
+        if (list) {
+            list.innerHTML = `<div style="text-align:center;color:#ef4444;padding:1rem 0;"><i class="bi bi-x-circle"></i> ${escHtml(e.message || 'Failed to load roles')}</div>`;
+        }
+    } finally {
+        _rolesLoading = false;
+    }
+}
+
+window.addEventListener('hashchange', () => {
+    const role = _roleFromEditHash();
+    if (!role) return;
+    _activeRoleName = role;
+    if (document.getElementById('tab-roles')?.classList.contains('active')) {
+        renderRolesList();
+    }
+});
+
+async function createRole() {
+    const nameEl = document.getElementById('role-create-name');
+    const descEl = document.getElementById('role-create-description');
+    const alertEl = document.getElementById('role-create-alert');
+    if (!nameEl || !descEl || !alertEl) return;
+
+    const name = nameEl.value.trim().toLowerCase();
+    const description = descEl.value.trim();
+
+    const show = (ok, msg) => {
+        alertEl.className = 'yu-alert ' + (ok ? 'yu-alert-success' : 'yu-alert-error');
+        alertEl.innerHTML = `<i class="bi bi-${ok ? 'check-circle' : 'x-circle'}"></i> ${escHtml(msg)}`;
+        alertEl.style.display = 'flex';
+    };
+
+    if (!name) return show(false, 'Role name is required.');
+
+    try {
+        const r = await fetch('/api/admin/roles', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, description }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            throw new Error(d.error || 'Failed to create role');
+        }
+        show(true, `Role "${name}" created.`);
+        nameEl.value = '';
+        descEl.value = '';
+        await rolesLoad();
+    } catch (e) {
+        show(false, e.message || 'Failed to create role');
+    }
+}
+
+async function saveRolePermissions(roleName) {
+    const role = String(roleName || '').trim();
+    if (!role) return;
+    const roleRow = _rolesRows.find(r => r.name === role);
+    if (!roleRow) return;
+    const policy = roleRow.policy && typeof roleRow.policy === 'object' ? roleRow.policy : {};
+    const color = _normalizeRoleColorInput(roleRow.color) || '#94a3b8';
+
+    try {
+        const r = await fetch(`/api/admin/roles/${encodeURIComponent(role)}/permissions`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ permissions: policy, color }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            throw new Error(d.error || 'Failed to save permissions');
+        }
+        _applyTopbarRoleBadgeColor(role, color);
+        showToast('success', `Permissions updated for ${role}`);
+        await rolesLoad();
+    } catch (e) {
+        showToast('danger', e.message || 'Failed to save permissions');
+    }
+}
+
+async function saveRootRoleColor() {
+    const input = document.getElementById('root-role-color');
+    if (!input) return;
+
+    const color = _normalizeRoleColorInput(input.value);
+    if (!color) {
+        showToast('danger', 'Root role color must be a valid hex color.');
+        return;
+    }
+
+    input.disabled = true;
+    try {
+        const r = await fetch('/api/admin/roles/root/permissions', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ permissions: {}, color }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            throw new Error(d.error || 'Failed to update root role color');
+        }
+
+        input.value = color;
+        const rootRole = _rolesRows.find(rw => rw.name === 'root');
+        if (rootRole) {
+            rootRole.color = color;
+        }
+        _applyTopbarRoleBadgeColor('root', color);
+        showToast('success', 'Root role color updated');
+        await rolesLoad();
+    } catch (e) {
+        showToast('danger', e.message || 'Failed to update root role color');
+    } finally {
+        input.disabled = false;
+    }
+}
+
+async function deleteRole(roleName, usersCount) {
+    const role = String(roleName || '').trim();
+    if (!role) return;
+    if (Number(usersCount || 0) > 0) {
+        showToast('warning', 'Reassign users from this role before deleting it.');
+        return;
+    }
+
+    if (!await yuConfirm(`Delete role "${role}"?`, {
+        icon: 'bi-trash3-fill',
+        iconColor: '#f87171',
+        subtitle: 'This action cannot be undone.',
+        okLabel: 'Delete',
+    })) return;
+
+    try {
+        const r = await fetch(`/api/admin/roles/${encodeURIComponent(role)}/delete`, {
+            method: 'POST',
+            credentials: 'same-origin',
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            throw new Error(d.error || 'Failed to delete role');
+        }
+        showToast('success', `Role ${role} deleted`);
+        await rolesLoad();
+    } catch (e) {
+        showToast('danger', e.message || 'Failed to delete role');
+    }
 }
 
 // ── Image management ─────────────────────────────────────────────────────────
@@ -640,854 +1391,26 @@ async function duplicateImage(fullId, primaryRef) {
         .catch(() => alert('Network error'));
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// DNS Management
-// ══════════════════════════════════════════════════════════════════════════════
-
-let _dnsProviders         = [];
-let _dnsEditProviderId    = null;
-let _dnsEditRecordId      = null;
-let _dnsCurrentProviderId = null;
-let _dnsCurrentZoneId     = '';
-let _dnsCurrentZoneName   = '';
-let _dnsTypeFilter        = '';
-let _dnsCurrentProviderType = '';
-let _dnsCachedRemoteMap     = {}; // { remote_id: RemoteDnsRecord } – refreshed each time provider records load
-let _dnsEditHasRemoteId     = false;
-
-// ── Type badge helper ─────────────────────────────────────────────────────────
-
-function _dnsTypeBadge(type) {
-    const cls = 'dns-type-' + (type || 'unknown').toLowerCase();
-    return `<span class="dns-type-badge ${cls}">${escHtml(type)}</span>`;
-}
-
-// Proxy indicator — Cloudflare orange cloud / DNS-only / N/A for other providers
-function _dnsProxyBadge(proxied, providerType) {
-    if (providerType !== 'cloudflare') return '<span style="color:var(--muted);font-size:.75rem;">—</span>';
-    return proxied
-        ? `<span title="Proxied (Cloudflare)" style="color:#f97316;font-size:1rem;"><i class="bi bi-cloud-fill"></i></span>`
-        : `<span title="DNS only" style="color:var(--muted);font-size:1rem;"><i class="bi bi-cloud"></i></span>`;
-}
-
-// ── Search / filter ───────────────────────────────────────────────────────────
-
-// Types where Cloudflare proxying is allowed
-const _CF_PROXIABLE = new Set(['A', 'AAAA', 'CNAME']);
-// Types that use the Priority field
-const _DNS_HAS_PRIORITY = new Set(['MX', 'SRV', 'NAPTR', 'URI']);
-
-function dnsSetTypeFilter(type, btn) {
-    _dnsTypeFilter = type;
-    document.querySelectorAll('.dns-filter-chips .dns-chip').forEach(c => c.classList.remove('active'));
-    if (btn) btn.classList.add('active');
-    dnsFilterRecords();
-}
-
-function dnsFilterRecords() {
-    const q    = (document.getElementById('dns-rec-search')?.value || '').toLowerCase();
-    const type = _dnsTypeFilter.toUpperCase();
-    ['dns-local-tbody', 'dns-records-tbody'].forEach(id => {
-        const tbody = document.getElementById(id);
-        if (!tbody) return;
-        tbody.querySelectorAll('tr[data-rec-type]').forEach(row => {
-            const matchType = !type || row.dataset.recType === type;
-            const matchQ    = !q    || row.textContent.toLowerCase().includes(q);
-            row.style.display = (matchType && matchQ) ? '' : 'none';
-        });
-    });
-}
-
-// Show/hide proxy and priority fields based on record type + provider
-function dnsOnModalTypeChange() {
-    const type         = (document.getElementById('drm-type')?.value || '').toUpperCase();
-    const proxiedWrap  = document.getElementById('drm-proxied-wrap');
-    const priorityWrap = document.getElementById('drm-priority-wrap');
-    if (proxiedWrap) {
-        const canProxy = _dnsCurrentProviderType === 'cloudflare' && _CF_PROXIABLE.has(type);
-        proxiedWrap.style.display = canProxy ? '' : 'none';
-    }
-    if (priorityWrap) {
-        priorityWrap.style.display = _DNS_HAS_PRIORITY.has(type) ? '' : 'none';
-    }
-    // Update value placeholder hint
-    const valInput = document.getElementById('drm-value');
-    if (valInput) {
-        const hints = {
-            A: '1.2.3.4',
-            AAAA: '2001:db8::1',
-            CNAME: 'target.example.com',
-            MX: 'mail.example.com',
-            TXT: 'v=spf1 include:example.com ~all',
-            NS: 'ns1.example.com',
-            SRV: '10 20 5060 sip.example.com',
-            CAA: '0 issue "letsencrypt.org"',
-            PTR: 'hostname.example.com',
-        };
-        valInput.placeholder = hints[type] || 'record value';
-    }
-}
-
-function dnsSwitchTab(tab, btn) {
-    document.querySelectorAll('.dns-subtab').forEach(el => el.classList.remove('active'));
-    document.querySelectorAll('.yu-inner-tab').forEach(el => el.classList.remove('active'));
-    const panel = document.getElementById('dns-tab-' + tab);
-    if (panel) panel.classList.add('active');
-    if (btn)   btn.classList.add('active');
-    if (tab === 'providers')  dnsLoadProviders();
-    if (tab === 'records')    { dnsPopulateProviderDropdown(); if (_dnsCurrentProviderId && _dnsCurrentZoneId) { dnsLoadRemoteRecords(); } }
-    if (tab === 'ddns')       { dnsLoadDdns(); dnsGetPublicIp(); }
-}
-
-// ── Provider type → credential fields ────────────────────────────────────────
-
-const _DNS_CRED_FIELDS = {
-    cloudflare: [
-        { key: 'api_token', label: 'API Token', placeholder: 'Your Cloudflare API token', type: 'password' },
-    ],
-    duckdns: [
-        { key: 'token',  label: 'Token',   placeholder: 'DuckDNS account token', type: 'password' },
-        { key: 'domain', label: 'Test Domain', placeholder: 'mysubdomain (without .duckdns.org) — for credential test', type: 'text' },
-    ],
-    godaddy: [
-        { key: 'api_key',    label: 'API Key',    placeholder: 'GoDaddy API key',    type: 'text' },
-        { key: 'api_secret', label: 'API Secret', placeholder: 'GoDaddy API secret', type: 'password' },
-    ],
-    namecheap: [
-        { key: 'api_key',  label: 'Dynamic DNS Password', placeholder: 'From Namecheap Dynamic DNS', type: 'password' },
-        { key: 'api_user', label: 'API User (optional)',   placeholder: 'Namecheap username',         type: 'text' },
-        { key: 'username', label: 'Username (optional)',   placeholder: 'Namecheap username',         type: 'text' },
-    ],
-    generic: [
-        { key: 'update_url', label: 'Update URL', placeholder: 'https://...?ip={ip}&domain={domain}&token=YOUR_TOKEN', type: 'text' },
-        { key: 'method',     label: 'HTTP Method', placeholder: 'GET', type: 'text' },
-    ],
-};
-
-function dnsOnTypeChange(type, containerId, existing) {
-    const fields = _DNS_CRED_FIELDS[type] || [];
-    const html = fields.map(f => `
-        <div style="margin-bottom:.85rem;">
-            <label class="yu-label">${escHtml(f.label)}</label>
-            <input type="${f.type}" class="yu-input" data-cred-key="${escAttr(f.key)}"
-                   placeholder="${escAttr(f.placeholder)}"
-                   value="${existing && existing[f.key] ? escAttr(existing[f.key]) : ''}">
-        </div>`).join('');
-    const ct = document.getElementById(containerId);
-    if (ct) ct.innerHTML = html;
-}
-
-function _dnsReadCreds(containerId) {
-    const creds = {};
-    document.querySelectorAll(`#${containerId} [data-cred-key]`).forEach(inp => {
-        creds[inp.dataset.credKey] = inp.value.trim();
-    });
-    return creds;
-}
-
-// ── Load + render providers ───────────────────────────────────────────────────
-
-function dnsLoadProviders() {
-    fetch('/api/admin/dns/providers', { credentials: 'same-origin' })
-        .then(r => r.json())
-        .then(data => {
-            _dnsProviders = data.providers || [];
-            const list = document.getElementById('dns-providers-list');
-            if (!list) return;
-            if (!_dnsProviders.length) {
-                list.innerHTML = '<div class="col-12" style="text-align:center;color:var(--muted);padding:1.5rem 0;font-size:.85rem;">No providers configured yet.</div>';
-                return;
-            }
-            const icons = { cloudflare: 'bi-cloud-fill', duckdns: 'bi-feather', godaddy: 'bi-briefcase', namecheap: 'bi-tag', generic: 'bi-gear' };
-            list.innerHTML = _dnsProviders.map(p => `
-                <div class="col-md-6 col-xl-4">
-                  <div class="dns-provider-card">
-                    <div class="dns-provider-icon"><i class="bi ${icons[p.provider_type] || 'bi-diagram-3'}"></i></div>
-                    <div style="flex:1;min-width:0;">
-                        <div style="font-weight:600;font-size:.875rem;margin-bottom:.2rem;">${escHtml(p.name)}</div>
-                        <div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;">
-                            <span class="dns-type-badge">${escHtml(p.provider_type)}</span>
-                            ${p.enabled ? '<span class="pill pill-run" style="font-size:.65rem;"><span class="pill-dot"></span>enabled</span>' : '<span class="pill pill-stop" style="font-size:.65rem;">disabled</span>'}
-                        </div>
-                    </div>
-                    <div style="display:flex;flex-direction:column;gap:.35rem;flex-shrink:0;">
-                        <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="dnsTestProvider(${p.id},this)" title="Test"><i class="bi bi-plug"></i></button>
-                        <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="dnsEditProvider(${p.id})" title="Edit"><i class="bi bi-pencil"></i></button>
-                        <button class="btn-yu btn-danger-yu btn-sm-yu" onclick="dnsDeleteProvider(${p.id})" title="Delete"><i class="bi bi-trash"></i></button>
-                    </div>
-                  </div>
-                </div>`).join('');
-        })
-        .catch(() => {});
-
-    // Render add-form fields on first load
-    const addType = document.getElementById('dns-add-type');
-    if (addType) dnsOnTypeChange(addType.value, 'dns-add-creds');
-}
-
-// ── Add provider ──────────────────────────────────────────────────────────────
-
-function dnsAddProvider() {
-    const name  = document.getElementById('dns-add-name').value.trim();
-    const type  = document.getElementById('dns-add-type').value;
-    const creds = _dnsReadCreds('dns-add-creds');
-    const alertEl = document.getElementById('dns-add-alert');
-    const show = (ok, msg) => {
-        alertEl.className = 'yu-alert ' + (ok ? 'yu-alert-success' : 'yu-alert-error');
-        alertEl.innerHTML = `<i class="bi bi-${ok ? 'check-circle' : 'x-circle'}"></i> ${escHtml(msg)}`;
-        alertEl.style.display = 'flex';
-    };
-    if (!name) return show(false, 'Display name is required.');
-    fetch('/api/admin/dns/providers', {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, provider_type: type, credentials: creds }),
-    }).then(r => r.json()).then(d => {
-        if (d.ok) {
-            show(true, 'Provider added.');
-            document.getElementById('dns-add-name').value = '';
-            dnsOnTypeChange(type, 'dns-add-creds');
-            dnsLoadProviders();
-        } else { show(false, d.error || 'Failed.'); }
-    }).catch(() => show(false, 'Network error.'));
-}
-
-// ── Edit provider modal ───────────────────────────────────────────────────────
-
-function dnsEditProvider(id) {
-    const p = _dnsProviders.find(x => x.id === id);
-    if (!p) return;
-    _dnsEditProviderId = id;
-    document.getElementById('dep-name').value = p.name;
-    document.getElementById('dep-enabled').checked = !!p.enabled;
-    dnsOnTypeChange(p.provider_type, 'dep-creds', p.credentials);
-    document.getElementById('dns-ep-alert').style.display = 'none';
-    openModal('dnsProviderModal');
-}
-
-function dnsSaveProvider() {
-    const id      = _dnsEditProviderId;
-    const name    = document.getElementById('dep-name').value.trim();
-    const enabled = document.getElementById('dep-enabled').checked ? 1 : 0;
-    const creds   = _dnsReadCreds('dep-creds');
-    const alertEl = document.getElementById('dns-ep-alert');
-    const show = (ok, msg) => {
-        alertEl.className = 'yu-alert ' + (ok ? 'yu-alert-success' : 'yu-alert-error');
-        alertEl.innerHTML = `<i class="bi bi-${ok ? 'check-circle' : 'x-circle'}"></i> ${escHtml(msg)}`;
-        alertEl.style.display = 'flex';
-    };
-    if (!name) return show(false, 'Name required.');
-    fetch(`/api/admin/dns/providers/${id}/update`, {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, credentials: creds, enabled }),
-    }).then(r => r.json()).then(d => {
-        if (d.ok) { closeModal('dnsProviderModal'); dnsLoadProviders(); }
-        else { show(false, d.error || 'Failed.'); }
-    }).catch(() => show(false, 'Network error.'));
-}
-
-async function dnsDeleteProvider(id) {
-    if (!await yuConfirm('Delete this DNS provider?', { subtitle: 'All associated records will also be removed.' })) return;
-    fetch(`/api/admin/dns/providers/${id}/delete`, { method: 'POST', credentials: 'same-origin' })
-        .then(r => r.json()).then(d => {
-            if (d.ok) dnsLoadProviders();
-            else alert(d.error || 'Failed.');
-        }).catch(() => alert('Network error.'));
-}
-
-function dnsTestProvider(id, btn) {
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    fetch(`/api/admin/dns/providers/${id}/test`, { method: 'POST', credentials: 'same-origin' })
-        .then(r => r.json()).then(d => {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-plug"></i>';
-            alert(d.ok ? '✅ ' + d.message : '❌ ' + (d.error || 'Test failed.'));
-        }).catch(() => { btn.disabled = false; btn.innerHTML = '<i class="bi bi-plug"></i>'; alert('Network error.'); });
-}
-
-// ── Records tab helpers ───────────────────────────────────────────────────────
-
-function dnsPopulateProviderDropdown() {
-    if (!_dnsProviders.length) {
-        dnsLoadProviders();
-        return;
-    }
-    const sel = document.getElementById('dns-rec-provider');
-    if (!sel) return;
-    const cur = sel.value;
-    sel.innerHTML = '<option value="">— select provider —</option>' +
-        _dnsProviders.map(p => `<option value="${p.id}">${escHtml(p.name)} (${escHtml(p.provider_type)})</option>`).join('');
-    if (cur) sel.value = cur;
-}
-
-function dnsLoadZones() {
-    const pid  = document.getElementById('dns-rec-provider').value;
-    const sel  = document.getElementById('dns-rec-zone');
-    sel.innerHTML = '<option value="">loading…</option>';
-    if (!pid) { sel.innerHTML = '<option value="">— select zone —</option>'; return; }
-    fetch(`/api/admin/dns/providers/${pid}/zones`, { credentials: 'same-origin' })
-        .then(r => r.json()).then(d => {
-            sel.innerHTML = '<option value="">— select zone —</option>';
-            if (d.ok && d.zones.length) {
-                d.zones.forEach(z => {
-                    const opt = document.createElement('option');
-                    opt.value = z.id; opt.textContent = z.name;
-                    opt.dataset.zoneName = z.name;
-                    sel.appendChild(opt);
-                });
-                if (d.zones.length === 1) { sel.value = d.zones[0].id; dnsLoadRemoteRecords(); }
-            } else { sel.innerHTML = '<option value="">No zones found</option>'; }
-        }).catch(() => { sel.innerHTML = '<option value="">Error loading zones</option>'; });
-}
-
-function dnsLoadRemoteRecords() {
-    const pid  = document.getElementById('dns-rec-provider').value;
-    const sel  = document.getElementById('dns-rec-zone');
-    const zid  = sel.value;
-    const opt  = sel.querySelector(`option[value="${CSS.escape(zid)}"]`);
-    _dnsCurrentProviderId = pid ? parseInt(pid) : null;
-    _dnsCurrentZoneId     = zid;
-    _dnsCurrentZoneName   = opt ? (opt.dataset.zoneName || zid) : zid;
-    // Track provider type for proxy/feature toggles
-    const providerObj = _dnsProviders.find(p => p.id === _dnsCurrentProviderId);
-    _dnsCurrentProviderType = providerObj ? providerObj.provider_type : '';
-
-    const tbody = document.getElementById('dns-records-tbody');
-    if (!pid || !zid) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem;">Select a provider and zone to view records.</td></tr>';
-        _dnsResetLocalTable();
-        return;
-    }
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem;"><span class="spinner-border spinner-border-sm"></span> Loading…</td></tr>';
-    dnsLoadLocalRecords();
-
-    fetch(`/api/admin/dns/providers/${pid}/records-remote?zone=${encodeURIComponent(zid)}`, { credentials: 'same-origin' })
-        .then(r => r.json()).then(d => {
-            if (!d.ok) {
-                tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#ef4444;padding:2rem;">${escHtml(d.error || 'Failed to load records.')}</td></tr>`;
-                return;
-            }
-            const records = d.records || [];
-            // Cache live records so the panel-tracked table can show up-to-date values
-            _dnsCachedRemoteMap = {};
-            records.forEach(r => { if (r.id) _dnsCachedRemoteMap[r.id] = r; });
-            _dnsOverlayLiveValues(); // update any already-rendered local rows
-            if (!records.length) {
-                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem;">No records found in this zone.</td></tr>';
-                return;
-            }
-            const managed = new Set();
-            document.querySelectorAll('#dns-local-tbody tr[data-record-id]').forEach(row => {
-                const rid = row.dataset.remoteId;
-                if (rid) managed.add(rid);
-            });
-            tbody.innerHTML = records.map(r => {
-                const isManaged = r.comment === 'yunexal.managed=true' || managed.has(r.id);
-                const managedBadge = isManaged
-                    ? `<span title="Managed by Yunexal" style="color:var(--primary);"><i class="bi bi-patch-check-fill"></i></span>`
-                    : `<span style="color:var(--muted);font-size:.75rem;">—</span>`;
-                const alreadyTracked = managed.has(r.id);
-                const actionBtn = alreadyTracked
-                    ? `<span style="font-size:.75rem;color:var(--muted);">tracked</span>`
-                    : `<button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="dnsImportRecord(${JSON.stringify(r).replace(/"/g,'&quot;')})" title="Track in panel"><i class="bi bi-download"></i></button>`;
-                return `
-                <tr data-rec-type="${escHtml(r.record_type)}">
-                    <td class="mono" style="font-size:.78rem;">${escHtml(r.name)}</td>
-                    <td>${_dnsTypeBadge(r.record_type)}</td>
-                    <td class="mono" style="font-size:.75rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(r.value)}</td>
-                    <td style="font-size:.8rem;">${r.ttl === 1 ? 'Auto' : r.ttl + 's'}</td>
-                    <td>${_dnsProxyBadge(r.proxied, _dnsCurrentProviderType)}</td>
-                    <td><span style="color:var(--muted);font-size:.8rem;">—</span></td>
-                    <td style="text-align:center;">${managedBadge}</td>
-                    <td style="text-align:right;">${actionBtn}</td>
-                </tr>`;
-            }).join('');
-            _dnsOverlayLiveValues(); // overlay live values after remote table renders
-        }).catch(() => {
-            tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#ef4444;padding:2rem;">Network error.</td></tr>`;
-        });
-}
-
-// ── Live-value overlay ────────────────────────────────────────────────────────
-// After remote records load into _dnsCachedRemoteMap this patches the
-// Name / Value / TTL columns of every panel-tracked row that has a remote_id.
-function _dnsOverlayLiveValues() {
-    document.querySelectorAll('#dns-local-tbody tr[data-remote-id]').forEach(row => {
-        const rid  = row.dataset.remoteId;
-        if (!rid) return;
-        const live = _dnsCachedRemoteMap[rid];
-        if (!live) return;
-        const tds = row.querySelectorAll('td');
-        // td[0] = name, td[2] = value, td[3] = ttl
-        if (tds[0]) tds[0].innerHTML = `<span class="mono" style="font-size:.78rem;">${escHtml(live.name)}</span>`;
-        if (tds[2]) tds[2].innerHTML = `<span class="mono" style="font-size:.75rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(live.value)}">${escHtml(live.value)}</span>`;
-        if (tds[3]) tds[3].textContent = live.ttl === 1 ? 'Auto' : live.ttl + 's';
-    });
-}
-
-// ── Sync panel-tracked records from provider API ──────────────────────────────
-// Persists live name/value/ttl/proxied to local DB, then re-renders the table.
-function dnsSyncRecords() {
-    const pid = _dnsCurrentProviderId;
-    const zid = _dnsCurrentZoneId;
-    if (!pid || !zid) return;
-    const btn = document.getElementById('dns-sync-btn');
-    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; }
-    fetch(`/api/admin/dns/providers/${pid}/sync-records?zone=${encodeURIComponent(zid)}`, {
-        method: 'POST', credentials: 'same-origin',
-    }).then(r => r.json()).then(d => {
-        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Sync'; }
-        if (d.ok) {
-            dnsLoadLocalRecords();
-        } else {
-            alert(d.error || 'Sync failed.');
-        }
-    }).catch(() => {
-        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Sync'; }
-        alert('Network error.');
-    });
-}
-
-// ── Load panel-tracked (local DB) records ────────────────────────────────────
-
-function _dnsResetLocalTable() {
-    const tbody = document.getElementById('dns-local-tbody');
-    const count = document.getElementById('dns-local-count');
-    const syncBtn = document.getElementById('dns-sync-btn');
-    if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem;">Select a provider and zone to view tracked records.</td></tr>';
-    if (count) count.textContent = '';
-    if (syncBtn) syncBtn.style.display = 'none';
-}
-
-function dnsLoadLocalRecords() {
-    const pid       = _dnsCurrentProviderId;
-    const zid       = _dnsCurrentZoneId;
-    const zoneName  = _dnsCurrentZoneName; // capture now — avoid stale closure read
-    const tbody = document.getElementById('dns-local-tbody');
-    const count = document.getElementById('dns-local-count');
-    if (!tbody) return;
-    if (!pid || !zid) { _dnsResetLocalTable(); return; }
-    // Only show spinner on first load; preserve existing rows during refresh
-    const hasRows = !!tbody.querySelector('tr[data-record-id]');
-    if (!hasRows) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:1.5rem;"><span class="spinner-border spinner-border-sm"></span></td></tr>';
-    }
-    const syncBtn = document.getElementById('dns-sync-btn');
-    if (syncBtn) syncBtn.style.display = 'inline-flex';
-    fetch(`/api/admin/dns/providers/${pid}/records`, { credentials: 'same-origin' })
-        .then(r => r.json()).then(d => {
-            if (!d.ok) { tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#ef4444;padding:2rem;">${escHtml(d.error || 'Failed.')}</td></tr>`; return; }
-            const recs = (d.records || []).filter(r => r.zone_id === zid || r.zone_name === zoneName);
-            if (count) count.textContent = `${recs.length} tracked`;
-            if (!recs.length) {
-                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem;">No tracked records for this zone.</td></tr>';
-                return;
-            }
-            tbody.innerHTML = recs.map(r => {
-                // Prefer live values from remote cache when available
-                const live        = r.remote_id ? _dnsCachedRemoteMap[r.remote_id] : null;
-                const dispName    = live ? live.name    : r.name;
-                const dispValue   = live ? live.value   : r.value;
-                const dispTtl     = live ? live.ttl     : r.ttl;
-                // Proxy uses DB value — kept in sync by set-proxy + sync-records endpoints
-                const dispProxied = !!r.proxied;
-                // Merge live values into the record passed to the edit form
-                const editRec   = live
-                    ? { ...r, name: live.name, value: live.value, ttl: live.ttl, proxied: live.proxied, priority: live.priority }
-                    : r;
-                // Proxy toggle cell — only for Cloudflare + proxiable record types
-                const cfProxiable = _dnsCurrentProviderType === 'cloudflare'
-                    && _CF_PROXIABLE.has(r.record_type.toUpperCase())
-                    && r.remote_id;
-                const proxyCell = cfProxiable
-                    ? (dispProxied
-                        ? `<button class="btn-yu btn-sm-yu" style="background:rgba(249,115,22,.18);border:none;padding:.2rem .45rem;border-radius:8px;cursor:pointer;" onclick="dnsSetProxy(${r.id},false)" title="Proxied (orange cloud) — click to DNS-only"><i class="bi bi-cloud-fill" style="color:#f97316;font-size:.9rem;"></i></button>`
-                        : `<button class="btn-yu btn-ghost-yu btn-sm-yu" style="opacity:.55;" onclick="dnsSetProxy(${r.id},true)" title="DNS only — click to enable Cloudflare proxy"><i class="bi bi-cloud" style="font-size:.9rem;"></i></button>`)
-                    : `<span style="color:var(--muted);font-size:.75rem;">—</span>`;
-                const ddnsBadge = r.ddns_enabled
-                    ? `<span class="pill pill-run" style="font-size:.65rem;"><span class="pill-dot"></span>DDNS</span>`
-                    : `<span style="color:var(--muted);font-size:.75rem;">—</span>`;
-                const remoteLabel = r.remote_id
-                    ? `<span class="mono" style="font-size:.7rem;color:var(--muted);" title="${escHtml(r.remote_id)}">${escHtml(r.remote_id.substring(0,12))}…</span>`
-                    : `<span style="color:var(--muted);font-size:.75rem;">—</span>`;
-                return `
-                <tr data-record-id="${r.id}" data-remote-id="${escHtml(r.remote_id || '')}" data-rec-type="${escHtml(r.record_type)}">
-                    <td class="mono" style="font-size:.78rem;">${escHtml(dispName)}</td>
-                    <td>${_dnsTypeBadge(r.record_type)}</td>
-                    <td class="mono" style="font-size:.75rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(dispValue)}">${escHtml(dispValue)}</td>
-                    <td style="font-size:.8rem;">${dispTtl === 1 ? 'Auto' : dispTtl + 's'}</td>
-                    <td>${proxyCell}</td>
-                    <td>${ddnsBadge}</td>
-                    <td>${remoteLabel}</td>
-                    <td style="text-align:right;">
-                        <div style="display:flex;gap:.3rem;justify-content:flex-end;">
-                            <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="dnsEditRecord(${JSON.stringify(editRec).replace(/"/g,'&quot;')})" title="Edit"><i class="bi bi-pencil"></i></button>
-                            <button class="btn-yu btn-danger-yu btn-sm-yu" onclick="dnsDeleteRecord(${r.id},'${escHtml(r.remote_id || '')}')" title="Delete"><i class="bi bi-trash"></i></button>
-                        </div>
-                    </td>
-                </tr>`;
-            }).join('');
-            _dnsOverlayLiveValues(); // second-pass overlay in case remote data loaded after this
-        }).catch(() => { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#ef4444;padding:2rem;">Network error.</td></tr>'; });
-}
-
-// ── Set Cloudflare proxy (orange cloud toggle) ──────────────────────────────
-function dnsSetProxy(recordId, proxied) {
-    fetch(`/api/admin/dns/records/${recordId}/set-proxy`, {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ proxied }),
-    }).then(r => r.json()).then(d => {
-        if (d.ok) { dnsLoadLocalRecords(); }
-        else { alert(d.error || 'Failed to update proxy.'); }
-    }).catch(() => alert('Network error.'));
-}
-
-// ── Import a remote record into local DB ──────────────────────────────────────
-
-function dnsImportRecord(r) {
-    if (!_dnsCurrentProviderId) return;
-    fetch('/api/admin/dns/records', {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            provider_id:     _dnsCurrentProviderId,
-            zone_id:         _dnsCurrentZoneId,
-            zone_name:       _dnsCurrentZoneName,
-            record_type:     r.record_type,
-            name:            r.name,
-            value:           r.value,
-            ttl:             r.ttl,
-            priority:        r.priority,
-            proxied:         r.proxied,
-            remote_id:       r.id,       // keep link to existing provider record
-            tag_on_provider: true,       // write yunexal.managed=true comment on Cloudflare
-            push_to_provider: false,
-        }),
-    }).then(res => res.json()).then(d => {
-        if (d.ok) { dnsLoadLocalRecords(); dnsLoadRemoteRecords(); }
-        else { alert('Import failed: ' + (d.error || 'unknown error')); }
-    }).catch(() => alert('Network error.'));
-}
-
-// ── Edit a locally tracked record ────────────────────────────────────────────
-
-function dnsEditRecord(rec) {
-    if (!_dnsCurrentProviderId) {
-        // Try to restore from the record itself
-        _dnsCurrentProviderId = rec.provider_id;
-        _dnsCurrentZoneId     = rec.zone_id;
-        _dnsCurrentZoneName   = rec.zone_name;
-    }
-    _dnsEditRecordId = rec.id;
-    _dnsEditHasRemoteId = !!(rec.remote_id && rec.remote_id.length > 0);
-    // For edits with a remote_id, always push — hide the checkbox
-    const pushWrap = document.getElementById('drm-push-wrap');
-    if (pushWrap) pushWrap.style.display = _dnsEditHasRemoteId ? 'none' : '';
-    document.getElementById('drm-push').checked = true;
-    document.getElementById('dns-rec-modal-title').textContent = 'Edit Record';
-    document.getElementById('drm-type').value     = rec.record_type || 'A';
-    document.getElementById('drm-name').value     = rec.name  || '';
-    document.getElementById('drm-value').value    = rec.value || '';
-    _dnsSetTtl(rec.ttl || 1);
-    document.getElementById('drm-priority').value = rec.priority || 0;
-    document.getElementById('drm-proxied').value  = rec.proxied ? 'true' : 'false';
-    dnsOnModalTypeChange();
-    const ddnsChk = document.getElementById('drm-ddns');
-    ddnsChk.checked = !!rec.ddns_enabled;
-    document.getElementById('drm-interval-wrap').style.display = rec.ddns_enabled ? '' : 'none';
-    document.getElementById('drm-interval').value = rec.ddns_interval || 300;
-    document.getElementById('dns-rec-alert').style.display = 'none';
-    document.getElementById('drm-save-btn').disabled = false;
-    document.getElementById('drm-save-btn').innerHTML = '<i class="bi bi-check-lg"></i> Save';
-    openModal('dnsRecordModal');
-}
-
-// ── Add record modal ──────────────────────────────────────────────────────────
-
-function dnsOpenAddRecordModal() {
-    if (!_dnsCurrentProviderId) { alert('Select a provider and zone first.'); return; }
-    _dnsEditRecordId = null;
-    _dnsEditHasRemoteId = false;
-    document.getElementById('dns-rec-modal-title').textContent = 'Add Record';
-    // Show push checkbox for new records
-    const pushWrap2 = document.getElementById('drm-push-wrap');
-    if (pushWrap2) pushWrap2.style.display = '';
-    document.getElementById('drm-type').value    = 'A';
-    document.getElementById('drm-name').value    = '';
-    document.getElementById('drm-value').value   = '';
-    _dnsSetTtl(1);
-    document.getElementById('drm-priority').value = '0';
-    dnsOnModalTypeChange();
-    document.getElementById('drm-proxied').value = 'false';
-    document.getElementById('drm-ddns').checked  = false;
-    document.getElementById('drm-push').checked  = true;
-    document.getElementById('drm-interval-wrap').style.display = 'none';
-    document.getElementById('dns-rec-alert').style.display = 'none';
-    document.getElementById('drm-save-btn').disabled = false;
-    document.getElementById('drm-save-btn').innerHTML = '<i class="bi bi-check-lg"></i> Save';
-    openModal('dnsRecordModal');
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    const ddnsChk = document.getElementById('drm-ddns');
-    if (ddnsChk) ddnsChk.addEventListener('change', () => {
-        document.getElementById('drm-interval-wrap').style.display = ddnsChk.checked ? '' : 'none';
-    });
-});
-
-function dnsOnTtlChange() {
-    const sel    = document.getElementById('drm-ttl');
-    const custom = document.getElementById('drm-ttl-custom');
-    if (!sel || !custom) return;
-    custom.style.display = sel.value === 'custom' ? '' : 'none';
-    if (sel.value === 'custom') custom.focus();
-}
-
-function _dnsSetTtl(ttl) {
-    const sel    = document.getElementById('drm-ttl');
-    const custom = document.getElementById('drm-ttl-custom');
-    if (!sel) return;
-    // ttl=1 means Auto in Cloudflare
-    const val    = String(ttl);
-    const opt    = sel.querySelector(`option[value="${val}"]`);
-    if (opt) {
-        sel.value = val;
-        custom.style.display = 'none';
-    } else {
-        sel.value = 'custom';
-        custom.value = ttl;
-        custom.style.display = '';
-    }
-}
-
-function _dnsGetTtl() {
-    const sel = document.getElementById('drm-ttl');
-    if (!sel) return 1;
-    if (sel.value === 'custom') {
-        return parseInt(document.getElementById('drm-ttl-custom').value) || 300;
-    }
-    return parseInt(sel.value) || 1;
-}
-
-function dnsSaveRecord() {
-    const btn     = document.getElementById('drm-save-btn');
-    const alertEl = document.getElementById('dns-rec-alert');
-    const show = (ok, msg) => {
-        alertEl.className = 'yu-alert ' + (ok ? 'yu-alert-success' : 'yu-alert-error');
-        alertEl.innerHTML = `<i class="bi bi-${ok ? 'check-circle' : 'x-circle'}"></i> ${escHtml(msg)}`;
-        alertEl.style.display = 'flex';
-    };
-    const name     = document.getElementById('drm-name').value.trim();
-    const value    = document.getElementById('drm-value').value.trim();
-    const rtype    = document.getElementById('drm-type').value;
-    const ttl      = _dnsGetTtl();
-    const priority = parseInt(document.getElementById('drm-priority').value) || 0;
-    const proxied  = document.getElementById('drm-proxied').value === 'true';
-    const ddns     = document.getElementById('drm-ddns').checked;
-    const interval = parseInt(document.getElementById('drm-interval').value) || 300;
-    // If editing a record that already lives on the provider, always push changes up
-    const push = _dnsEditHasRemoteId ? true : document.getElementById('drm-push').checked;
-
-    if (!name || !value) return show(false, 'Name and value are required.');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-
-    const body = {
-        provider_id: _dnsCurrentProviderId,
-        zone_id:     _dnsCurrentZoneId,
-        zone_name:   _dnsCurrentZoneName,
-        record_type: rtype, name, value, ttl, priority, proxied,
-        ddns_enabled: ddns, ddns_interval: interval,
-        push_to_provider: push,
-    };
-    const url    = _dnsEditRecordId ? `/api/admin/dns/records/${_dnsEditRecordId}/update` : '/api/admin/dns/records';
-    const method = 'POST';
-
-    fetch(url, { method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-        .then(r => r.json()).then(d => {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-check-lg"></i> Save';
-            if (d.ok) {
-                show(true, _dnsEditRecordId ? 'Record updated.' : 'Record created.');
-                setTimeout(() => { closeModal('dnsRecordModal'); dnsLoadRemoteRecords(); dnsLoadLocalRecords(); }, 800);
-            } else { show(false, d.error || 'Failed.'); }
-        }).catch(() => {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-check-lg"></i> Save';
-            show(false, 'Network error.');
-        });
-}
-
-async function dnsDeleteRecord(id, remoteId) {
-    const hasRemote = remoteId && remoteId.length > 0;
-    if (!await yuConfirm('Delete this tracked record from the panel?', {
-        subtitle: hasRemote ? 'You will be asked separately about the provider.' : 'This cannot be undone.',
-    })) return;
-    const fromProvider = hasRemote && await yuConfirm('Also delete this record from the DNS provider?', {
-        icon: 'bi-cloud-minus-fill', iconColor: '#f59e0b',
-        subtitle: null,
-        okLabel: 'Yes, delete from provider',
-        okColor: 'rgba(245,158,11,.1)', okBorder: 'rgba(245,158,11,.3)',
-        okText: '#fcd34d', okHover: 'rgba(245,158,11,.22)',
-    });
-    fetch(`/api/admin/dns/records/${id}/delete`, {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ remove_from_provider: fromProvider }),
-    }).then(r => r.json()).then(d => {
-        if (d.ok) { dnsLoadLocalRecords(); dnsLoadDdns(); dnsLoadRemoteRecords(); }
-        else alert(d.error || 'Failed.');
-    }).catch(() => alert('Network error.'));
-}
-
-// ── DDNS tab ──────────────────────────────────────────────────────────────────
-
-function dnsGetPublicIp() {
-    const el = document.getElementById('dns-pub-ip');
-    if (el) el.textContent = '…';
-    fetch('/api/admin/dns/public-ip', { credentials: 'same-origin' })
-        .then(r => r.json()).then(d => {
-            if (el) el.textContent = d.ok ? d.ip : '?';
-        }).catch(() => { if (el) el.textContent = '?'; });
-}
-
-function dnsLoadDdns() {
-    const tbody = document.getElementById('dns-ddns-tbody');
-    if (!tbody) return;
-    // Load from all providers' local managed records where ddns_enabled = true
-    // We iterate all providers and gather their DDNS records
-    if (!_dnsProviders.length) {
-        fetch('/api/admin/dns/providers', { credentials: 'same-origin' })
-            .then(r => r.json()).then(d => { _dnsProviders = d.providers || []; _dnsLoadDdnsRows(tbody); });
-    } else {
-        _dnsLoadDdnsRows(tbody);
-    }
-}
-
-// ── Container-linked DNS records sub-tab ──────────────────────────────────────
-
-function dnsLoadContainerRecords() {
-    const tbody = document.getElementById('dns-containers-tbody');
-    const countEl = document.getElementById('dns-containers-count');
-    if (!tbody) return;
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:2rem;"><span class="spinner-border spinner-border-sm"></span> Loading\u2026</td></tr>';
-    fetch('/api/admin/dns/container-records', { credentials: 'same-origin' })
-        .then(r => r.json())
-        .then(d => {
-            const recs = d.records || [];
-            if (countEl) countEl.textContent = recs.length + ' record' + (recs.length !== 1 ? 's' : '');
-            if (!recs.length) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:2rem;">No DNS records linked to containers yet. Enable DNS/SRV when creating a server.</td></tr>';
-                return;
-            }
-            tbody.innerHTML = recs.map(r => `
-<tr>
-    <td><a href="/servers/${r.server_id}/console" style="color:var(--txt);font-weight:500;text-decoration:none;">${escHtml(r.server_name || String(r.server_id))}</a></td>
-    <td><span class="dns-chip dns-chip-${(r.record_type||'').toLowerCase()}">${escHtml(r.record_type)}</span></td>
-    <td style="font-family:monospace;font-size:.8rem;">${escHtml(r.name)}</td>
-    <td style="font-family:monospace;font-size:.8rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(r.value)}">${escHtml(r.value)}</td>
-    <td style="font-size:.78rem;color:var(--muted);">${escHtml(r.zone_name)}</td>
-    <td style="font-size:.73rem;color:var(--muted);">${r.remote_id ? escHtml(r.remote_id.substring(0,12))+'\u2026' : '\u2014'}</td>
-    <td style="text-align:right;">
-        <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="dnsDeleteContainerRecord(${r.id})" title="Delete from provider + panel" style="color:#ef4444;"><i class="bi bi-trash3"></i></button>
-    </td>
-</tr>`).join('');
-        })
-        .catch(() => {
-            if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ef4444;padding:2rem;">Failed to load records.</td></tr>';
-        });
-}
-
-async function dnsDeleteContainerRecord(id) {
-    if (!await yuConfirm('Delete this DNS record from the provider and panel?')) return;
-    try {
-        const d = await fetch(`/api/admin/dns/records/${id}/delete`, {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ remove_from_provider: true }),
-        }).then(r => r.json());
-        if (d.ok) { dnsLoadContainerRecords(); }
-        else      { alert('Delete failed: ' + (d.error || '?')); }
-    } catch (e) { alert('Network error'); }
-}
-
-async function _dnsLoadDdnsRows(tbody) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:2rem;"><span class="spinner-border spinner-border-sm"></span> Loading…</td></tr>';
-    const rows = [];
-    for (const p of _dnsProviders) {
-        try {
-            const d = await fetch(`/api/admin/dns/providers/${p.id}/records`, { credentials: 'same-origin' }).then(r => r.json());
-            if (d.ok) {
-                for (const rec of (d.records || []).filter(r => r.ddns_enabled)) {
-                    rows.push({ ...rec, _providerName: p.name, _providerType: p.provider_type });
-                }
-            }
-        } catch (e) {}
-    }
-    if (!rows.length) {
-        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:2rem;">No DDNS rules configured. Track a record and enable DDNS to add one.</td></tr>';
-        return;
-    }
-    tbody.innerHTML = rows.map(r => `
-        <tr>
-            <td style="font-size:.8rem;">${escHtml(r._providerName)}<br><span class="dns-type-badge">${escHtml(r._providerType)}</span></td>
-            <td style="font-size:.8rem;" class="mono">${escHtml(r.zone_name || r.zone_id)}</td>
-            <td style="font-size:.8rem;" class="mono">${escHtml(r.name)}</td>
-            <td style="font-size:.8rem;" class="mono">${r.last_ip ? escHtml(r.last_ip) : '<span style="color:var(--muted);">—</span>'}</td>
-            <td style="font-size:.75rem;color:var(--muted);">${r.last_synced || '—'}</td>
-            <td style="font-size:.8rem;">${r.ddns_interval}s</td>
-            <td style="text-align:right;">
-                <div style="display:flex;gap:.3rem;justify-content:flex-end;">
-                    <button class="btn-yu btn-ghost-yu btn-sm-yu" onclick="dnsEditRecord(${JSON.stringify(r).replace(/"/g,'&quot;')})" title="Edit"><i class="bi bi-pencil"></i></button>
-                    <button class="btn-yu btn-danger-yu btn-sm-yu" onclick="dnsDeleteRecord(${r.id},'${r.remote_id || ''}')" title="Remove"><i class="bi bi-trash"></i></button>
-                </div>
-            </td>
-        </tr>`).join('');
-}
-
-function dnsSyncAll() {
-    const btn = document.querySelector('[onclick="dnsSyncAll()"]');
-    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Syncing…'; }
-    fetch('/api/admin/dns/sync', { method: 'POST', credentials: 'same-origin' })
-        .then(r => r.json()).then(d => {
-            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Sync Now'; }
-            if (d.ok) {
-                const errMsg = d.errors.length ? `\n\nErrors:\n${d.errors.join('\n')}` : '';
-                alert(`✅ Synced ${d.synced} record(s) to IP ${d.ip}${errMsg}`);
-                document.getElementById('dns-pub-ip').textContent = d.ip;
-                dnsLoadDdns();
-            } else {
-                alert('❌ Sync failed: ' + (d.error || 'unknown error'));
-            }
-        }).catch(() => {
-            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Sync Now'; }
-            alert('Network error.');
-        });
-}
-
-// Auto-init DNS tab if opened via direct URL
-if (document.getElementById('tab-dns') && document.getElementById('tab-dns').classList.contains('active')) {
-    dnsLoadProviders();
-    dnsGetPublicIp();
-}
-
-function escHtml(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-function escAttr(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
 // Auto-load images if already on images tab (e.g. direct URL /admin/images)
 if (document.getElementById('tab-images') && document.getElementById('tab-images').classList.contains('active')) {
     loadImages();
 }
+// Auto-load roles for Users/Roles tabs on direct URL refresh.
+if (
+    (document.getElementById('tab-users') && document.getElementById('tab-users').classList.contains('active'))
+    || (document.getElementById('tab-roles') && document.getElementById('tab-roles').classList.contains('active'))
+) {
+    rolesLoad();
+}
+if (document.getElementById('tab-users') && document.getElementById('tab-users').classList.contains('active')) {
+    ensureCreateUserUid();
+}
 // Auto-load storage stats if already on settings tab
 if (document.getElementById('tab-settings') && document.getElementById('tab-settings').classList.contains('active')) {
-    loadStorageStats();
+    initSettingsCategories();
+    const settingsTab = document.getElementById('tab-settings');
+    const activeCat = settingsTab ? settingsTab.dataset.settingsCategory : '';
+    if (!activeCat || activeCat === 'storage') loadStorageStats();
 }
 
 // ── Containers: render helpers ──────────────────────────────────────────────────
@@ -1730,17 +1653,6 @@ function _auditActionBadge(action) {
         'user.delete':           ['#f87171', 'rgba(239,68,68,.12)'],
         'user.change_password':  ['#fbbf24', 'rgba(251,191,36,.12)'],
         'user.set_password':     ['#fbbf24', 'rgba(251,191,36,.12)'],
-        'dns.provider_add':      ['#2dd4bf', 'rgba(45,212,191,.12)'],
-        'dns.provider_edit':     ['#2dd4bf', 'rgba(45,212,191,.12)'],
-        'dns.provider_delete':   ['#f87171', 'rgba(239,68,68,.12)'],
-        'dns.record_add':        ['#2dd4bf', 'rgba(45,212,191,.12)'],
-        'dns.record_edit':       ['#2dd4bf', 'rgba(45,212,191,.12)'],
-        'dns.record_delete':     ['#f87171', 'rgba(239,68,68,.12)'],
-        'dns.proxy_toggle':      ['#fbbf24', 'rgba(251,191,36,.12)'],
-        'dns.sync':              ['#60a5fa', 'rgba(96,165,250,.12)'],
-        'dns.sync_records':      ['#60a5fa', 'rgba(96,165,250,.12)'],
-        'dns.server_record_add':    ['#2dd4bf', 'rgba(45,212,191,.12)'],
-        'dns.server_record_delete': ['#f87171', 'rgba(239,68,68,.12)'],
         'net.bandwidth':         ['#f59e0b', 'rgba(245,158,11,.12)'],
         'net.port_add':          ['#10b981', 'rgba(16,185,129,.12)'],
         'net.port_remove':       ['#f87171', 'rgba(239,68,68,.12)'],
@@ -1983,6 +1895,7 @@ async function loadStorageStats() {
         bars.innerHTML = `<span style="font-size:.8rem;color:var(--muted);">Could not load disk stats.</span>`;
     }
     loadStorageMountsHint();
+    loadStorageDiskCandidates();
 }
 
 async function saveDockerDaemon() {
@@ -2036,7 +1949,7 @@ async function loadStorageMountsHint() {
     _adminStorLoading = true;
     _adminStorRenderTrigger();
     try {
-        const r = await fetch('/api/admin/storage/mounts', { credentials: 'same-origin' });
+        const r = await fetch('/api/admin/storage/mounts?include_all=true', { credentials: 'same-origin' });
         const d = await r.json();
         if (!d.ok) {
             _adminStorLoading = false;
@@ -2044,11 +1957,239 @@ async function loadStorageMountsHint() {
             return;
         }
         // Initialise the admin disk picker — this clears the loading state
-        await initAdminStorSel(d.mounts, d.current_path);
+        await initAdminStorSel(
+            d.mounts,
+            d.current_path,
+            d.default_allowed,
+            d.default_reason,
+            d.default_path,
+        );
     } catch {
         _adminStorLoading = false;
         _adminStorRenderTrigger();
     }
+}
+
+async function loadStorageDiskCandidates() {
+    const sel = document.getElementById('storage-fs-disk-select');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Loading partitions…</option>';
+    try {
+        const r = await fetch('/api/admin/storage/disks', { credentials: 'same-origin' });
+        const d = await r.json();
+        if (!d.ok || !Array.isArray(d.disks) || d.disks.length === 0) {
+            sel.innerHTML = d.unsafe_override
+                ? '<option value="">No partitions found</option>'
+                : '<option value="">No eligible non-system partitions found</option>';
+            return;
+        }
+        const opts = ['<option value="">Select partition…</option>'];
+        d.disks.forEach((disk) => {
+            const label = `${disk.device} • ${disk.fs_type || 'unknown fs'} • ${disk.mountpoint || 'unmounted'} • ${disk.size || '?'}`;
+            opts.push(`<option value="${escAttr(disk.device)}">${escHtml(label)}</option>`);
+        });
+        sel.innerHTML = opts.join('');
+    } catch {
+        sel.innerHTML = '<option value="">Failed to load partitions</option>';
+    }
+}
+
+async function changeDiskFilesystem() {
+    const diskSel = document.getElementById('storage-fs-disk-select');
+    const fsSel = document.getElementById('storage-fs-type-select');
+    const confirmInp = document.getElementById('storage-fs-confirm');
+    const btn = document.getElementById('storage-fs-btn');
+    const res = document.getElementById('storage-fs-result');
+    if (!diskSel || !fsSel || !confirmInp || !btn || !res) return;
+
+    const device = (diskSel.value || '').trim();
+    const fsType = (fsSel.value || '').trim();
+    const phrase = (confirmInp.value || '').trim();
+
+    if (!device) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> Select a target partition first.</span>`;
+        return;
+    }
+
+    const expected = `FORMAT ${device}`;
+    if (phrase !== expected) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> Confirmation must match <code>${escHtml(expected)}</code>.</span>`;
+        return;
+    }
+
+    if (!confirm(`This will format ${device} to ${fsType} and ERASE all data on it. Continue?`)) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Formatting…';
+    res.innerHTML = '';
+
+    try {
+        const r = await fetch('/api/admin/storage/change-fs', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                device,
+                fs_type: fsType,
+                confirm_phrase: phrase,
+            }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+            let hintHtml = '';
+            if (d.ext4_prjquota_hint) {
+                hintHtml = `<div style="margin-top:.4rem;padding:.55rem .7rem;border:1px solid rgba(251,191,36,.35);border-radius:8px;background:rgba(251,191,36,.08);color:#fbbf24;">
+                    <div style="font-weight:600;margin-bottom:.25rem;"><i class="bi bi-lightbulb"></i> ext4 + prjquota recommendation</div>
+                    <div style="color:var(--muted);margin-bottom:.35rem;">${escHtml(d.ext4_prjquota_hint)}</div>
+                    <code style="display:block;background:rgba(0,0,0,.35);padding:.38rem .6rem;border-radius:5px;color:#a5f3fc;word-break:break-all;">${escHtml(d.ext4_prjquota_command || '')}</code>
+                </div>`;
+            }
+            res.innerHTML = `<span style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> ${escHtml(d.message || 'Filesystem updated.')}</span>${hintHtml}`;
+            confirmInp.value = '';
+            loadStorageDiskCandidates();
+            loadStorageStats();
+        } else if (d.needs_permission) {
+            res.innerHTML = `<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:.65rem .85rem;font-size:.8rem;">
+                <p style="margin:0 0 .4rem;font-weight:600;color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> Sudo permission needed</p>
+                <p style="margin:0 0 .4rem;color:var(--muted);">${escHtml(d.message || 'Run this command on host:')}</p>
+                <code style="display:block;background:rgba(0,0,0,.35);padding:.4rem .65rem;border-radius:5px;font-size:.75rem;color:#a5f3fc;word-break:break-all;">${escHtml(d.fix_command || '')}</code>
+            </div>`;
+        } else {
+            res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(d.error || 'Filesystem change failed')}</span>`;
+        }
+    } catch (e) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(e.message)}</span>`;
+    }
+
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Format Partition';
+}
+
+async function loadStorageMigrationContainers() {
+    const sel = document.getElementById('storage-migrate-container-select');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Loading containers…</option>';
+    try {
+        const r = await fetch('/api/admin/containers', { credentials: 'same-origin' });
+        const d = await r.json();
+        if (!d.ok || !Array.isArray(d.containers)) {
+            sel.innerHTML = '<option value="">Failed to load containers</option>';
+            return;
+        }
+        const rows = d.containers.filter(c => Number(c.db_id) > 0);
+        rows.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+        if (!rows.length) {
+            sel.innerHTML = '<option value="">No registered containers</option>';
+            return;
+        }
+        const opts = ['<option value="">Select container…</option>'];
+        rows.forEach((c) => {
+            const label = `${c.name || 'Unnamed'} (#${c.db_id}) • ${c.state || 'unknown'}`;
+            opts.push(`<option value="${Number(c.db_id)}">${escHtml(label)}</option>`);
+        });
+        sel.innerHTML = opts.join('');
+    } catch {
+        sel.innerHTML = '<option value="">Failed to load containers</option>';
+    }
+}
+
+function _storageMountSuggestedPath(m) {
+    if (!m) return '';
+    if (typeof m.suggested_path === 'string' && m.suggested_path.startsWith('/')) return m.suggested_path;
+    if (typeof m.mount === 'string' && m.mount.startsWith('/')) {
+        return m.mount === '/'
+            ? '/var/lib/docker/yunexal-volumes'
+            : `${m.mount.replace(/\/$/, '')}/yunexal-volumes`;
+    }
+    return m.suggested_path || '';
+}
+
+function populateStorageMigrationTargets() {
+    const sel = document.getElementById('storage-migrate-target-select');
+    if (!sel) return;
+    if (!_adminStorMounts.length) {
+        sel.innerHTML = '<option value="">No mount targets found</option>';
+        return;
+    }
+    const opts = ['<option value="">Select target path…</option>'];
+    _adminStorMounts.forEach((m) => {
+        if (m && m.selectable === false) return;
+        const path = _storageMountSuggestedPath(m);
+        if (!path) return;
+        const fsLabel = m.has_ext4
+            ? (m.has_prjquota ? 'ext4+prjquota' : 'ext4 (no prjquota)')
+            : (m.fs_type || 'fs');
+        const label = `${path} • ${fsLabel}`;
+        opts.push(`<option value="${escAttr(path)}">${escHtml(label)}</option>`);
+    });
+    sel.innerHTML = opts.join('');
+}
+
+async function migrateContainerStorage() {
+    const containerSel = document.getElementById('storage-migrate-container-select');
+    const targetSel = document.getElementById('storage-migrate-target-select');
+    const targetCustom = document.getElementById('storage-migrate-target-custom');
+    const btn = document.getElementById('storage-migrate-btn');
+    const res = document.getElementById('storage-migrate-result');
+    if (!containerSel || !targetSel || !targetCustom || !btn || !res) return;
+
+    const serverId = Number(containerSel.value || 0);
+    const targetPath = (targetCustom.value || '').trim() || (targetSel.value || '').trim();
+
+    if (!serverId) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> Select a container to migrate.</span>`;
+        return;
+    }
+    if (!targetPath || !targetPath.startsWith('/')) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> Select or enter an absolute target path.</span>`;
+        return;
+    }
+
+    if (!confirm('This will stop, copy data, recreate the container with a new storage source, and then start it again. Continue?')) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Migrating…';
+    res.innerHTML = '';
+
+    try {
+        const r = await fetch('/api/admin/storage/migrate', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                server_id: serverId,
+                target_base_path: targetPath,
+            }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+            const quotaLine = d.quota_note
+                ? `<div style="margin-top:.35rem;color:var(--muted);"><i class="bi bi-info-circle"></i> ${escHtml(d.quota_note)}</div>`
+                : '';
+            res.innerHTML = `<div style="color:var(--success);"><i class="bi bi-check-circle-fill"></i> ${escHtml(d.message || 'Migration complete.')}</div>
+                <div style="margin-top:.2rem;color:var(--muted);font-size:.78rem;">
+                    Source: <code>${escHtml(d.source_path || '')}</code><br>
+                    Target: <code>${escHtml(d.target_path || '')}</code><br>
+                    New container id: <code>${escHtml(d.new_container_id || '')}</code>
+                </div>${quotaLine}`;
+            targetCustom.value = '';
+            loadStorageMigrationContainers();
+            loadStorageStats();
+        } else if (d.needs_permission) {
+            res.innerHTML = `<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:.65rem .85rem;font-size:.8rem;">
+                <p style="margin:0 0 .4rem;font-weight:600;color:#fbbf24;"><i class="bi bi-exclamation-triangle"></i> Sudo permission needed</p>
+                <p style="margin:0 0 .4rem;color:var(--muted);">${escHtml(d.message || 'Run this command on host:')}</p>
+                <code style="display:block;background:rgba(0,0,0,.35);padding:.4rem .65rem;border-radius:5px;font-size:.75rem;color:#a5f3fc;word-break:break-all;">${escHtml(d.fix_command || '')}</code>
+            </div>`;
+        } else {
+            res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(d.error || 'Migration failed')}</span>`;
+        }
+    } catch (e) {
+        res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(e.message)}</span>`;
+    }
+
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-left-right"></i> Migrate Container';
 }
 
 async function runDbIntegrity() {
@@ -2070,8 +2211,7 @@ async function runDbIntegrity() {
             } else {
                 res.innerHTML = `<span style="color:#fbbf24;"><i class="bi bi-exclamation-triangle-fill"></i> Fixed ${d.total_fixed} record(s): `
                     + `${d.removed_servers} orphaned server(s), `
-                    + `${d.removed_orphan_ports} orphaned port(s), `
-                    + `${d.removed_orphan_dns_records} orphaned DNS record(s).</span>`;
+                    + `${d.removed_orphan_ports} orphaned port(s).`
             }
         } else {
             res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(d.error || 'Error')}</span>`;
@@ -2187,8 +2327,74 @@ async function uploadFavicon() {
 let _adminStorMounts = [];
 let _adminStorIdx = -1;  // -1 = "default (blank)"
 let _adminStorLoading = true;
+let _adminStorDefaultAllowed = true;
+let _adminStorDefaultReason = '';
+let _adminStorDefaultPath = '';
 // Detached panel element portalled to <body> so no ancestor stacking context clips it
 let _adminStorPanelEl = null;
+let _adminStorPositionListenersAttached = false;
+let _adminStorPosRaf = null;
+
+function _adminStorPositionPanel() {
+    const sel = document.getElementById('admin-stor-sel');
+    if (!sel || !_adminStorPanelEl || _adminStorPanelEl.parentNode !== document.body) return;
+
+    const rect = sel.getBoundingClientRect();
+    const gap = 4;
+    const pad = 8;
+    const width = Math.max(240, Math.round(rect.width));
+    _adminStorPanelEl.style.width = `${width}px`;
+
+    const panelHeight = _adminStorPanelEl.offsetHeight || 280;
+    const spaceBelow = window.innerHeight - rect.bottom - pad;
+    const spaceAbove = rect.top - pad;
+    const placeAbove = spaceBelow < Math.min(220, panelHeight) && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(140, placeAbove ? spaceAbove : spaceBelow);
+
+    let top = placeAbove ? (rect.top - panelHeight - gap) : (rect.bottom + gap);
+    top = Math.max(pad, Math.min(top, window.innerHeight - Math.min(panelHeight, maxHeight) - pad));
+
+    let left = rect.left;
+    left = Math.max(pad, Math.min(left, window.innerWidth - width - pad));
+
+    _adminStorPanelEl.style.maxHeight = `${Math.round(maxHeight)}px`;
+    _adminStorPanelEl.style.top = `${Math.round(top)}px`;
+    _adminStorPanelEl.style.left = `${Math.round(left)}px`;
+}
+
+function _adminStorSchedulePosition() {
+    if (_adminStorPosRaf) cancelAnimationFrame(_adminStorPosRaf);
+    _adminStorPosRaf = requestAnimationFrame(() => {
+        _adminStorPosRaf = null;
+        _adminStorPositionPanel();
+    });
+}
+
+function _adminStorAttachPositionListeners() {
+    if (_adminStorPositionListenersAttached) return;
+    window.addEventListener('scroll', _adminStorSchedulePosition, true);
+    window.addEventListener('resize', _adminStorSchedulePosition);
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('scroll', _adminStorSchedulePosition);
+        window.visualViewport.addEventListener('resize', _adminStorSchedulePosition);
+    }
+    _adminStorPositionListenersAttached = true;
+}
+
+function _adminStorDetachPositionListeners() {
+    if (!_adminStorPositionListenersAttached) return;
+    window.removeEventListener('scroll', _adminStorSchedulePosition, true);
+    window.removeEventListener('resize', _adminStorSchedulePosition);
+    if (window.visualViewport) {
+        window.visualViewport.removeEventListener('scroll', _adminStorSchedulePosition);
+        window.visualViewport.removeEventListener('resize', _adminStorSchedulePosition);
+    }
+    if (_adminStorPosRaf) {
+        cancelAnimationFrame(_adminStorPosRaf);
+        _adminStorPosRaf = null;
+    }
+    _adminStorPositionListenersAttached = false;
+}
 
 function _adminStorBarFill(pct) {
     const h = pct > 80 ? '#f87171' : pct > 55 ? '#fbbf24' : '#34d399';
@@ -2207,43 +2413,67 @@ function _adminStorRenderTrigger() {
     }
     document.getElementById('admin-stor-sel')?.removeAttribute('disabled-sel');
     if (_adminStorIdx < 0 || !_adminStorMounts[_adminStorIdx]) {
-        dev.textContent = 'Default (panel working dir)';
-        sub.textContent = 'volumes/ relative to panel binary';
+        if (_adminStorDefaultAllowed) {
+            dev.textContent = 'Default (panel working dir)';
+            sub.textContent = _adminStorDefaultPath || 'volumes/ relative to panel binary';
+        } else {
+            dev.textContent = 'Default path is blocked';
+            sub.textContent = _adminStorDefaultReason || 'Select a non-system mounted disk path';
+        }
     } else {
         const m = _adminStorMounts[_adminStorIdx];
+        const selectable = !m || m.selectable !== false;
         dev.textContent = m.device;
-        sub.textContent = m.has_zfs ? `ZFS • ${m.free_gib} GiB free` : m.has_btrfs ? `Btrfs • ${m.free_gib} GiB free` : m.has_ext4 ? `ext4 • ${m.free_gib} GiB free` : `${m.mount} • ${m.free_gib} GiB free`;
+        if (!selectable) {
+            const reason = m.blocked_reason || 'blocked by storage policy';
+            sub.textContent = `blocked • ${reason}`;
+        } else {
+            sub.textContent = m.has_ext4 ? `ext4 • ${m.free_gib} GiB free` : `${m.mount} • ${m.free_gib} GiB free`;
+        }
     }
 }
 
 function _adminStorRenderPanel() {
     if (!_adminStorPanelEl) return;
-    let html = `<div class="stor-opt${_adminStorIdx < 0 ? ' active' : ''}" onclick="adminStorSelPick(-1)">
+    const defaultActive = _adminStorIdx < 0 && _adminStorDefaultAllowed;
+    const defaultDisabledClass = _adminStorDefaultAllowed ? '' : ' stor-opt-disabled';
+    const defaultOnClick = _adminStorDefaultAllowed ? 'onclick="adminStorSelPick(-1)"' : '';
+    const defaultSub = _adminStorDefaultAllowed
+        ? (_adminStorDefaultPath || 'volumes/ relative to panel working directory')
+        : (_adminStorDefaultReason || 'Default path is not allowed by storage policy');
+    let html = `<div class="stor-opt${defaultActive ? ' active' : ''}${defaultDisabledClass}" ${defaultOnClick}>
         <div class="stor-opt-icon"><i class="bi bi-folder2"></i></div>
         <div class="stor-opt-body">
-            <div class="stor-opt-row1"><span class="stor-opt-device">Default</span></div>
-            <div class="stor-opt-row2">volumes/ relative to panel working directory</div>
+            <div class="stor-opt-row1">
+                <span class="stor-opt-device">Default</span>
+                ${_adminStorDefaultAllowed ? '' : '<span class="stor-opt-badge nq">blocked</span>'}
+            </div>
+            <div class="stor-opt-row2">${escHtml(defaultSub)}</div>
         </div>
-        <div class="stor-opt-check">${_adminStorIdx < 0 ? '<i class="bi bi-check-lg"></i>' : ''}</div>
+        <div class="stor-opt-check">${defaultActive ? '<i class="bi bi-check-lg"></i>' : ''}</div>
     </div>`;
     _adminStorMounts.forEach((m, i) => {
+        const selectable = !m || m.selectable !== false;
         const isActive = i === _adminStorIdx;
-        const badge = m.has_zfs
-            ? '<span class="stor-opt-badge zfs">ZFS</span>'
-            : m.has_btrfs
-            ? '<span class="stor-opt-badge btrfs">Btrfs</span>'
-            : m.has_ext4
+        const disabledClass = selectable ? '' : ' stor-opt-disabled';
+        const clickAttr = selectable ? `onclick="adminStorSelPick(${i})"` : '';
+        const badge = m.has_ext4
             ? (m.has_prjquota ? '<span class="stor-opt-badge ext4">ext4</span>' : '<span class="stor-opt-badge nq">no prjquota</span>')
-            : (m.has_prjquota ? '<span class="stor-opt-badge pq">prjquota</span>' : '<span class="stor-opt-badge nq">no quota</span>');
-        html += `<div class="stor-opt${isActive ? ' active' : ''}" onclick="adminStorSelPick(${i})">
-            <div class="stor-opt-icon"><i class="bi bi-${m.has_zfs ? 'layers' : m.has_btrfs ? 'stack' : m.has_ext4 ? 'hdd-fill' : 'hdd'}"></i></div>
+            : `<span class="stor-opt-badge nq">${escHtml(m.fs_type || 'unsupported')}</span>`;
+        const blockedBadge = selectable ? '' : '<span class="stor-opt-badge nq">blocked</span>';
+        const row2Base = _storageMountSuggestedPath(m) || m.mount;
+        const row2Text = !selectable && m.blocked_reason
+            ? `${row2Base} • ${m.blocked_reason}`
+            : row2Base;
+        html += `<div class="stor-opt${isActive ? ' active' : ''}${disabledClass}" ${clickAttr}>
+            <div class="stor-opt-icon"><i class="bi bi-${m.has_ext4 ? 'hdd-fill' : 'hdd'}"></i></div>
             <div class="stor-opt-body">
                 <div class="stor-opt-row1">
                     <span class="stor-opt-device">${escHtml(m.device)}</span>
-                    ${(m.has_zfs || m.has_btrfs) ? '' : `<span class="stor-opt-mount">${escHtml(m.mount)}</span>`}
-                    ${badge}
+                    <span class="stor-opt-mount">${escHtml(m.mount)}</span>
+                    ${badge}${blockedBadge}
                 </div>
-                <div class="stor-opt-row2">${escHtml(m.suggested_path || m.mount)}</div>
+                <div class="stor-opt-row2">${escHtml(row2Text)}</div>
             </div>
             <div class="stor-opt-usage">
                 <div class="stor-opt-bar">${_adminStorBarFill(m.used_pct)}</div>
@@ -2275,10 +2505,8 @@ function adminStorSelToggle() {
     _adminStorRenderPanel();
 
     sel.classList.add('open');
-    const rect = sel.getBoundingClientRect();
-    _adminStorPanelEl.style.top   = (rect.bottom + window.scrollY + 4) + 'px';
-    _adminStorPanelEl.style.left  = (rect.left + window.scrollX) + 'px';
-    _adminStorPanelEl.style.width = rect.width + 'px';
+    _adminStorPositionPanel();
+    _adminStorAttachPositionListeners();
 
     setTimeout(() => document.addEventListener('click', _adminStorOutsideClick, { once: true, capture: true }), 0);
 }
@@ -2297,16 +2525,36 @@ function _adminStorOutsideClick(e) {
 function _adminStorClose() {
     const sel = document.getElementById('admin-stor-sel');
     if (sel) sel.classList.remove('open');
+    _adminStorDetachPositionListeners();
     if (_adminStorPanelEl && _adminStorPanelEl.parentNode === document.body) {
         document.body.removeChild(_adminStorPanelEl);
     }
 }
 
 async function adminStorSelPick(idx) {
+    if (idx < 0 && !_adminStorDefaultAllowed) {
+        const res = document.getElementById('storage-path-result');
+        if (res) {
+            res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(_adminStorDefaultReason || 'Default storage path is blocked by policy.')}</span>`;
+        }
+        return;
+    }
+
+    if (idx >= 0) {
+        const picked = _adminStorMounts[idx];
+        if (picked && picked.selectable === false) {
+            const res = document.getElementById('storage-path-result');
+            if (res) {
+                res.innerHTML = `<span style="color:var(--danger);"><i class="bi bi-x-circle"></i> ${escHtml(picked.blocked_reason || 'Selected mount is blocked by storage policy.')}</span>`;
+            }
+            return;
+        }
+    }
+
     _adminStorIdx = idx;
     _adminStorClose();
     _adminStorRenderTrigger();
-    const value = idx < 0 ? '' : (_adminStorMounts[idx].suggested_path || '');
+    const value = idx < 0 ? '' : _storageMountSuggestedPath(_adminStorMounts[idx]);
     const inp = document.getElementById('storage-path-input');
     if (inp) inp.value = value;
     await saveStoragePathValue(value);
@@ -2342,15 +2590,18 @@ function toggleAdminStorAdvanced() {
     if (chev) chev.style.transform = visible ? '' : 'rotate(90deg)';
 }
 
-async function initAdminStorSel(mounts, currentPath) {
+async function initAdminStorSel(mounts, currentPath, defaultAllowed = true, defaultReason = '', defaultPath = '') {
     _adminStorMounts = mounts || [];
+    _adminStorDefaultAllowed = !!defaultAllowed;
+    _adminStorDefaultReason = typeof defaultReason === 'string' ? defaultReason : '';
+    _adminStorDefaultPath = typeof defaultPath === 'string' ? defaultPath : '';
     _adminStorLoading = false;
     _adminStorIdx = -1;
     if (currentPath) {
         const idx = _adminStorMounts.findIndex(m =>
-            m.suggested_path === currentPath || m.mount === currentPath
+            _storageMountSuggestedPath(m) === currentPath || m.mount === currentPath
         );
-        _adminStorIdx = idx;
+        if (idx >= 0) _adminStorIdx = idx;
     }
     _adminStorRenderTrigger();
 }

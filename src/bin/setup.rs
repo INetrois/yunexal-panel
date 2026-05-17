@@ -5,7 +5,7 @@ use std::io::{self, BufRead, Write};
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
-use yunexal_panel::{db, password};
+use yunexal_panel::{db, host, password};
 
 // ── Colour / print helpers ────────────────────────────────────────────────────
 
@@ -75,6 +75,39 @@ fn check_root() -> bool {
         .unwrap_or(false)
 }
 
+fn root_fs_type() -> Option<String> {
+    let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
+    for line in mounts.lines() {
+        let mut cols = line.split_whitespace();
+        let _source = cols.next()?;
+        let mount_point = cols.next()?;
+        let fs_type = cols.next()?;
+        if mount_point == "/" {
+            return Some(fs_type.to_string());
+        }
+    }
+    None
+}
+
+fn is_alpine_live_installer() -> bool {
+    if !Path::new("/etc/alpine-release").exists() {
+        return false;
+    }
+
+    let cmdline = std::fs::read_to_string("/proc/cmdline").unwrap_or_default();
+    let has_live_boot_token = ["apkovl=", "modloop=", "alpine_dev="]
+        .iter()
+        .any(|token| cmdline.contains(token));
+
+    let root_fs = root_fs_type().unwrap_or_default();
+    let ephemeral_root = matches!(
+        root_fs.as_str(),
+        "tmpfs" | "overlay" | "squashfs" | "ramfs"
+    );
+
+    has_live_boot_token || ephemeral_root
+}
+
 /// Returns the real invoking user (strips sudo).
 fn real_user() -> String {
     std::env::var("SUDO_USER").unwrap_or_else(|_| {
@@ -83,6 +116,242 @@ fn real_user() -> String {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_else(|_| "root".to_string())
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageManager {
+    Apk,
+    Apt,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceManager {
+    OpenRc,
+    Systemd,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SetupPlatform {
+    package_manager: PackageManager,
+    service_manager: ServiceManager,
+}
+
+fn command_exists(cmd: &str) -> bool {
+    if cmd.contains('/') {
+        return Path::new(cmd).exists();
+    }
+
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|p| p.join(cmd).exists()))
+        .unwrap_or(false)
+}
+
+fn ensure_apk_packages(packages: &[&str]) -> Result<()> {
+    let mut args = vec!["add", "--no-cache"];
+    args.extend_from_slice(packages);
+
+    let status = std::process::Command::new("apk")
+        .args(args)
+        .status()
+        .context("Failed to execute apk add")?;
+
+    if !status.success() {
+        anyhow::bail!("apk add failed for required packages");
+    }
+
+    Ok(())
+}
+
+fn ensure_apt_packages(packages: &[&str]) -> Result<()> {
+    let update = std::process::Command::new("apt-get")
+        .arg("update")
+        .status()
+        .context("Failed to execute apt-get update")?;
+
+    if !update.success() {
+        anyhow::bail!("apt-get update failed");
+    }
+
+    let mut cmd = std::process::Command::new("apt-get");
+    cmd.env("DEBIAN_FRONTEND", "noninteractive");
+    cmd.arg("install").arg("-y");
+    for pkg in packages {
+        cmd.arg(pkg);
+    }
+
+    let status = cmd
+        .status()
+        .context("Failed to execute apt-get install")?;
+
+    if !status.success() {
+        anyhow::bail!(
+            "apt-get install failed for required packages: {}",
+            packages.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
+fn ensure_packages(pm: PackageManager, packages: &[&str]) -> Result<()> {
+    match pm {
+        PackageManager::Apk => ensure_apk_packages(packages),
+        PackageManager::Apt => ensure_apt_packages(packages),
+        PackageManager::Unknown => {
+            anyhow::bail!(
+                "No supported package manager found (need apk or apt-get) to install: {}",
+                packages.join(", ")
+            )
+        }
+    }
+}
+
+fn package_manager_label(pm: PackageManager) -> &'static str {
+    match pm {
+        PackageManager::Apk => "apk",
+        PackageManager::Apt => "apt-get",
+        PackageManager::Unknown => "unknown",
+    }
+}
+
+fn service_manager_label(sm: ServiceManager) -> &'static str {
+    match sm {
+        ServiceManager::OpenRc => "OpenRC",
+        ServiceManager::Systemd => "systemd",
+    }
+}
+
+fn detect_platform() -> Result<SetupPlatform> {
+    let service_manager = match host::detect_init_system() {
+        host::InitSystem::OpenRc => ServiceManager::OpenRc,
+        host::InitSystem::Systemd => ServiceManager::Systemd,
+        host::InitSystem::SysV => {
+            anyhow::bail!("Unsupported init system: SysV. Supported: OpenRC, systemd")
+        }
+    };
+
+    let package_manager = if command_exists("apk") {
+        PackageManager::Apk
+    } else if command_exists("apt-get") {
+        PackageManager::Apt
+    } else {
+        PackageManager::Unknown
+    };
+
+    match service_manager {
+        ServiceManager::OpenRc => {
+            if !command_exists("rc-service") || !command_exists("rc-update") {
+                anyhow::bail!("OpenRC detected, but rc-service/rc-update are missing")
+            }
+        }
+        ServiceManager::Systemd => {
+            if !command_exists("systemctl") {
+                anyhow::bail!("systemd detected, but systemctl is missing")
+            }
+        }
+    }
+
+    Ok(SetupPlatform {
+        package_manager,
+        service_manager,
+    })
+}
+
+fn service_status_hint(service_manager: ServiceManager) -> &'static str {
+    match service_manager {
+        ServiceManager::OpenRc => "rc-service yunexal-panel status",
+        ServiceManager::Systemd => "systemctl status yunexal-panel --no-pager",
+    }
+}
+
+fn service_enable(service_manager: ServiceManager, service: &str) {
+    match service_manager {
+        ServiceManager::OpenRc => {
+            let _ = std::process::Command::new("rc-update")
+                .args(["add", service, "default"])
+                .status();
+        }
+        ServiceManager::Systemd => {
+            let _ = std::process::Command::new("systemctl")
+                .args(["enable", service])
+                .status();
+        }
+    }
+}
+
+fn service_start(service_manager: ServiceManager, service: &str) {
+    match service_manager {
+        ServiceManager::OpenRc => {
+            let _ = std::process::Command::new("rc-service")
+                .args([service, "start"])
+                .status();
+        }
+        ServiceManager::Systemd => {
+            let _ = std::process::Command::new("systemctl")
+                .args(["start", service])
+                .status();
+        }
+    }
+}
+
+fn service_stop(service_manager: ServiceManager, service: &str) {
+    match service_manager {
+        ServiceManager::OpenRc => {
+            let _ = std::process::Command::new("rc-service")
+                .args([service, "stop"])
+                .status();
+        }
+        ServiceManager::Systemd => {
+            let _ = std::process::Command::new("systemctl")
+                .args(["stop", service])
+                .status();
+        }
+    }
+}
+
+fn service_reload(service_manager: ServiceManager, service: &str) {
+    match service_manager {
+        ServiceManager::OpenRc => {
+            let _ = std::process::Command::new("rc-service")
+                .args([service, "reload"])
+                .status();
+        }
+        ServiceManager::Systemd => {
+            let _ = std::process::Command::new("systemctl")
+                .args(["reload", service])
+                .status();
+        }
+    }
+}
+
+fn service_is_active(service_manager: ServiceManager, service: &str) -> bool {
+    match service_manager {
+        ServiceManager::OpenRc => std::process::Command::new("rc-service")
+            .args([service, "status"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        ServiceManager::Systemd => std::process::Command::new("systemctl")
+            .args(["is-active", "--quiet", service])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+    }
+}
+
+fn add_user_to_docker_group(real_user: &str, service_manager: ServiceManager) -> bool {
+    let status = match service_manager {
+        ServiceManager::OpenRc => std::process::Command::new("addgroup")
+            .args([real_user, "docker"])
+            .status(),
+        ServiceManager::Systemd => std::process::Command::new("usermod")
+            .args(["-aG", "docker", real_user])
+            .status()
+            .or_else(|_| std::process::Command::new("adduser").args([real_user, "docker"]).status()),
+    };
+
+    status.map(|s| s.success()).unwrap_or(false)
 }
 
 // ── Secret generation ─────────────────────────────────────────────────────────
@@ -124,6 +393,24 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    if is_alpine_live_installer() {
+        eprintln!("\x1b[31m[ERROR]\x1b[0m Running yunexal-setup from Alpine live USB is blocked.");
+        eprintln!("\x1b[33m[INFO]\x1b[0m  Use installer flow from live session:");
+        eprintln!("\x1b[33m[INFO]\x1b[0m    1) yunexal-install prepare --disk /dev/sdX --mode safe --root-size-gib 40");
+        eprintln!("\x1b[33m[INFO]\x1b[0m    2) yunexal-setup (run installer to YUNEXAL_SYS)");
+        eprintln!("\x1b[33m[INFO]\x1b[0m    3) yunexal-install finalize --disk /dev/sdX --target-root /mnt");
+        eprintln!("\x1b[33m[INFO]\x1b[0m    4) reboot into installed system and run yunexal-setup there");
+        std::process::exit(1);
+    }
+
+    let platform = detect_platform()
+        .context("Failed to detect supported host platform (need OpenRC or systemd)")?;
+    info!(
+        "Detected platform: service manager={}, package manager={}",
+        service_manager_label(platform.service_manager),
+        package_manager_label(platform.package_manager)
+    );
+
     let real_user = real_user();
     let script_dir = std::env::current_dir()
         .context("Failed to determine working directory")?;
@@ -138,14 +425,14 @@ async fn main() -> Result<()> {
     };
 
     if do_reset {
-        step_reset(&script_dir).await;
+        step_reset(&script_dir, platform.service_manager).await;
     } else {
         info!("Skipping reset.");
     }
 
     // ── Step 2: Docker ────────────────────────────────────────────────────────
     header!("Step 2: Docker");
-    step_docker(&real_user).await?;
+    step_docker(&real_user, &platform).await?;
 
     // ── Step 3: .env ─────────────────────────────────────────────────────────
     header!("Step 3: Environment (.env)");
@@ -159,13 +446,13 @@ async fn main() -> Result<()> {
     header!("Step 5: Import Docker containers");
     step_import_containers(&script_dir).await;
 
-    // ── Step 6: systemd service ───────────────────────────────────────────────
-    header!("Step 6: systemd service");
-    step_systemd(&script_dir, &real_user)?;
+    // ── Step 6: Service setup ─────────────────────────────────────────────────
+    header!("Step 6: Service setup ({})", service_manager_label(platform.service_manager));
+    step_panel_service(&script_dir, &real_user, &platform)?;
 
     // ── Step 7: nginx reverse proxy ───────────────────────────────────────────
     header!("Step 7: nginx reverse proxy");
-    step_nginx(&script_dir)?;
+    step_nginx(&script_dir, &platform)?;
 
     // ── Summary ───────────────────────────────────────────────────────────────
     let panel_port = read_env_port(&script_dir).unwrap_or_else(|| "3000".to_string());
@@ -175,8 +462,8 @@ async fn main() -> Result<()> {
     println!("\x1b[1m\x1b[32m╚══════════════════════════════════════════╝\x1b[0m");
     println!();
     println!("  Panel URL  : \x1b[1mhttp://localhost:{}\x1b[0m", panel_port);
-    println!("  Service    : \x1b[1msystemctl status yunexal-panel\x1b[0m");
-    println!("  Logs       : \x1b[1mjournalctl -u yunexal-panel -f\x1b[0m");
+    println!("  Service    : \x1b[1m{}\x1b[0m", service_status_hint(platform.service_manager));
+    println!("  Logs       : \x1b[1mtail -f /var/log/yunexal-panel.log\x1b[0m");
     println!();
 
     Ok(())
@@ -184,11 +471,9 @@ async fn main() -> Result<()> {
 
 // ── Step implementations ──────────────────────────────────────────────────────
 
-async fn step_reset(dir: &Path) {
+async fn step_reset(dir: &Path, service_manager: ServiceManager) {
     info!("Stopping yunexal-panel service (if running)…");
-    let _ = std::process::Command::new("systemctl")
-        .args(["stop", "yunexal-panel"])
-        .status();
+    service_stop(service_manager, "yunexal-panel");
 
     for f in &["yunexal.db", "yunexal.db-shm", "yunexal.db-wal", ".env"] {
         let p = dir.join(f);
@@ -200,8 +485,54 @@ async fn step_reset(dir: &Path) {
     ok!("Reset complete.");
 }
 
-async fn step_docker(real_user: &str) -> Result<()> {
-    // Check if docker is installed
+async fn step_docker(real_user: &str, platform: &SetupPlatform) -> Result<()> {
+    if !command_exists("docker") {
+        info!(
+            "Docker not found. Installing Docker packages with {}…",
+            package_manager_label(platform.package_manager)
+        );
+        match platform.package_manager {
+            PackageManager::Apk => {
+                // docker-cli-compose may be unavailable in some mirrors, fallback to core package set.
+                if ensure_packages(platform.package_manager, &["docker", "docker-cli-compose"]).is_err() {
+                    warn!("Failed to install docker-cli-compose; retrying with core Docker package only.");
+                    ensure_packages(platform.package_manager, &["docker"])?;
+                }
+            }
+            PackageManager::Apt => {
+                if ensure_packages(platform.package_manager, &["docker.io", "docker-compose-plugin"]).is_err() {
+                    warn!("Failed to install docker-compose-plugin; retrying with docker.io only.");
+                    ensure_packages(platform.package_manager, &["docker.io"])?;
+                }
+            }
+            PackageManager::Unknown => {
+                anyhow::bail!("Docker is missing and no supported package manager is available to install it")
+            }
+        }
+        ok!("Docker packages installed.");
+    } else {
+        info!("Docker CLI detected.");
+    }
+
+    if real_user != "root" {
+        if !add_user_to_docker_group(real_user, platform.service_manager) {
+            warn!("Could not add '{}' to docker group automatically (continue manually if needed).", real_user);
+        } else {
+            ok!("User '{}' is in docker group.", real_user);
+        }
+    }
+
+    service_enable(platform.service_manager, "docker");
+    let running = service_is_active(platform.service_manager, "docker");
+
+    if !running {
+        info!(
+            "Starting Docker daemon with {}…",
+            service_manager_label(platform.service_manager)
+        );
+        service_start(platform.service_manager, "docker");
+    }
+
     let docker_version = std::process::Command::new("docker")
         .args(["version", "--format", "{{.Server.Version}}"])
         .output()
@@ -210,49 +541,9 @@ async fn step_docker(real_user: &str) -> Result<()> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
 
     if let Some(ref ver) = docker_version {
-        info!("Docker detected: v{}", ver);
-
-        // Check for latest version via GitHub API
-        let latest = fetch_latest_docker_version().await;
-        if let Some(ref latest_ver) = latest {
-            if latest_ver != ver {
-                warn!("Newer Docker available: v{} (installed: v{})", latest_ver, ver);
-                if prompt_yn("Upgrade Docker now?", false)? {
-                    run_docker_install()?;
-                    ok!("Docker upgraded to v{}.", latest_ver);
-                } else {
-                    info!("Skipping Docker upgrade.");
-                }
-            } else {
-                ok!("Docker is up-to-date (v{}).", ver);
-            }
-        } else {
-            ok!("Docker v{} (could not check for updates).", ver);
-        }
+        ok!("Docker detected: v{}", ver);
     } else {
-        info!("Docker not found. Installing latest stable Docker…");
-        run_docker_install()?;
-
-        // Add real user to docker group
-        let _ = std::process::Command::new("usermod")
-            .args(["-aG", "docker", real_user])
-            .status();
-
-        // Enable + start Docker daemon
-        let _ = std::process::Command::new("systemctl").args(["enable", "docker"]).status();
-        let _ = std::process::Command::new("systemctl").args(["start", "docker"]).status();
-        ok!("Docker installed.");
-    }
-
-    // Ensure Docker daemon is running
-    let running = std::process::Command::new("systemctl")
-        .args(["is-active", "--quiet", "docker"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !running {
-        info!("Starting Docker daemon…");
-        let _ = std::process::Command::new("systemctl").args(["start", "docker"]).status();
+        warn!("Docker server version could not be detected yet.");
     }
 
     // Quick reachability test
@@ -271,25 +562,6 @@ async fn step_docker(real_user: &str) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn run_docker_install() -> Result<()> {
-    let status = std::process::Command::new("bash")
-        .args(["-c", "curl -fsSL https://get.docker.com | sh"])
-        .status()
-        .context("Failed to run Docker install script")?;
-    if !status.success() {
-        anyhow::bail!("Docker installation script failed");
-    }
-    Ok(())
-}
-
-async fn fetch_latest_docker_version() -> Option<String> {
-    let resp = reqwest::get("https://api.github.com/repos/moby/moby/releases/latest")
-        .await.ok()?;
-    let json: serde_json::Value = resp.json().await.ok()?;
-    let tag = json["tag_name"].as_str()?;
-    Some(tag.trim_start_matches('v').to_string())
 }
 
 fn step_env(dir: &Path, real_user: &str) -> Result<()> {
@@ -465,7 +737,15 @@ async fn step_import_containers(dir: &Path) {
     for idx in selected_indices {
         let (cid, cname, _cimage, _) = &containers[idx];
         match db::register_server(&panel_pool, cid, cname, 0).await {
-            Ok(_) => ok!("Imported: {} ({})", cname, &cid[..12.min(cid.len())]),
+            Ok(_) => {
+                match yunexal_panel::docker::ensure_management_labels(&docker, cid).await {
+                    Ok(true) => ok!("Imported: {} ({}) [labels normalized]", cname, &cid[..12.min(cid.len())]),
+                    Ok(false) => ok!("Imported: {} ({})", cname, &cid[..12.min(cid.len())]),
+                    Err(e) => {
+                        warn!("Imported: {} ({}), but label migration failed: {}", cname, &cid[..12.min(cid.len())], e);
+                    }
+                }
+            }
             Err(e) => warn!("Failed to import {}: {}", cname, e),
         }
     }
@@ -494,63 +774,160 @@ async fn list_all_containers(docker: &bollard::Docker) -> Result<Vec<(String, St
     Ok(result)
 }
 
-fn step_systemd(dir: &Path, real_user: &str) -> Result<()> {
-    let service_path = PathBuf::from("/etc/systemd/system/yunexal-panel.service");
+fn sh_esc_single(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "'\\''")
+}
 
-    // Find binary
-    let svc_bin = ["yunexal-panel", "target/release/yunexal-panel", "target/debug/yunexal-panel"]
+fn resolve_panel_binary(dir: &Path) -> String {
+    ["yunexal-panel", "target/release/yunexal-panel", "target/debug/yunexal-panel"]
         .iter()
         .map(|p| dir.join(p))
         .find(|p| p.exists())
         .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| dir.join("target/release/yunexal-panel").to_string_lossy().to_string());
+        .unwrap_or_else(|| dir.join("target/release/yunexal-panel").to_string_lossy().to_string())
+}
+
+fn step_panel_service(dir: &Path, real_user: &str, platform: &SetupPlatform) -> Result<()> {
+    match platform.service_manager {
+        ServiceManager::OpenRc => step_openrc_service(dir, real_user),
+        ServiceManager::Systemd => step_systemd_service(dir, real_user),
+    }
+}
+
+fn step_openrc_service(dir: &Path, real_user: &str) -> Result<()> {
+    let service_path = PathBuf::from("/etc/init.d/yunexal-panel");
+
+    // Find binary
+    let svc_bin = resolve_panel_binary(dir);
+
+    let launcher_path = dir.join("yunexal-panel-launcher.sh");
+    let launcher_content = format!(
+        "#!/bin/sh\n\
+         set -a\n\
+         [ -f '{workdir}/.env' ] && . '{workdir}/.env'\n\
+         set +a\n\
+         exec '{bin}' \"$@\"\n",
+        workdir = sh_esc_single(&dir.to_string_lossy()),
+        bin = sh_esc_single(&svc_bin),
+    );
+    std::fs::write(&launcher_path, launcher_content)
+        .context("Failed to write launcher script")?;
+    let _ = std::process::Command::new("chmod")
+        .args(["755", launcher_path.to_str().unwrap_or_default()])
+        .status();
+
+    let service_content = format!(
+        "#!/sbin/openrc-run\n\
+         name=\"yunexal-panel\"\n\
+         description=\"Yunexal Panel service\"\n\
+         command=\"{launcher}\"\n\
+         command_user=\"{real_user}:{real_user}\"\n\
+         directory=\"{workdir}\"\n\
+         pidfile=\"/run/yunexal-panel.pid\"\n\
+         command_background=\"yes\"\n\
+         start_stop_daemon_args=\"--make-pidfile --pidfile ${{pidfile}} --stdout /var/log/yunexal-panel.log --stderr /var/log/yunexal-panel.log\"\n\
+         \n\
+         depend() {{\n\
+             need net docker\n\
+             after firewall\n\
+         }}\n\
+         \n\
+         start_pre() {{\n\
+             checkpath --file --mode 0644 --owner {real_user}:{real_user} /var/log/yunexal-panel.log\n\
+             checkpath --directory --mode 0755 /run\n\
+         }}\n",
+        real_user = real_user,
+        workdir = dir.display(),
+        launcher = launcher_path.display(),
+    );
+
+    std::fs::write(&service_path, service_content)
+        .context("Failed to write OpenRC service file")?;
+    let _ = std::process::Command::new("chmod")
+        .args(["755", service_path.to_str().unwrap_or_default()])
+        .status();
+
+    service_enable(ServiceManager::OpenRc, "yunexal-panel");
+    ok!("OpenRC service installed and enabled: {}", service_path.display());
+
+    if prompt_yn("Start yunexal-panel now?", true)? {
+        if Path::new(&svc_bin).exists() {
+            service_start(ServiceManager::OpenRc, "yunexal-panel");
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let active = service_is_active(ServiceManager::OpenRc, "yunexal-panel");
+            if active {
+                ok!("yunexal-panel is running.");
+            } else {
+                warn!("Service did not start cleanly — check: rc-service yunexal-panel status");
+            }
+        } else {
+            warn!("Binary not found at {} — build the project first.", svc_bin);
+        }
+    } else {
+        info!("Service not started. Run: rc-service yunexal-panel start");
+    }
+
+    Ok(())
+}
+
+fn step_systemd_service(dir: &Path, real_user: &str) -> Result<()> {
+    let service_path = PathBuf::from("/etc/systemd/system/yunexal-panel.service");
+    let svc_bin = resolve_panel_binary(dir);
 
     let service_content = format!(
         "[Unit]\n\
-         Description=Yunexal Panel\n\
-         Documentation=https://github.com/nestorchurin/yunexal-panel\n\
-         After=network.target docker.service\n\
-         Wants=docker.service\n\
+         Description=Yunexal Panel service\n\
+         After=network-online.target docker.service\n\
+         Wants=network-online.target\n\
+         Requires=docker.service\n\
          \n\
          [Service]\n\
          Type=simple\n\
          User={real_user}\n\
+         Group={real_user}\n\
          WorkingDirectory={workdir}\n\
          EnvironmentFile={workdir}/.env\n\
-         ExecStart={svc_bin}\n\
+         ExecStart={bin}\n\
          Restart=on-failure\n\
-         RestartSec=5\n\
-         StandardOutput=journal\n\
-         StandardError=journal\n\
-         SyslogIdentifier=yunexal-panel\n\
+         RestartSec=2\n\
+         StandardOutput=append:/var/log/yunexal-panel.log\n\
+         StandardError=append:/var/log/yunexal-panel.log\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",
         real_user = real_user,
         workdir = dir.display(),
-        svc_bin = svc_bin,
+        bin = svc_bin,
     );
 
     std::fs::write(&service_path, service_content)
         .context("Failed to write systemd service file")?;
 
-    let _ = std::process::Command::new("systemctl").arg("daemon-reload").status();
-    let _ = std::process::Command::new("systemctl").args(["enable", "yunexal-panel"]).status();
-    ok!("Service installed and enabled: {}", service_path.display());
+    let _ = std::process::Command::new("touch")
+        .arg("/var/log/yunexal-panel.log")
+        .status();
+    let _ = std::process::Command::new("chown")
+        .args([&format!("{}:{}", real_user, real_user), "/var/log/yunexal-panel.log"])
+        .status();
+    let _ = std::process::Command::new("chmod")
+        .args(["644", "/var/log/yunexal-panel.log"])
+        .status();
+
+    let _ = std::process::Command::new("systemctl")
+        .arg("daemon-reload")
+        .status();
+    service_enable(ServiceManager::Systemd, "yunexal-panel");
+    ok!("systemd service installed and enabled: {}", service_path.display());
 
     if prompt_yn("Start yunexal-panel now?", true)? {
         if Path::new(&svc_bin).exists() {
-            let _ = std::process::Command::new("systemctl").args(["start", "yunexal-panel"]).status();
+            service_start(ServiceManager::Systemd, "yunexal-panel");
             std::thread::sleep(std::time::Duration::from_secs(1));
-            let active = std::process::Command::new("systemctl")
-                .args(["is-active", "--quiet", "yunexal-panel"])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+            let active = service_is_active(ServiceManager::Systemd, "yunexal-panel");
             if active {
                 ok!("yunexal-panel is running.");
             } else {
-                warn!("Service did not start cleanly — check: journalctl -u yunexal-panel -n 50");
+                warn!("Service did not start cleanly — check: systemctl status yunexal-panel --no-pager");
             }
         } else {
             warn!("Binary not found at {} — build the project first.", svc_bin);
@@ -587,19 +964,25 @@ fn build_nginx_config(domain: &str, port: &str, ssl: Option<(&str, &str)>) -> St
     }
 }
 
-fn step_nginx(dir: &Path) -> Result<()> {
-    let nginx_installed = std::process::Command::new("which")
-        .arg("nginx")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+fn step_nginx(dir: &Path, platform: &SetupPlatform) -> Result<()> {
+    let mut nginx_installed = command_exists("nginx");
 
     if !nginx_installed {
-        info!("nginx not found — skipping nginx configuration.");
-        warn!("If you use a reverse proxy, add these headers or WebSocket consoles will NOT work:");
-        warn!("  proxy_http_version 1.1;");
-        warn!("  proxy_set_header Upgrade $http_upgrade;");
-        warn!("  proxy_set_header Connection \"upgrade\";");
+        warn!("nginx not found.");
+        if prompt_yn(
+            &format!(
+                "Install nginx now via {}?",
+                package_manager_label(platform.package_manager)
+            ),
+            true,
+        )? {
+            ensure_packages(platform.package_manager, &["nginx"])?;
+            nginx_installed = true;
+        }
+    }
+
+    if !nginx_installed {
+        info!("Skipping nginx configuration.");
         return Ok(());
     }
 
@@ -627,26 +1010,54 @@ fn step_nginx(dir: &Path) -> Result<()> {
         if has_ssl { Some((cert_path.as_str(), key_path.as_str())) } else { None },
     );
 
-    let config_path  = PathBuf::from("/etc/nginx/sites-available/yunexal-panel");
-    let enabled_path = PathBuf::from("/etc/nginx/sites-enabled/yunexal-panel");
+    let config_path = match platform.service_manager {
+        ServiceManager::OpenRc => PathBuf::from("/etc/nginx/http.d/yunexal-panel.conf"),
+        ServiceManager::Systemd => PathBuf::from("/etc/nginx/sites-available/yunexal-panel.conf"),
+    };
 
     std::fs::write(&config_path, &config).context("Failed to write nginx configuration")?;
 
-    // Recreate symlink in sites-enabled
-    if enabled_path.exists() || enabled_path.is_symlink() {
-        let _ = std::fs::remove_file(&enabled_path);
+    if platform.service_manager == ServiceManager::Systemd {
+        let enabled_dir = PathBuf::from("/etc/nginx/sites-enabled");
+        std::fs::create_dir_all(&enabled_dir)
+            .context("Failed to create /etc/nginx/sites-enabled")?;
+
+        let enabled_path = enabled_dir.join("yunexal-panel.conf");
+        if enabled_path.exists() {
+            let _ = std::fs::remove_file(&enabled_path);
+        }
+        symlink(&config_path, &enabled_path)
+            .context("Failed to enable nginx site symlink")?;
     }
-    symlink(&config_path, &enabled_path).context("Failed to create nginx symlink in sites-enabled")?;
+
+    service_enable(platform.service_manager, "nginx");
 
     // Test and reload
     let test = std::process::Command::new("nginx").arg("-t").output();
     match test {
         Ok(o) if o.status.success() => {
-            let _ = std::process::Command::new("systemctl").args(["reload", "nginx"]).status();
+            let is_running = service_is_active(platform.service_manager, "nginx");
+
+            if is_running {
+                service_reload(platform.service_manager, "nginx");
+            } else {
+                service_start(platform.service_manager, "nginx");
+            }
+
             ok!("nginx configured and reloaded: {}", config_path.display());
             if !has_ssl {
                 info!("To enable HTTPS with Let's Encrypt:");
-                info!("  sudo apt install certbot python3-certbot-nginx -y");
+                match platform.package_manager {
+                    PackageManager::Apk => {
+                        info!("  apk add --no-cache certbot certbot-nginx");
+                    }
+                    PackageManager::Apt => {
+                        info!("  apt-get install -y certbot python3-certbot-nginx");
+                    }
+                    PackageManager::Unknown => {
+                        info!("  install certbot + nginx plugin via your distro package manager");
+                    }
+                }
                 info!("  sudo certbot --nginx -d {}", domain);
             }
         }
@@ -656,7 +1067,11 @@ fn step_nginx(dir: &Path) -> Result<()> {
         }
         Err(e) => {
             warn!("Could not verify nginx config: {}", e);
-            ok!("Config written to {} — reload nginx manually.", config_path.display());
+            ok!(
+                "Config written to {} — reload nginx manually with {}.",
+                config_path.display(),
+                service_manager_label(platform.service_manager)
+            );
         }
     }
 

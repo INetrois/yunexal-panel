@@ -30,11 +30,26 @@ function _netInit() {
     const mbit = typeof window.YU_INITIAL_MBIT !== 'undefined' ? window.YU_INITIAL_MBIT : null;
     if (mbit !== null) updateBar(mbit);
 }
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', _netInit, { once: true });
-} else {
+
+function _netOnPageShown(path) {
+    const p = String(path || window.location.pathname || '');
+    if (!/^\/servers\/\d+\/networking$/.test(p)) return;
     _netInit();
+    window._yuPageCleanup = function () {
+        stopParts();
+    };
 }
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => _netOnPageShown(window.location.pathname), { once: true });
+} else {
+    _netOnPageShown(window.location.pathname);
+}
+
+window.addEventListener('yu:page-shown', (ev) => {
+    const path = String(ev?.detail?.path || '');
+    _netOnPageShown(path);
+});
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 function showToast(msg, type) {
@@ -447,5 +462,4 @@ async function toggleUfw(hp, cp, currentBlocked, btn) {
 // ── Cleanup (called by SPA navigation before leaving this page) ───────────────
 window._yuPageCleanup = function () {
     stopParts();
-    window._yuPageCleanup = undefined;
 };

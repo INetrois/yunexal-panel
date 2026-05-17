@@ -256,6 +256,130 @@ a { text-decoration: none; color: inherit; }
 /* ── Image field ────────────────────────────── */
 .image-combo-wrap { position: relative; }
 
+.image-combo-wrap .form-control {
+    padding-right: 2.1rem;
+}
+
+.image-dd-toggle {
+    position: absolute;
+    top: 50%;
+    right: .38rem;
+    transform: translateY(-50%);
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: color .15s, background .15s;
+}
+
+.image-dd-toggle:hover {
+    color: var(--txt);
+    background: rgba(255,255,255,.06);
+}
+
+.image-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    z-index: 120;
+    display: none;
+    background: var(--surface2);
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 8px;
+    overflow: auto;
+    max-height: 220px;
+    box-shadow: 0 10px 26px rgba(0,0,0,.45);
+}
+
+.image-dropdown.open {
+    display: block;
+}
+
+.image-dropdown-item {
+    width: 100%;
+    text-align: left;
+    border: none;
+    background: transparent;
+    color: var(--txt);
+    font-size: .79rem;
+    font-family: 'Inter', sans-serif;
+    padding: .48rem .65rem;
+    cursor: pointer;
+    border-bottom: 1px solid rgba(255,255,255,.04);
+}
+
+.image-dropdown-item:last-child {
+    border-bottom: none;
+}
+
+.image-dropdown-item:hover {
+    background: rgba(124,58,237,.14);
+}
+
+.image-dropdown-empty {
+    color: var(--muted);
+    font-size: .74rem;
+    padding: .55rem .65rem;
+}
+
+.image-tools-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: .65rem;
+    margin-top: .45rem;
+}
+
+.image-tools-hint {
+    font-size: .7rem;
+    color: var(--muted);
+    line-height: 1.35;
+}
+
+.inline-status {
+    font-size: .7rem;
+    margin-top: .25rem;
+    min-height: 1rem;
+}
+
+.dockerfile-builder {
+    margin-top: .75rem;
+    padding: .75rem;
+    border: 1px solid rgba(124,58,237,.22);
+    background: rgba(124,58,237,.05);
+    border-radius: 10px;
+}
+
+.dockerfile-builder-title {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    font-size: .74rem;
+    font-weight: 600;
+    letter-spacing: .02em;
+    color: var(--accent-l);
+    margin-bottom: .55rem;
+}
+
+.dockerfile-builder-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: .65rem;
+}
+
+.dockerfile-builder-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: .65rem;
+}
+
 /* ── YAML preview panel ───────────────────────── */
 .preview-col { position: static; }
 .yaml-card {
@@ -339,6 +463,26 @@ a { text-decoration: none; color: inherit; }
 }
 .btn-fetch:hover { background: var(--accent-dim); }
 .btn-fetch:disabled { opacity: .5; cursor: not-allowed; }
+
+@media (max-width: 760px) {
+    .image-tools-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .dockerfile-builder-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .dockerfile-builder-actions {
+        justify-content: stretch;
+    }
+
+    .dockerfile-builder-actions .btn-fetch {
+        width: 100%;
+        justify-content: center;
+    }
+}
 
 /* ── Error alert ──────────────────────────────── */
 .yu-alert-err {
@@ -520,8 +664,10 @@ a { text-decoration: none; color: inherit; }
     border: 1px solid rgba(255,255,255,.11);
     border-radius: 10px;
     z-index: 9999;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
     box-shadow: 0 12px 40px rgba(0,0,0,.75);
+    touch-action: pan-y;
 }
 .stor-sel.open .stor-sel-panel { display: block; }
 
@@ -561,6 +707,7 @@ a { text-decoration: none; color: inherit; }
 }
 .stor-opt-badge.pq  { background: rgba(52,211,153,.14); color: #34d399; border: 1px solid rgba(52,211,153,.25); }
 .stor-opt-badge.nq  { background: rgba(239,68,68,.12);  color: #f87171; border: 1px solid rgba(239,68,68,.22); }
+.stor-opt-badge.ext4 { background: rgba(251,146,60,.14); color: #fb923c; border: 1px solid rgba(251,146,60,.25); }
 .stor-opt-row2 { font-size: .7rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .stor-opt-usage  { display: flex; align-items: center; gap: .4rem; flex-shrink: 0; margin-left: auto; padding-left: .5rem; }

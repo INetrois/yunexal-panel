@@ -34,7 +34,7 @@ pub async fn list_files(_docker: &Docker, id: &str, path: &str) -> Result<Vec<Fi
 
     while let Some(entry) = entries.next_entry().await? {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') || name.ends_with(".example") || name.ends_with(".test") { continue; }
+        if name.ends_with(".example") || name.ends_with(".test") { continue; }
         if entry.file_type().await?.is_dir() {
             files.push((format!("{}/", name), None));
         } else {

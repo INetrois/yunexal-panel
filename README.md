@@ -1,6 +1,6 @@
 # Yunexal Panel
 
-> **v0.4.1** — Self-hosted server management platform built on Docker.
+> **v0.5.0** — Self-hosted server management platform built on Docker.
 
 Built with **Rust + Axum**, **SQLite**, and **Bollard** (Docker SDK).  
 Templates and static assets are compiled into a single binary — no external runtime files needed.
@@ -12,6 +12,7 @@ Templates and static assets are compiled into a single binary — no external ru
 - [Roadmap](#roadmap)
 - [Features](#features)
 - [Installation](#installation)
+- [Repository Status](#repository-status)
 - [Reverse Proxy (nginx)](#reverse-proxy-nginx)
 - [Requirements](#requirements)
 - [Configuration](#configuration)
@@ -40,9 +41,8 @@ Templates and static assets are compiled into a single binary — no external ru
 ### Management
 | Status | Feature |
 |---|---|
-| ✅ | Users — create, delete, roles (`root` / `admin` / `user`) |
-| ✅ | DNS — multi-provider (Cloudflare, GoDaddy, DuckDNS, Namecheap, Generic), DDNS, SRV |
-| 🔜 | Agents — automated task runners attached to containers |
+| ✅ | Users — create, delete, roles with full RBAC permission matrix |
+| 🔜 | Distpatchers — task dispatchers and future agent manager workflows |
 | 🔜 | Firewall — global IP allow/block rules beyond per-port UFW |
 | 🔜 | Backups — scheduled volume snapshots with retention policies |
 | 🔜 | Tickets — built-in support ticket system for end users |
@@ -50,16 +50,16 @@ Templates and static assets are compiled into a single binary — no external ru
 ### Analytics
 | Status | Feature |
 |---|---|
-| ✅ | Audit Log — immutable, 200 records, multi-select filter, Device column |
+| ✅ | Audit Log — immutable, global + per-server, multi-select filter, Device column |
 | 🔜 | Insights — historical resource usage charts and trend analysis |
 
 ### Configuration
 | Status | Feature |
 |---|---|
-| ✅ | Panel Settings — UFW, bandwidth, Cloudflare UAM/L7, sidebar visibility, panel updates |
+| ✅ | Panel Settings — UFW, bandwidth, sidebar visibility, panel updates |
+| ✅ | API Keys — service API key for external integrations |
 | 🔜 | Notifications — email / webhook alerts for events (container down, login, etc.) |
 | 🔜 | Themes — custom colour schemes and branding per installation |
-| 🔜 | API Keys — REST API access tokens for external integrations |
 
 ### Other
 | Status | Feature |
@@ -85,7 +85,7 @@ Or help to implement features by joining the development on the [Discussions](ht
 - **In-place updates** — cards refresh state without DOM re-creation (no animation flicker)
 - **"My only" toggle** — admins can filter to show only their own servers; placed in the topbar next to "New Server"
 - Auto-polling every 5 s; status badges: Running / Stopped / Error
-- Change own password directly from the dashboard
+- **Settings modal** — change own password and manage active devices (sessions) without leaving the dashboard
 
 ### Server Console
 - WebSocket terminal attached to Docker container TTY via **xterm.js**
@@ -94,7 +94,12 @@ Or help to implement features by joining the development on the [Discussions](ht
 - Live metric charts (1 s polling, 200-point history):
   - CPU % · RAM % (used / limit) · Network KB/s · Disk I/O KB/s
 - **Storage card** — volume size (MB) fetched once on open
-- Per-server DNS panel — view records linked to this server
+
+### Server Sidebar — SPA Navigation
+- Server tabs (Console · Files · Networking · Settings · Audit · Users) load without full page reloads
+- Only `.yu-main` is replaced on navigation; sidebar and assets remain intact
+- Each tab re-initialises its own polling/WS lifecycle via `yu:page-shown` events
+- Back/forward browser navigation works correctly via `history.pushState`
 
 ### File Manager
 - Folder/file browsing with breadcrumb navigation
@@ -104,9 +109,12 @@ Or help to implement features by joining the development on the [Discussions](ht
 - **Edit** text/config files in a full-screen Ace code editor
 - **Create** new files and directories
 - **Rename**, **Copy/Paste**, **Delete** (right-click context menu)
-- **Drag-and-drop upload** with per-file progress (streamed to disk, root-permission safe via Alpine helper)
-- **Archive & Extract** — create `.tar.gz` archives; extract `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.zip`, `.jar`, `.rar`, `.7z`, `.gz`, `.bz2`, `.xz`
-- Path traversal protection enforced on all backend endpoints
+- **Drag-and-drop upload** with per-file progress (streamed to disk, root-permission safe via helper container);
+  large files use chunked upload (85 MiB threshold) with parallel workers and retry policy
+- **Archive & Extract** — create `.tar.gz` archives; extract `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.zip`, `.jar`, `.rar`, `.7z`, `.gz`, `.bz2`, `.xz`;
+  two extract modes: *Extract to folder* or *Extract here*
+- **Non-editable guard** — binary/archive/media files are blocked from opening in the text editor
+- Path traversal and symlink-escape protection enforced on all backend endpoints
 
 ### Server Settings
 - **Environment Variables** — row-based editor: each `KEY=VALUE` rendered as its own row
@@ -115,6 +123,19 @@ Or help to implement features by joining the development on the [Discussions](ht
 - **Factory Reset** — wipes the volume and restarts the container; requires password confirmation
   - Redesigned modal: danger-styled border, eye-toggle on the password field
 - **Danger Zone** — Delete Server (admin only)
+
+### Server Members (User Access Control)
+- Add users to a specific container without granting global admin rights
+- Members are looked up by **UID** — unique user identity string (9–16 characters)
+- Per-capability access policy (`none / read / write`) for: **console · files · networking · settings · audit · power**
+- Users tab in the server sidebar — visible only when the container has members
+- Non-admin members see only their permitted tabs; power actions (start/stop/restart/kill) respect the `power:write` policy
+
+### Server Audit Log
+- Per-server immutable event log at `/servers/{id}/audit`
+- Filter by action type, actor, free-text search; paginated (50 per page)
+- Device column with parsed User-Agent; full UA in tooltip
+- Download complete log as `.log` file with current filters applied
 
 ### Networking
 - View all port bindings (host ↔ container) with protocol (TCP / UDP / TCP+UDP)
@@ -128,49 +149,49 @@ Or help to implement features by joining the development on the [Discussions](ht
 
 ### Container Creation (admin only)
 - Create containers from any Docker Hub or local image
+  - **Local-first** — prefers an already-pulled local image before attempting a pull
+  - **In-input image picker** — dropdown with local image suggestions, filterable as you type
+  - **Build from Dockerfile** — upload a Dockerfile directly in the UI to build a custom local image
 - Full **Docker Compose-style YAML** config via Monaco editor (live GUI ↔ YAML sync)
 - Dynamic port-binding rows with host/container fields and protocol selector
 - **"Fetch ENV"** — auto-detects environment variables from Docker image metadata
 - **Image ENV overrides** — admin-configured DB defaults applied on top of image defaults
 - Port conflict detection and duplicate name check before creation
 - Owner assignment — assign any container to any user
-- **DNS/SRV auto-record** — optionally create an SRV record on creation and delete it on removal
-
-### DNS Management (admin only)
-Full multi-provider DNS management:
-
-| Provider | Zones | Record CRUD | DDNS | Proxy |
-|---|---|---|---|---|
-| **Cloudflare** | Full API zone list | All types | ✓ | ✓ |
-| **GoDaddy** | Active domains | Full | ✓ | — |
-| **DuckDNS** | Single domain | — | ✓ | — |
-| **Namecheap** | Single domain | — | ✓ | — |
-| **Generic** | Single domain | — | ✓ (templated URL) | — |
-
-- Record types: A, AAAA, CNAME, MX, TXT, SRV, NS, CAA and more
-- **DDNS** — per-record toggle with configurable interval; auto-updates A records with the server's public IP
-- Container-linked records, TTL presets, type-coloured badges, search and filter chips
+- **Quota hard-block** — creation is blocked if the selected storage path is not quota-capable (ext4 + prjquota required)
 
 ### Admin Panel
-**Tabs:** Overview · Containers · Images · Users · DNS · Audit Log · Panel Settings
+**Tabs:** Overview · Containers · Images · Users · Roles · Audit Log · Panel Settings
 
-- **Users** — create, delete and set passwords; role-based access (`root` / `admin` / `user`);
+- **Users** — create, delete and set passwords; tri-state RBAC roles; UID + Nickname identity model;
   admins cannot delete other admins — only `root` can
+- **Roles & Permissions (RBAC)** — Role Studio UI: create custom roles, edit per-permission policy (`read / none / write`),
+  assign colour; `root` role is immutable; topbar badge shows the current user's role with its colour
 - **Images** — pull, delete, duplicate, ENV override editor
-- **Containers** — edit any container; stop all at once; per-row state updates without animation flicker
+- **Containers** — edit any container (disk limit, bandwidth, ENV, ports); stop all at once; per-row state updates without animation flicker
 - **Audit Log** — immutable; 200 records per page; multi-select action filter; Device column (parsed User-Agent); full UA in tooltip
 - **Panel Updates** — check for new releases (stable/unstable), one-click download & install with auto-restart
+- **Panel Settings** — categorical layout (Storage · Security · Operations · Interface)
 
 ### Panel Settings (root only)
 - **UFW toggle** — enable/disable UFW port-blocking globally
 - **Bandwidth toggle** — show/hide the Bandwidth section on Networking pages
-- **Cloudflare Under Attack Mode (auto)**
-  - Brute-force trigger: auto-enables UAM when distinct failing IPs ≥ threshold
-  - L7 HTTP-flood trigger: auto-enables UAM when ≥ N IPs exceed req/min threshold (60 s window)
-  - Auto-disables after cooldown when no active attacks detected
-  - Manual override button
 - **Sidebar Visibility** — toggle SOON (upcoming feature) badges in the admin sidebar
 - **ZRAM hint** — collapsible "How to enable ZRAM" block when ZRAM is inactive
+- **Storage** — default container storage path; cross-disk migration; disk filesystem conversion (ext4);
+  unsafe override mode for advanced setups
+- **API Key** — service API key for third-party integrations (`YUNEXAL_API_KEY`)
+
+### Session Management
+- Password change **immediately invalidates all active sessions** across all devices
+- **Devices modal** (Dashboard › Settings) — lists all active sessions with device/browser info
+- Per-device logout without affecting other sessions; current session is protected from remote logout
+- Session cookies carry a password-hash stamp — stale cookies trigger automatic re-login
+
+### API Access
+- Service API key stored in panel settings (or `YUNEXAL_API_KEY` / `PANEL_API_KEY` env vars)
+- `POST /api/auth/service-login` — exchange API key for a standard session cookie;
+  third-party services can then call all panel API endpoints without browser login
 
 ### Authentication & Security
 - Session-based login with **encrypted private cookies** (AES-GCM via axum-extra)
@@ -180,7 +201,8 @@ Full multi-provider DNS management:
 - **Security headers** — CSP, X-Frame-Options, HSTS, Referrer-Policy, Permissions-Policy
 - **SameSite=Strict** session cookies prevent CSRF
 - XSS protection: Askama auto-escaping + `escHtml()` / `escAttr()` in JavaScript
-- Path traversal protection on all file endpoints
+- Path traversal and symlink-escape protection on all file endpoints
+- `X-Forwarded-For` / `X-Real-IP` trusted only from local/private proxy addresses
 
 ### UI / UX
 - Responsive **Bootstrap 5** dark-mode layout
@@ -202,7 +224,7 @@ tar -xzf yunexal-panel-linux-x86_64.tar.gz
 cd yunex-release
 
 # 2. Run the setup wizard
-#    Installs Docker if needed, creates .env, creates root user, optionally sets up systemd service
+#    Auto-detects init system (systemd / OpenRC) and configures dependencies/services.
 sudo ./yunexal-setup
 
 # 3. Run
@@ -213,19 +235,28 @@ The SQLite database (`panel.db`) and `volumes/` directory are created automatica
 
 ---
 
+## Repository Status
+
+Installer-image customization work is currently paused.
+
+Repository scripts are currently kept as local-only files and are ignored by git, so they are not part of the GitHub-tracked source set.
+
+The active and supported flow in this repository is direct host installation using release binaries and `yunexal-setup`.
+
+---
+
 ## Reverse Proxy (nginx)
 
 The panel itself speaks plain HTTP. For production use with a domain and HTTPS (e.g. `https://panel.yunexal.com`), you need a reverse proxy in front of it.
 
 > **Important:** The WebSocket console (`wss://`) will **not work** unless the reverse proxy is configured to forward WebSocket upgrade headers. Without this, Firefox shows *"can't establish a connection to the server at wss://…"*.
 
-> **Cloudflare Proxy users:** Disable **Rocket Loader** for the panel domain.
-> Rocket Loader rewrites `<script>` tags and injects its own scripts without a CSP nonce, which conflicts with the panel's Content Security Policy and breaks Monaco Editor, Chart.js and WebSocket initialization.
-> **Cloudflare Dashboard → Your Domain → Speed → Settings → Rocket Loader → OFF**
-
 The setup wizard (`yunexal-setup`) detects nginx and can generate this config automatically (Step 7). If you prefer to configure it manually:
 
-**`/etc/nginx/sites-available/yunexal-panel`**
+**Config file path**
+
+- `/etc/nginx/sites-available/yunexal-panel.conf` (Debian/Ubuntu — enable via symlink in `/etc/nginx/sites-enabled/`)
+- `/etc/nginx/http.d/yunexal-panel.conf` (Alpine Linux)
 
 ```nginx
 # HTTP → HTTPS redirect
@@ -264,14 +295,18 @@ server {
 Enable the site and reload nginx:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/yunexal-panel /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
+sudo nginx -t
+
+sudo systemctl reload nginx   # Debian/Ubuntu
+# or
+sudo rc-service nginx reload  # Alpine Linux
 ```
 
 To add SSL via Let's Encrypt:
 
 ```bash
-sudo apt install certbot python3-certbot-nginx -y
+sudo apt-get install -y certbot python3-certbot-nginx
+
 sudo certbot --nginx -d panel.example.com
 ```
 
@@ -281,14 +316,15 @@ sudo certbot --nginx -d panel.example.com
 
 | Requirement | Notes | Minimum | Recommended |
 |---|---|---|---|
-| **OS** | Distribution for the panel | Ubuntu 20.04+ | Ubuntu 24.04+ LTS |
+| **OS** | Distribution for the panel | Linux with Docker and service manager support | Ubuntu LTS or Alpine Linux |
+| **Init system** | Service management | systemd (Debian/Ubuntu) or OpenRC (Alpine) | Either — auto-detected by `yunexal-setup` |
 | **Docker Engine** | Must be running; socket at `/var/run/docker.sock` | 24.0 | 29.0 + |
-| **Docker image `alpine`** | Pulled automatically by `yunexal-setup` | latest | latest |
+| **Helper shell image** | Pulled automatically by `yunexal-setup` | latest | latest |
 | **RAM** | For the panel process | 64 MB if using minimal features with containers | 2 GB if using full features with containers |
 | **CPU** | For the panel process | 1 vCPU | 2 vCPU |
 | **GPU** | For hardware acceleration (optional) | None | Recommended if using GPU-intensive features |
 | **Disk space** | For the panel binary, database, and volumes | 100 MB | 500 MB |
-| **Filesystem** | For volume management and quotas | Any without disk quotas | XFS or ZFS with pquota/prjquota/refquota for disk quotas |
+| **Filesystem** | For volume management and quotas | Any (quotas disabled) | **ext4 with `prjquota`** for per-container disk limits |
 | **Ports** | Panel port (default: 3000) + container ports | 1 free port for the panel + container ports | Multiple free ports for the panel and containers |
 | **Reverse proxy** | For production use with a domain and HTTPS | Optional (HTTP-only access) | Recommended (HTTPS + SSL with WebSocket support) |
 | **Ethernet** | For network connectivity | 100 Mbps | 1 Gbps or higher |
@@ -303,6 +339,12 @@ sudo certbot --nginx -d panel.example.com
 > (shown by the panel automatically if access is denied):
 > ```bash
 > echo "www-data ALL=(ALL) NOPASSWD: /usr/sbin/ufw" | sudo tee /etc/sudoers.d/yunexal-ufw
+> ```
+
+> **Disk quotas (ext4)** — to enable per-container disk limits, mount the volume partition with `prjquota`:
+> ```
+> # /etc/fstab entry example
+> /dev/sdb1  /var/lib/yunexal-volumes  ext4  defaults,prjquota  0 2
 > ```
 
 ---
@@ -320,6 +362,10 @@ PANEL_PORT=3000
 # Changing this value invalidates all active sessions.
 # Generate with:  openssl rand -hex 64
 COOKIE_SECRET=<128 hex chars>
+
+# Optional: service API key for third-party integrations
+# Can also be set in Admin Panel › Panel Settings › API Key
+YUNEXAL_API_KEY=<your-api-key>
 ```
 
 Initial credentials are set by `yunexal-setup`.
@@ -336,7 +382,10 @@ git clone https://github.com/nestorchurin/yunexal-panel.git
 cd yunexal-panel
 cargo build --release
 
-# Interactive setup (Docker, .env, root user, optional systemd unit)
+# Musl-only release artifacts for x86_64 (no glibc loader)
+cargo build --release --target x86_64-unknown-linux-musl --bin yunexal-panel --bin yunexal-setup
+
+# Interactive setup (Docker, .env, root user, optional OpenRC/systemd service)
 sudo ./target/release/yunexal-setup
 
 ./target/release/yunexal-panel
@@ -350,21 +399,21 @@ sudo ./target/release/yunexal-setup
 src/
 ├── main.rs               # Entry point, router, middleware
 ├── lib.rs                # Library crate (shared between binaries)
-├── state.rs              # AppState — DB pool, Docker client, CF UAM state, L7 counters
-├── auth.rs               # Session helpers, admin guard, rate limiter, CF UAM/L7 triggers
-├── cloudflare.rs         # Cloudflare API wrapper (security level, UAM enable/disable)
+├── state.rs              # AppState — DB pool, Docker client, login limiter state
+├── auth.rs               # Session helpers, admin guard, RBAC checks, rate limiter
 ├── compose.rs            # Docker Compose YAML parser
 ├── password.rs           # Argon2id hash / verify
-├── dns.rs                # DNS provider API clients
+├── host.rs               # Host command abstraction (init-system detection)
 ├── db/
 │   ├── mod.rs            # Schema init, migrations, seed defaults
-│   ├── users.rs          # User CRUD
-│   ├── servers.rs        # Server CRUD
+│   ├── users.rs          # User CRUD (uid + nickname model)
+│   ├── servers.rs        # Server CRUD + container-scoped access
 │   ├── ports.rs          # Port mappings + UFW state
-│   ├── dns.rs            # DNS records & providers
 │   ├── images.rs         # Image ENV overrides
-│   ├── audit.rs          # Audit log (immutable, user-agent)
-│   └── settings.rs       # panel_settings key/value store
+│   ├── audit.rs          # Audit log (immutable, global + per-server)
+│   ├── settings.rs       # panel_settings key/value store
+│   ├── roles.rs          # RBAC roles, permissions, tri-state policy
+│   └── sessions.rs       # User session records (device tracking)
 ├── docker/
 │   ├── mod.rs            # Docker client, ContainerInfo
 │   ├── containers.rs     # Lifecycle, attach, list
@@ -372,19 +421,19 @@ src/
 │   ├── images.rs         # Pull, delete, duplicate, ENV fetch
 │   ├── files.rs          # Volume file operations
 │   ├── network.rs        # Bandwidth limiting (tc TBF), isolated networks
-│   └── edit.rs           # Inspect & recreate containers
+│   ├── edit.rs           # Inspect & recreate containers
+│   └── quota.rs          # ext4 project-quota enforcement
 ├── bin/
-│   └── setup.rs          # yunexal-setup: interactive wizard
+│   └── setup.rs          # yunexal-setup: interactive wizard (systemd + OpenRC)
 └── handlers/
     ├── mod.rs            # Router, embedded assets, track_requests middleware
-    ├── auth.rs           # Login / logout
-    ├── dashboard.rs      # Dashboard + server list fragment
-    ├── servers.rs        # Console, Settings, Stats, lifecycle, ENV update, Factory Reset
-    ├── files.rs          # File manager API
+    ├── auth.rs           # Login / logout / service-login
+    ├── dashboard.rs      # Dashboard + server list fragment + device sessions API
+    ├── servers.rs        # Console, Settings, Stats, lifecycle, ENV update, Factory Reset, Members API
+    ├── files.rs          # File manager API (upload, extract, edit, safe path resolution)
     ├── network.rs        # Networking + port / bandwidth / UFW API
-    ├── create.rs         # Container creation
-    ├── admin.rs          # Admin panel — users, images, containers, panel settings
-    ├── dns.rs            # DNS management API
+    ├── create.rs         # Container creation (local-first, Dockerfile build, quota preflight)
+    ├── admin.rs          # Admin panel — users, images, containers, roles, storage, panel settings
     ├── ws.rs             # WebSocket console
     └── templates.rs      # Askama template structs
 
@@ -400,10 +449,10 @@ static/                   # CSS, JS, icons — compiled into binary via rust-emb
 |---|---|
 | Web framework | [Axum](https://github.com/tokio-rs/axum) 0.8 |
 | Async runtime | [Tokio](https://tokio.rs) |
-| Docker SDK | [Bollard](https://github.com/fussybeaver/bollard) 0.20 |
+| Docker SDK | [Bollard](https://github.com/fussybeaver/bollard) 0.21 |
 | Database | SQLite via [SQLx](https://github.com/launchbadge/sqlx) 0.8 (WAL mode) |
 | HTTP client | [reqwest](https://github.com/seanmonstar/reqwest) |
-| Templates | [Askama](https://github.com/djc/askama) 0.15 — compiled into binary |
+| Templates | [Askama](https://github.com/djc/askama) 0.16 — compiled into binary |
 | Static assets | [rust-embed](https://github.com/pyros2097/rust-embed) — compiled into binary |
 | Password hashing | [Argon2](https://github.com/RustCrypto/password-hashes) (Argon2id) |
 | Session cookies | [axum-extra](https://docs.rs/axum-extra) private cookies (AES-GCM) |

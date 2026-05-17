@@ -13,6 +13,14 @@ use crate::handlers::CspNonce;
 use crate::state::AppState;
 use super::templates::{ArchiveForm, CopyFileForm, CreateFileForm, DeleteFileQuery, ExtractForm, FileChunkCompleteQuery, FileChunkUploadQuery, FileContentQuery, FileEditTemplate, FileListQuery, FileUploadQuery, RenameFileForm, SaveFileForm};
 
+async fn can_read_files(state: &AppState, jar: &PrivateCookieJar, db_id: i64) -> bool {
+    auth::can_access_server_permission(state, jar, db_id, "files", false).await
+}
+
+async fn can_write_files(state: &AppState, jar: &PrivateCookieJar, db_id: i64) -> bool {
+    auth::can_access_server_permission(state, jar, db_id, "files", true).await
+}
+
 fn sanitized_upload_filename(filename: &str) -> String {
     std::path::Path::new(filename)
         .file_name()
@@ -233,6 +241,33 @@ fn is_extractable(name: &str) -> bool {
     || n.ends_with(".gz") || n.ends_with(".bz2") || n.ends_with(".xz")
 }
 
+fn is_editable_file(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    if is_extractable(name) {
+        return false;
+    }
+
+    let ext = lower.rsplit('.').next().unwrap_or("");
+    let non_editable = matches!(
+        ext,
+        // binaries / executables
+        "exe" | "dll" | "so" | "dylib" | "bin" | "elf" | "o" | "a" | "obj" | "lib" | "out" | "wasm" | "class"
+        // package / app artifacts
+        | "jar" | "war" | "ear" | "apk" | "deb" | "rpm" | "pkg"
+        // images
+        | "png" | "jpg" | "jpeg" | "gif" | "ico" | "svg" | "webp" | "bmp" | "tiff" | "tif" | "avif" | "heic" | "heif" | "raw" | "dng" | "psd" | "ai" | "eps" | "xcf"
+        // audio / video
+        | "mp3" | "wav" | "ogg" | "flac" | "aac" | "m4a" | "wma" | "opus" | "aiff" | "au" | "mid" | "midi"
+        | "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" | "m4v" | "3gp" | "ogv"
+        // office / documents
+        | "pdf" | "doc" | "docx" | "odt" | "xls" | "xlsx" | "ods" | "ppt" | "pptx" | "odp"
+        // databases and font assets
+        | "db" | "sqlite" | "sqlite3" | "ttf" | "otf" | "woff" | "woff2" | "eot"
+    );
+
+    !non_editable
+}
+
 fn archive_extract_dir_name(name: &str) -> String {
     const SUFFIXES: [&str; 14] = [
         ".tar.gz",
@@ -299,7 +334,7 @@ pub async fn list_files_api(
     Path(db_id): Path<i64>,
     Query(query): Query<FileListQuery>,
 ) -> impl IntoResponse {
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_read_files(&state, &jar, db_id).await {
         return Html(String::from(r#"<div id="file-browser"><p style="color:var(--err);padding:1rem;">Access denied</p></div>"#)).into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -364,7 +399,9 @@ pub async fn list_files_api(
                     ));
                 } else {
                     let (icon, color) = file_icon(clean_name);
+                    let editable = is_editable_file(clean_name);
                     let archive_attr = if is_extractable(clean_name) { " data-archive=\"true\"" } else { "" };
+                    let editable_attr = if editable { "true" } else { "false" };
                     let meta_label = match fsize {
                         Some(b) => format_size(*b),
                         None => {
@@ -376,11 +413,19 @@ pub async fn list_files_api(
                             }
                         }
                     };
-                    html.push_str(&format!(
-                        r#"<a class="fb-row fb-row-file" data-path="{}" data-type="file"{}  href="/servers/{}/files/edit?path={}"><label class="fb-cb-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="fb-cb" value="{}"><span class="fb-cb-box"></span></label><div class="fb-icon {}"><i class="bi {}"></i></div><div class="fb-name">{}</div><div class="fb-meta">{}</div></a>"#,
-                        safe_full, archive_attr, db_id, urlencoding::encode(&full_path),
-                        safe_full, color, icon, safe_name, meta_label
-                    ));
+                    if editable {
+                        html.push_str(&format!(
+                            r#"<a class="fb-row fb-row-file" data-path="{}" data-type="file" data-editable="{}"{} href="/servers/{}/files/edit?path={}"><label class="fb-cb-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="fb-cb" value="{}"><span class="fb-cb-box"></span></label><div class="fb-icon {}"><i class="bi {}"></i></div><div class="fb-name">{}</div><div class="fb-meta">{}</div></a>"#,
+                            safe_full, editable_attr, archive_attr, db_id, urlencoding::encode(&full_path),
+                            safe_full, color, icon, safe_name, meta_label
+                        ));
+                    } else {
+                        html.push_str(&format!(
+                            r#"<div class="fb-row fb-row-file fb-row-noedit" data-path="{}" data-type="file" data-editable="{}"{} title="This file type cannot be edited in the panel"><label class="fb-cb-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="fb-cb" value="{}"><span class="fb-cb-box"></span></label><div class="fb-icon {}"><i class="bi {}"></i></div><div class="fb-name">{}</div><div class="fb-meta">{}</div></div>"#,
+                            safe_full, editable_attr, archive_attr,
+                            safe_full, color, icon, safe_name, meta_label
+                        ));
+                    }
                 }
             }
         }
@@ -403,9 +448,10 @@ pub async fn edit_file_page(
     Query(query): Query<FileContentQuery>,
     Extension(CspNonce(nonce)): Extension<CspNonce>,
 ) -> impl IntoResponse {
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_read_files(&state, &jar, db_id).await {
         return Redirect::to("/").into_response();
     }
+    let can_members = auth::can_access_server_permission(&state, &jar, db_id, "members", false).await;
     let (docker_id, db_name) = match db::get_server_info_by_db_id(&state.db, db_id).await.ok().flatten() {
         Some(row) => row,
         None => return Redirect::to("/").into_response(),
@@ -425,7 +471,10 @@ pub async fn edit_file_page(
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_string();
-    if filename.starts_with('.') || filename.ends_with(".example") || filename.ends_with(".test") {
+    if filename.ends_with(".example") || filename.ends_with(".test") {
+        return Redirect::to(&format!("/servers/{}/files", db_id)).into_response();
+    }
+    if !is_editable_file(&filename) {
         return Redirect::to(&format!("/servers/{}/files", db_id)).into_response();
     }
 
@@ -452,12 +501,12 @@ pub async fn edit_file_page(
     super::templates::render(FileEditTemplate {
         id: db_id,
         container,
+        can_members,
         path: query.path,
         filename,
         content,
         ace_mode,
         active_tab: "files",
-        cf_token: state.cf_analytics_token.clone(),
         nonce,
     })
     .into_response()
@@ -472,7 +521,7 @@ pub async fn save_file_content(
     Form(form): Form<SaveFileForm>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_write_files(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -488,6 +537,14 @@ pub async fn save_file_content(
         Some(p) => p,
         None => return (StatusCode::FORBIDDEN, "Access Denied").into_response(),
     };
+    let filename = file_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    if !is_editable_file(&filename) {
+        return (StatusCode::BAD_REQUEST, "This file type is not editable in the panel").into_response();
+    }
     let rel_path = file_path.strip_prefix(&volume_path)
         .map(|p| p.display().to_string())
         .unwrap_or_default();
@@ -546,7 +603,7 @@ pub async fn create_new_file(
     Form(form): Form<CreateFileForm>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_write_files(&state, &jar, db_id).await {
         return "Access denied".into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -559,9 +616,14 @@ pub async fn create_new_file(
     let volume_path = docker::volume_dir_to_path(&volume_dir);
 
     let name = form.name.trim();
-    if name.is_empty() || name.contains('/') || name.contains('\\') || name.starts_with('.') {
-        return "Invalid file name (cannot start with dot)".into_response();
+    if !is_safe_entry_name(name) {
+        return "Invalid name".into_response();
     }
+
+    let create_folder = matches!(
+        form.entry_type.trim().to_lowercase().as_str(),
+        "folder" | "dir" | "directory"
+    );
 
     // Resolve the target directory from form.path
     let dir_path = {
@@ -592,32 +654,62 @@ pub async fn create_new_file(
 
     let file_path = dir_path.join(name);
     if file_path.exists() {
-        return "File already exists".into_response();
+        return if create_folder {
+            "Folder already exists".into_response()
+        } else {
+            "File already exists".into_response()
+        };
     }
 
     let rel_file = file_path.strip_prefix(&volume_path)
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let create_result = tokio::fs::write(&file_path, "").await;
-    if let Err(e) = create_result {
-        if e.kind() == std::io::ErrorKind::PermissionDenied {
-            let cmd = format!("touch '/mnt/{}'", sh_esc(&rel_file));
-            if let Err(e2) = docker_volume_cmd(&volume_path, &cmd).await {
-                return format!("Failed to create file: {e2}").into_response();
+
+    if create_folder {
+        let create_result = tokio::fs::create_dir(&file_path).await;
+        if let Err(e) = create_result {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                let cmd = format!("mkdir '/mnt/{}'", sh_esc(&rel_file));
+                if let Err(e2) = docker_volume_cmd(&volume_path, &cmd).await {
+                    return format!("Failed to create folder: {e2}").into_response();
+                }
+            } else {
+                return format!("Failed to create folder: {e}").into_response();
             }
-        } else {
-            return format!("Failed to create file: {e}").into_response();
+        }
+    } else {
+        let create_result = tokio::fs::write(&file_path, "").await;
+        if let Err(e) = create_result {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                let cmd = format!("touch '/mnt/{}'", sh_esc(&rel_file));
+                if let Err(e2) = docker_volume_cmd(&volume_path, &cmd).await {
+                    return format!("Failed to create file: {e2}").into_response();
+                }
+            } else {
+                return format!("Failed to create file: {e}").into_response();
+            }
         }
     }
 
     let actor = auth::session_username(&jar).unwrap_or_default();
-    let _ = db::audit_log(&state.db, &actor, "file.create", name, &format!("#{}", db_id), &ip, &auth::user_agent(&headers)).await;
+    let audit_action = if create_folder { "folder.create" } else { "file.create" };
+    let _ = db::audit_log(&state.db, &actor, audit_action, name, &format!("#{}", db_id), &ip, &auth::user_agent(&headers)).await;
 
     [(
         axum::http::header::HeaderName::from_static("hx-trigger"),
         "file-created",
     )]
     .into_response()
+}
+
+fn is_safe_entry_name(name: &str) -> bool {
+    let n = name.trim();
+    if n.is_empty() { return false; }
+    if n == "." || n == ".." { return false; }
+    if n.contains('/') || n.contains('\\') || n.contains('\0') { return false; }
+    // Block traversal-like names such as ../foo or ..bar to avoid ambiguous handling.
+    if n.contains("..") { return false; }
+    true
 }
 
 // ── Run a shell command inside Alpine with the volume mounted ───────────────
@@ -642,6 +734,18 @@ fn sh_esc(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "'\\''")
 }
 
+#[cfg(unix)]
+fn owner_uid_gid(path: &std::path::Path) -> Option<(u32, u32)> {
+    use std::os::unix::fs::MetadataExt;
+    let md = std::fs::metadata(path).ok()?;
+    Some((md.uid(), md.gid()))
+}
+
+#[cfg(not(unix))]
+fn owner_uid_gid(_path: &std::path::Path) -> Option<(u32, u32)> {
+    None
+}
+
 // ── JSON file listing ──────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize)]
@@ -649,6 +753,7 @@ pub struct FileJsonEntry {
     name: String,
     path: String,
     is_dir: bool,
+    editable: bool,
     meta: String,
     icon: String,
     color: String,
@@ -661,7 +766,7 @@ pub async fn list_files_json(
     Path(db_id): Path<i64>,
     Query(query): Query<FileListQuery>,
 ) -> impl IntoResponse {
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_read_files(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, Json(Vec::<FileJsonEntry>::new())).into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -693,6 +798,7 @@ pub async fn list_files_json(
                         name: clean_name,
                         path: full_path,
                         is_dir: true,
+                        editable: true,
                         meta: "folder".to_string(),
                         icon: "bi-folder-fill".to_string(),
                         color: "fb-icon-dir".to_string(),
@@ -700,6 +806,7 @@ pub async fn list_files_json(
                     }
                 } else {
                     let (icon, color) = file_icon(&clean_name);
+                    let editable = is_editable_file(&clean_name);
                     let meta = match fsize {
                         Some(b) => format_size(*b),
                         None => {
@@ -716,6 +823,7 @@ pub async fn list_files_json(
                         name: clean_name,
                         path: full_path,
                         is_dir: false,
+                        editable,
                         meta,
                         icon: icon.to_string(),
                         color: color.to_string(),
@@ -736,20 +844,52 @@ fn resolve_path(
     rel: &str,
 ) -> Option<std::path::PathBuf> {
     let rel = rel.trim_start_matches('/');
+
+    // Canonical root gives us a stable confinement boundary for symlink checks.
+    let volume_root = volume_path
+        .canonicalize()
+        .unwrap_or_else(|_| volume_path.to_path_buf());
+
     if rel.is_empty() {
         return Some(volume_path.to_path_buf());
     }
-    let joined = volume_path.join(rel);
-    // Normalize: resolve `.` and `..` without touching the filesystem.
-    let mut normalized = std::path::PathBuf::new();
-    for component in joined.components() {
+
+    // Normalize `.` / `..` as relative components only.
+    let mut normalized_rel = std::path::PathBuf::new();
+    for component in std::path::Path::new(rel).components() {
         match component {
-            std::path::Component::ParentDir => { normalized.pop(); },
-            std::path::Component::CurDir    => {},
-            c => normalized.push(c),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized_rel.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::Normal(c) => normalized_rel.push(c),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return None,
         }
     }
-    if normalized.starts_with(volume_path) { Some(normalized) } else { None }
+
+    let normalized = volume_path.join(&normalized_rel);
+    if !normalized.starts_with(volume_path) {
+        return None;
+    }
+
+    // Symlink-aware guard: if target exists, verify its canonical path; otherwise
+    // verify the canonical parent directory where the target would be created.
+    let guard_target = if normalized.exists() {
+        normalized.clone()
+    } else {
+        normalized.parent()?.to_path_buf()
+    };
+
+    let guard_canon = guard_target
+        .canonicalize()
+        .unwrap_or(guard_target);
+    if !guard_canon.starts_with(&volume_root) {
+        return None;
+    }
+
+    Some(normalized)
 }
 
 // ── DELETE a file or directory ────────────────────────────────────────────────
@@ -762,7 +902,7 @@ pub async fn delete_file(
     Query(query): Query<DeleteFileQuery>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_write_files(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -814,7 +954,7 @@ pub async fn rename_file(
     Form(form): Form<RenameFileForm>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_write_files(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -869,7 +1009,7 @@ pub async fn copy_file(
     Form(form): Form<CopyFileForm>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_write_files(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -956,7 +1096,7 @@ pub async fn upload_files(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_write_files(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -1072,7 +1212,7 @@ pub async fn upload_file_chunk(
     body: Bytes,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_write_files(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
     if query.total_chunks == 0 {
@@ -1133,7 +1273,7 @@ pub async fn finalize_file_upload(
     Query(query): Query<FileChunkCompleteQuery>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_write_files(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
     if query.total_chunks == 0 {
@@ -1239,7 +1379,7 @@ pub async fn extract_archive(
     Form(form): Form<ExtractForm>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_write_files(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -1281,23 +1421,37 @@ pub async fn extract_archive(
     } else {
         format!("/mnt/{}", rel_dir)
     };
+    let owner_spec = owner_uid_gid(&archive_path)
+        .or_else(|| owner_uid_gid(&arch_dir))
+        .or_else(|| owner_uid_gid(&volume_path))
+        .map(|(uid, gid)| format!("{}:{}", uid, gid));
     let (prefix_cmd, target_dir, extracted_name, post_cmd) = if destination == "here" {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0);
         let tmp_extract_dir = format!("{}/.yxextract_tmp_{}", work_dir, stamp);
+        let chown_each_cmd = owner_spec
+            .as_ref()
+            .map(|spec| format!(" chown -R {} \"$dst/$base\" || true;", spec))
+            .unwrap_or_default();
         let finalize_cmd = format!(
-            " && src_dir='{tmp}' \
+            " && dst='{dst}' \
+&& src_dir='{tmp}' \
 && entries=$(find \"$src_dir\" -mindepth 1 -maxdepth 1 | wc -l) \
 && if [ \"$entries\" -eq 1 ]; then only=$(find \"$src_dir\" -mindepth 1 -maxdepth 1); if [ -d \"$only\" ]; then src_dir=\"$only\"; fi; fi \
-&& for f in \"$src_dir\"/* \"$src_dir\"/.[!.]* \"$src_dir\"/..?*; do [ -e \"$f\" ] || continue; mv \"$f\" '{dst}/'; done \
+&& for f in \"$src_dir\"/* \"$src_dir\"/.[!.]* \"$src_dir\"/..?*; do [ -e \"$f\" ] || continue; base=$(basename \"$f\"); mv \"$f\" \"$dst/$base\";{chown_each} done \
 && rm -rf '{tmp}'",
-            tmp = sh_esc(&tmp_extract_dir),
             dst = sh_esc(&work_dir),
+            tmp = sh_esc(&tmp_extract_dir),
+            chown_each = chown_each_cmd,
         );
         (
-            format!("rm -rf '{}' && mkdir -p '{}' && ", sh_esc(&tmp_extract_dir), sh_esc(&tmp_extract_dir)),
+            format!(
+                "rm -rf '{}' && mkdir -p '{}' && ",
+                sh_esc(&tmp_extract_dir),
+                sh_esc(&tmp_extract_dir)
+            ),
             tmp_extract_dir,
             String::new(),
             finalize_cmd,
@@ -1312,11 +1466,15 @@ pub async fn extract_archive(
         } else {
             format!("/mnt/{}/{}", rel_dir, target_name)
         };
+        let ownership_cmd = owner_spec
+            .as_ref()
+            .map(|spec| format!(" && (chown -R {} '{}' || true)", spec, sh_esc(&target_mount_path)))
+            .unwrap_or_default();
         (
             format!("mkdir -p '{}' && ", sh_esc(&target_mount_path)),
             target_mount_path,
             target_name,
-            String::new(),
+            ownership_cmd,
         )
     };
     let archive_arg = format!("'{}'", sh_esc(&archive_mount_path));
@@ -1334,30 +1492,60 @@ pub async fn extract_archive(
     } else if name_lower.ends_with(".zip") || name_lower.ends_with(".jar") {
         format!("{}unzip -o {} -d {}{}", prefix_cmd, archive_arg, target_arg, post_cmd)
     } else if name_lower.ends_with(".rar") {
-        format!("{}apk add --no-cache unrar >/dev/null 2>&1 && unrar x -o+ {} '{}/'{}", prefix_cmd, archive_arg, sh_esc(&target_dir), post_cmd)
+        format!(
+            "{}apk add --no-cache unrar >/dev/null 2>&1 && unrar x -o+ {} '{}/'{}",
+            prefix_cmd,
+            archive_arg,
+            sh_esc(&target_dir),
+            post_cmd
+        )
     } else if name_lower.ends_with(".7z") {
-        format!("{}apk add --no-cache p7zip >/dev/null 2>&1 && 7z x -aoa -o{} {}{}", prefix_cmd, target_arg, archive_arg, post_cmd)
+        format!(
+            "{}apk add --no-cache p7zip >/dev/null 2>&1 && 7z x -aoa -o{} {}{}",
+            prefix_cmd,
+            target_arg,
+            archive_arg,
+            post_cmd
+        )
     } else if name_lower.ends_with(".gz") {
         let output_path = if destination == "here" {
             format!("{}/{}", target_dir, archive_extract_dir_name(&arch_name))
         } else {
             format!("{}/{}", target_dir, extracted_name)
         };
-        format!("{}gunzip -c {} > '{}'{}", prefix_cmd, archive_arg, sh_esc(&output_path), post_cmd)
+        format!(
+            "{}gunzip -c {} > '{}'{}",
+            prefix_cmd,
+            archive_arg,
+            sh_esc(&output_path),
+            post_cmd
+        )
     } else if name_lower.ends_with(".bz2") {
         let output_path = if destination == "here" {
             format!("{}/{}", target_dir, archive_extract_dir_name(&arch_name))
         } else {
             format!("{}/{}", target_dir, extracted_name)
         };
-        format!("{}bunzip2 -c {} > '{}'{}", prefix_cmd, archive_arg, sh_esc(&output_path), post_cmd)
+        format!(
+            "{}bunzip2 -c {} > '{}'{}",
+            prefix_cmd,
+            archive_arg,
+            sh_esc(&output_path),
+            post_cmd
+        )
     } else if name_lower.ends_with(".xz") {
         let output_path = if destination == "here" {
             format!("{}/{}", target_dir, archive_extract_dir_name(&arch_name))
         } else {
             format!("{}/{}", target_dir, extracted_name)
         };
-        format!("{}unxz -c {} > '{}'{}", prefix_cmd, archive_arg, sh_esc(&output_path), post_cmd)
+        format!(
+            "{}unxz -c {} > '{}'{}",
+            prefix_cmd,
+            archive_arg,
+            sh_esc(&output_path),
+            post_cmd
+        )
     } else {
         return (StatusCode::BAD_REQUEST, "Unsupported archive format").into_response();
     };
@@ -1388,7 +1576,7 @@ pub async fn create_archive(
     Form(form): Form<ArchiveForm>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_write_files(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -1473,7 +1661,7 @@ pub async fn bulk_delete(
     Form(form): Form<super::templates::BulkPathsForm>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_write_files(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -1524,7 +1712,7 @@ pub async fn move_file(
     Form(form): Form<super::templates::CopyFileForm>,
 ) -> impl IntoResponse {
     let ip = auth::client_ip(&headers, addr);
-    if !auth::can_access_server(&state, &jar, db_id).await {
+    if !can_write_files(&state, &jar, db_id).await {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
     let docker_id = match db::get_container_id_by_server_id(&state.db, db_id).await.ok().flatten() {
@@ -1581,4 +1769,49 @@ pub async fn move_file(
             axum::http::HeaderValue::from_static("file-created"),
         )]),
     ).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_path;
+
+    fn temp_path(prefix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
+
+    #[test]
+    fn resolve_path_blocks_parent_traversal() {
+        let root = temp_path("yunexal-files-test");
+        let volume = root.join("volume");
+        std::fs::create_dir_all(&volume).expect("create test volume");
+
+        let resolved = resolve_path(&volume, "../../etc/passwd");
+        assert!(resolved.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_path_blocks_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_path("yunexal-files-test-symlink");
+        let volume = root.join("volume");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&volume).expect("create volume");
+        std::fs::create_dir_all(&outside).expect("create outside dir");
+
+        let link_path = volume.join("escape");
+        symlink(&outside, &link_path).expect("create symlink");
+
+        let resolved = resolve_path(&volume, "escape/secret.txt");
+        assert!(resolved.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
