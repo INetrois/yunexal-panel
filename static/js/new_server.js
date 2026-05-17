@@ -1,5 +1,10 @@
 // ── Row templates ────────────────────────────────────────────────────────────
 
+// Backward-compatible no-op for optional integrations.
+if (typeof window !== 'undefined' && typeof window._refreshSrvPortSelect !== 'function') {
+    window._refreshSrvPortSelect = () => {};
+}
+
 function getPortRowHtml(host='', container='', proto='tcp') {
     const opt = v => `<option value="${v}"${proto===v?' selected':''}>`;
     return `
@@ -85,7 +90,7 @@ function updateYaml() {
         if (pos) window.yamlEditor.setPosition(pos);
     }
     saveFormState();
-    // Keep port select in sync
+    // Keep optional port select integrations in sync.
     if (typeof window._refreshSrvPortSelect === 'function') {
         window._refreshSrvPortSelect();
     }
