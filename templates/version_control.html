@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+{% include "_head_common.html" %}
+<title>{{ container.name }} - Version Control</title>
+<link href="/static/css/base.css?v=2" rel="stylesheet">
+<link href="/static/css/version_control.css?v=1" rel="stylesheet">
+</head>
+<body>
+<div class="yu-layout">
+{% include "_server_sidebar.html" %}
+<main class="yu-main">
+{% include "_mobile_topbar.html" %}
+<div class="yu-content vc-page">
+<div class="vc-head"><div><h1>Version Control</h1><p>Git sync for this container volume.</p></div><a class="btn-yu btn-yu-ghost" href="/auth/github/start">Connect GitHub</a></div>
+<div class="vc-grid">
+<section class="yu-panel"><div class="yu-panel-hd">Repository</div><div class="yu-panel-bd"><form id="vc-connect-form" class="vc-form"><label>Repository URL</label><input class="yu-input" name="repo_url" placeholder="Repository clone URL" {% if !can_git_write %}disabled{% endif %}><label>Branch</label><input class="yu-input" name="branch" value="main" {% if !can_git_write %}disabled{% endif %}><label class="vc-check"><input type="checkbox" name="auto_sync" {% if !can_git_write %}disabled{% endif %}> Enable auto-sync</label><button class="btn-yu btn-yu-primary" type="submit" {% if !can_git_write %}disabled{% endif %}>Connect / Update</button></form></div></section>
+<section class="yu-panel"><div class="yu-panel-hd">Actions</div><div class="yu-panel-bd"><div class="vc-actions"><button id="vc-pull" class="btn-yu btn-yu-ghost" {% if !can_git_write %}disabled{% endif %}>Pull</button><button id="vc-push" class="btn-yu btn-yu-ghost" {% if !can_git_write %}disabled{% endif %}>Push</button><button id="vc-sync" class="btn-yu btn-yu-primary" {% if !can_git_write %}disabled{% endif %}>Sync</button><button id="vc-auto" class="btn-yu btn-yu-ghost" {% if !can_git_write %}disabled{% endif %}>Toggle auto-sync</button></div><form id="vc-checkout-form" class="vc-inline-form"><input class="yu-input" name="branch" placeholder="branch" {% if !can_git_write %}disabled{% endif %}><button class="btn-yu btn-yu-ghost" {% if !can_git_write %}disabled{% endif %}>Checkout</button></form><form id="vc-commit-form" class="vc-inline-form"><input class="yu-input" name="message" placeholder="commit message" {% if !can_git_write %}disabled{% endif %}><button class="btn-yu btn-yu-ghost" {% if !can_git_write %}disabled{% endif %}>Commit all</button></form></div></section>
+</div>
+<section class="yu-panel vc-status-panel"><div class="yu-panel-hd">Status</div><div class="yu-panel-bd"><div id="vc-meta" class="vc-meta">Loading...</div><pre id="vc-output" class="vc-output">Loading...</pre></div></section>
+</div>
+</main>
+</div>
+{% include "_scripts_server.html" %}
+<script nonce="{{nonce}}">window.YU_SERVER_ID='{{id}}';document.getElementById('vc-pull')?.addEventListener('click',()=>vcAction('pull'));document.getElementById('vc-push')?.addEventListener('click',()=>vcAction('push'));document.getElementById('vc-sync')?.addEventListener('click',()=>vcAction('sync'));document.getElementById('vc-auto')?.addEventListener('click',()=>vcToggleAutoSync());</script>
+{% include "_script_footer.html" %}
+<script src="/static/js/version_control.js?v=1" nonce="{{nonce}}"></script>
+</body>
+</html>
