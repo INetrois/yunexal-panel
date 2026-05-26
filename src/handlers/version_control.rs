@@ -1,3 +1,4 @@
+use askama::Template;
 use axum::{extract::{Form, Path, Query, State}, response::{IntoResponse, Redirect}, Extension, Json};
 use axum_extra::extract::cookie::PrivateCookieJar;
 use serde::{Deserialize, Serialize};
@@ -5,7 +6,19 @@ use std::{collections::HashMap, path::{Component, Path, PathBuf}};
 use tokio::process::Command;
 
 use crate::{auth, db, docker, state::AppState};
-use super::{CspNonce, templates::{render, VersionControlTemplate}};
+use crate::docker::ContainerInfo;
+use super::{CspNonce, templates::render};
+
+#[derive(Template)]
+#[template(path = "version_control.html")]
+pub struct VersionControlTemplate {
+    pub id: i64,
+    pub container: ContainerInfo,
+    pub can_members: bool,
+    pub can_git_write: bool,
+    pub active_tab: &'static str,
+    pub nonce: String,
+}
 
 #[derive(Debug, Serialize)]
 pub struct GitStatusResponse { pub connected: bool, pub github_connected: bool, pub repo_url: String, pub branch: String, pub auto_sync: bool, pub is_repo: bool, pub current_branch: String, pub last_commit: String, pub status: String }
