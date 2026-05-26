@@ -51,7 +51,7 @@ function closeSidebar() {
     }
 
     function _isServerSidebarPath(path) {
-        return /^\/servers\/\d+\/(console|files|networking|users|settings|audit)$/.test(path);
+        return /^\/servers\/\d+\/(console|files|version-control|networking|users|settings|audit)$/.test(path);
     }
 
     function _currentNonce() {
@@ -68,7 +68,6 @@ function closeSidebar() {
 
     async function _loadHeadAssets(doc) {
         const nonce = _currentNonce();
-
         const linkNodes = Array.from(doc.querySelectorAll('head link[rel="stylesheet"][href]'));
         for (const l of linkNodes) {
             const hrefRaw = l.getAttribute('href');
@@ -95,7 +94,6 @@ function closeSidebar() {
             try { src = new URL(srcRaw, window.location.origin).href; }
             catch { continue; }
             if (_loadedHeadScripts.has(src)) continue;
-
             await new Promise((resolve, reject) => {
                 const node = document.createElement('script');
                 node.src = src;
@@ -122,7 +120,6 @@ function closeSidebar() {
                 catch { continue; }
                 if (_isSharedBodyScriptSrc(src)) continue;
                 if (_loadedBodyScripts.has(src)) continue;
-
                 await new Promise((resolve, reject) => {
                     const node = document.createElement('script');
                     node.src = src;
@@ -137,7 +134,6 @@ function closeSidebar() {
                 });
                 continue;
             }
-
             const code = s.textContent || '';
             if (!code.trim()) continue;
             const node = document.createElement('script');
@@ -162,21 +158,14 @@ function closeSidebar() {
             marker.parentNode.replaceChild(main, marker);
         } else if (main.parentElement !== layout) {
             const firstAfterSidebar = sidebar.nextElementSibling;
-            if (firstAfterSidebar) {
-                layout.insertBefore(main, firstAfterSidebar);
-            } else {
-                layout.appendChild(main);
-            }
+            if (firstAfterSidebar) layout.insertBefore(main, firstAfterSidebar);
+            else layout.appendChild(main);
         }
-
         main.style.display = '';
         main.removeAttribute('aria-hidden');
-        // Keep active page first (right after sidebar) for deterministic selectors.
         if (main.parentElement === layout) {
             const firstAfterSidebar = sidebar.nextElementSibling;
-            if (firstAfterSidebar && firstAfterSidebar !== main) {
-                layout.insertBefore(main, firstAfterSidebar);
-            }
+            if (firstAfterSidebar && firstAfterSidebar !== main) layout.insertBefore(main, firstAfterSidebar);
         }
     }
 
@@ -191,19 +180,14 @@ function closeSidebar() {
     }
 
     async function _fetchPage(pathname) {
-        const res = await fetch(pathname, {
-            credentials: 'same-origin',
-            headers: { 'X-Requested-With': 'yu-sidebar-spa' },
-        });
+        const res = await fetch(pathname, { credentials: 'same-origin', headers: { 'X-Requested-With': 'yu-sidebar-spa' } });
         if (!res.ok) throw new Error(`Failed to load page (${res.status})`);
         const html = await res.text();
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const nextMain = doc.querySelector('.yu-main');
         if (!nextMain) throw new Error('Missing .yu-main in response');
         nextMain.dataset.yuSpaPath = pathname;
-
         await _loadHeadAssets(doc);
-
         const title = (doc.querySelector('title')?.textContent || '').trim();
         if (title) _pageTitles.set(pathname, title);
         _pageCache.set(pathname, nextMain);
@@ -212,10 +196,7 @@ function closeSidebar() {
 
     async function _navigate(pathname, pushState) {
         const target = _normalizePath(pathname);
-        if (!_isServerSidebarPath(target)) {
-            window.location.href = pathname;
-            return;
-        }
+        if (!_isServerSidebarPath(target)) { window.location.href = pathname; return; }
         if (_navInFlight) return;
         if (target === _activePath) {
             _updateSidebarActive(target);
@@ -223,65 +204,35 @@ function closeSidebar() {
             if (typeof closeSidebar === 'function') closeSidebar();
             return;
         }
-
         _navInFlight = true;
         try {
-            const currentMain = _pageCache.get(_activePath)
-                || Array.from(layout.querySelectorAll('.yu-main')).find(m => m.style.display !== 'none')
-                || document.querySelector('.yu-main');
-
+            const currentMain = _pageCache.get(_activePath) || Array.from(layout.querySelectorAll('.yu-main')).find(m => m.style.display !== 'none') || document.querySelector('.yu-main');
             let targetMain = _pageCache.get(target);
             let loadedDoc = null;
-            if (!targetMain) {
-                const loaded = await _fetchPage(target);
-                targetMain = loaded.nextMain;
-                loadedDoc = loaded.doc;
-            }
-
-            // Tear down previous page side effects before swapping views.
+            if (!targetMain) { const loaded = await _fetchPage(target); targetMain = loaded.nextMain; loadedDoc = loaded.doc; }
             if (typeof window._yuPageCleanup === 'function') {
-                try { window._yuPageCleanup(); }
-                catch (cleanupErr) { console.warn('Sidebar SPA cleanup failed:', cleanupErr); }
+                try { window._yuPageCleanup(); } catch (cleanupErr) { console.warn('Sidebar SPA cleanup failed:', cleanupErr); }
                 window._yuPageCleanup = undefined;
             }
-
-            if (currentMain && currentMain !== targetMain) {
-                _detachMain(currentMain);
-            }
+            if (currentMain && currentMain !== targetMain) _detachMain(currentMain);
             _attachMain(targetMain);
-
-            if (loadedDoc) {
-                await _runPageBodyScripts(loadedDoc);
-            }
-
+            if (loadedDoc) await _runPageBodyScripts(loadedDoc);
             const title = _pageTitles.get(target);
             if (title) document.title = title;
-
             _activePath = target;
             _updateSidebarActive(target);
-            if (pushState) {
-                history.pushState(
-                    { yuSidebarSpa: true, tab: target.split('/').pop() || '' },
-                    '',
-                    target,
-                );
-            }
+            if (pushState) history.pushState({ yuSidebarSpa: true, tab: target.split('/').pop() || '' }, '', target);
             window.dispatchEvent(new CustomEvent('yu:page-shown', { detail: { path: target } }));
             if (typeof closeSidebar === 'function') closeSidebar();
         } catch (e) {
             console.error('Sidebar SPA navigation failed:', e);
             window.location.href = pathname;
-        } finally {
-            _navInFlight = false;
-        }
+        } finally { _navInFlight = false; }
     }
 
     function serverSwitchTab(pathname, btn) {
         const target = _normalizePath(pathname);
-        if (!_isServerSidebarPath(target)) {
-            window.location.href = pathname;
-            return;
-        }
+        if (!_isServerSidebarPath(target)) { window.location.href = pathname; return; }
         if (btn) {
             sidebar.querySelectorAll('a.yu-nav-item').forEach(a => a.classList.remove('active'));
             btn.classList.add('active');
@@ -290,8 +241,6 @@ function closeSidebar() {
     }
 
     window.serverSwitchTab = serverSwitchTab;
-
-    // Fallback interception for nav links without inline onclick handler.
     sidebar.addEventListener('click', (ev) => {
         const a = ev.target.closest('a.yu-nav-item[href]');
         if (!a) return;
@@ -310,11 +259,7 @@ function closeSidebar() {
 
     window.addEventListener('popstate', () => {
         const target = _normalizePath(location.pathname);
-        if (!_isServerSidebarPath(target)) {
-            window.location.reload();
-            return;
-        }
+        if (!_isServerSidebarPath(target)) { window.location.reload(); return; }
         _navigate(target, false);
     });
 })();
-
